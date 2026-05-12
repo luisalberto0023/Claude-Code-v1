@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GameBot</string>
+    <string name="accessibility_service_label">GameBot Touch Controller</string>
+    <string name="accessibility_service_description">
+        GameBot uses this permission to inject touch gestures (taps, swipes, scrolls)
+        into any app so it can play mobile games autonomously on your behalf.
+        No data is read from other apps — only touch commands are sent.
+    </string>
+</resources>

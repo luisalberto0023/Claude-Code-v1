@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Network (Claude API) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Foreground service to keep the bot alive while playing -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_ACCESSIBILITY" />
+
+    <!-- Show a transparent overlay so the user can see what the bot is targeting -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Vibrate on key actions (feedback) -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Post notifications (foreground service notification) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Wake lock: keep CPU on while bot is running -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".BotApplication"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GameBot"
+        android:usesCleartextTraffic="false">
+
+        <!-- ── Main Activity ─────────────────────────────────── -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- ── Accessibility Service ─────────────────────────── -->
+        <!--
+             This is the KEY component that replaces ADB.
+             It injects touch gestures directly into any foreground app using
+             GestureDescription, without root or USB debugging.
+             The user must enable it once in Settings → Accessibility → GameBot.
+        -->
+        <service
+            android:name=".service.GameBotAccessibilityService"
+            android:exported="false"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- ── Foreground Service (orchestrator + screen capture) ── -->
+        <!--
+             Holds the MediaProjection token (screen recording permission)
+             and runs the agent loop. Must be foreground to avoid being killed.
+        -->
+        <service
+            android:name=".service.BotForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection|connectedDevice" />
+
+    </application>
+
+</manifest>

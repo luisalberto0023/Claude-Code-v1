@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    AccessibilityService configuration.
+
+    accessibilityFeedbackType   = feedbackGeneric (we don't give audio/haptic feedback)
+    canPerformGestures          = true  — ESSENTIAL: enables GestureDescription injection
+    canRetrieveWindowContent    = false — we don't need to read the app's View hierarchy;
+                                         Claude Vision analyses screenshots instead.
+    notificationTimeout         = 100ms — how quickly we react to accessibility events
+                                         (kept low but we ignore events anyway)
+    flags                       = flagRequestFilterKeyEvents — capture hardware key events
+                                         so the bot can press Back/Home via KeyEvent if needed
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.gamebot.MainActivity" />
