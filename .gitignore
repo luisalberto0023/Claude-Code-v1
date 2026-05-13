@@ -1,0 +1,9 @@
+.venv/
+node_modules/
+.env
+game-agent-memory.json
+dist/
+.vite/
+*.log
+.DS_Store
+Thumbs.db
