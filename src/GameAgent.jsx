@@ -443,6 +443,25 @@ function pruneConv(messages, checkpoint) {
   return pruned;
 }
 
+// Strip ALL images (including nested in tool_results) for cheap text-only analysis calls
+function stripAllImages(messages) {
+  return messages
+    .map(m => {
+      if (typeof m.content === "string") return m;
+      if (!Array.isArray(m.content)) return m;
+      const filtered = m.content
+        .filter(c => c.type !== "image")
+        .map(c => {
+          if (c.type === "tool_result" && Array.isArray(c.content)) {
+            return { ...c, content: c.content.filter(x => x.type !== "image") };
+          }
+          return c;
+        });
+      return filtered.length > 0 ? { ...m, content: filtered } : null;
+    })
+    .filter(Boolean);
+}
+
 async function buildChkRequest(providerKey, model, systemPrompt, messages, apiKey, onRetry) {
   try {
     const resp = await callAI(
@@ -590,14 +609,33 @@ const TOOLS = [
   },
   {
     name: "analyse_game_state",
-    description: "Think through the game state and strategy. No action taken — use for reasoning.",
+    description: "Think through the game state and strategy. No action taken — use for reasoning. REQUIRED before every physical action.",
     input_schema: {
       type: "object",
       properties: {
-        analysis: { type: "string", description: "Your analysis of the current game state" },
+        analysis: { type: "string", description: "Your analysis of the current game state and what you intend to do next" },
         strategy: { type: "string", description: "Strategy being applied" },
       },
       required: ["analysis"],
+    },
+  },
+  {
+    name: "set_goals",
+    description: "Define or update the ordered list of sub-goals working toward the main objective. Call once at the start of play to plan, then update currentIndex as you complete each goal.",
+    input_schema: {
+      type: "object",
+      properties: {
+        goals: {
+          type: "array",
+          items: { type: "string" },
+          description: "Ordered list of sub-goals. Each should be a concrete, verifiable step.",
+        },
+        currentIndex: {
+          type: "integer",
+          description: "Index (0-based) of the goal you are currently working on. Increment as goals are completed.",
+        },
+      },
+      required: ["goals"],
     },
   },
   {
@@ -716,6 +754,8 @@ export default function GameAgent() {
   const [gameResult, setGameResult] = useState(null);
   const [memoryData, setMemoryData] = useState(null);
   const [milestones, setMilestones] = useState([]);
+  const [goals, setGoals] = useState([]);
+  const [currentGoalIndex, setCurrentGoalIndex] = useState(0);
   const [lastConfirm, setLastConfirm] = useState(null);
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [screenInfo, setScreenInfo] = useState(null);
@@ -740,6 +780,8 @@ export default function GameAgent() {
   const turnCountRef = useRef(0);
   const tokenRef = useRef({ input: 0, output: 0 });
   const currentScoreRef = useRef(null);
+  const goalsRef = useRef([]);
+  const currentGoalIndexRef = useRef(0);
   const streamRef = useRef(null);
   const logEndRef = useRef(null);
   const gameEndRef = useRef(null); // set by signal_game_end tool
@@ -916,7 +958,19 @@ export default function GameAgent() {
     if (toolName === "analyse_game_state") {
       if (toolInput.strategy) addLog(`Strategy: ${toolInput.strategy}`, "info");
       addLog(`Analysis: ${toolInput.analysis?.slice(0, 200)}`, "info");
-      return toolResult("Analysis noted.");
+      return toolResult("Analysis noted. Now take the action you described.");
+    }
+
+    if (toolName === "set_goals") {
+      const newGoals = Array.isArray(toolInput.goals) ? toolInput.goals : [];
+      const newIdx = typeof toolInput.currentIndex === "number" ? toolInput.currentIndex : 0;
+      setGoals(newGoals);
+      setCurrentGoalIndex(newIdx);
+      goalsRef.current = newGoals;
+      currentGoalIndexRef.current = newIdx;
+      const active = newGoals[newIdx] ?? "n/a";
+      addLog(`Goals (${newIdx + 1}/${newGoals.length}): now working on "${active}"`, "info");
+      return toolResult(`Goals set: ${newGoals.length} total. Currently on goal ${newIdx + 1}: "${active}".`);
     }
 
     if (toolName === "update_memory") {
@@ -964,20 +1018,25 @@ export default function GameAgent() {
     // Prune conversation window
     convRef.current = pruneConv(convRef.current, checkpointRef.current);
 
-    // Capture current frame and add turn message
+    // Build turn message with current-goal context
+    const goalLine = goalsRef.current.length > 0
+      ? `\nCurrent goal (${currentGoalIndexRef.current + 1}/${goalsRef.current.length}): ${goalsRef.current[currentGoalIndexRef.current] ?? "n/a"}`
+      : "";
+    const turnText = `Turn ${turnCountRef.current}.${goalLine}\nFirst call analyse_game_state, then take your next action.`;
+
     const frame = captureFrame(videoRef.current, canvasRef.current, scaleRef);
     if (frame) {
       convRef.current.push({
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
-          { type: "text", text: `Turn ${turnCountRef.current}. Observe the screen and take your next action.` },
+          { type: "text", text: turnText },
         ],
       });
     } else {
       convRef.current.push({
         role: "user",
-        content: `Turn ${turnCountRef.current}. Screen unavailable. What is your next action?`,
+        content: `${turnText} (screen unavailable)`,
       });
     }
 
@@ -1073,11 +1132,15 @@ export default function GameAgent() {
     turnCountRef.current = 0;
     tokenRef.current = { input: 0, output: 0 };
     currentScoreRef.current = null;
+    goalsRef.current = [];
+    currentGoalIndexRef.current = 0;
 
     setRunning(true);
     setGameResult(null);
     setCurrentScore(null);
     setMilestones([]);
+    setGoals([]);
+    setCurrentGoalIndex(0);
     setLog([]);
     setTurnCount(0);
     setTokenCount({ input: 0, output: 0 });
@@ -1115,28 +1178,30 @@ TOOLS AVAILABLE:
 - observe_screen / read_screen_text: See the current screen
 - click, drag, scroll, move_mouse: Mouse control (use image-space pixel coordinates)
 - press_key, hold_key, type_text: Keyboard control
-- analyse_game_state: Think through strategy (no action taken)
-- update_memory: Save discoveries for future sessions
+- analyse_game_state: REQUIRED reasoning step before every physical action
+- set_goals: Define and track your ordered sub-goals toward the main objective
+- update_memory: Save discoveries and strategies for future sessions
 - report_progress: Report scores and milestones
 - signal_game_end: Call when the game is over
 
-WORKFLOW PER TURN:
-1. Use observe_screen to see current state
-2. Use analyse_game_state to reason about best move
-3. Take action (click, press_key, etc.)
-4. Observe result if needed
-5. Report scores with report_progress
-6. Call signal_game_end when game over is detected
+CRITICAL WORKFLOW RULES (follow every turn):
+1. ALWAYS call analyse_game_state FIRST before any physical action (click, press_key, drag, scroll, type_text, move_mouse, hold_key). State what you see, what you intend to do, and why. This is non-negotiable.
+2. Exception: observe_screen, read_screen_text, set_goals, update_memory, report_progress, signal_game_end do NOT need analyse_game_state first.
+3. On the FIRST play turn, call set_goals to plan an ordered list of 3-6 concrete sub-goals working toward the main objective.
+4. As you complete sub-goals, call set_goals again to update currentIndex. You may also rewrite the goal list if the situation changes.
+5. After taking an action, the response tells you whether the screen changed. If unchanged, try a different position/key/approach.
+6. Call report_progress whenever you achieve a milestone or read a new score.
+7. Call signal_game_end immediately when you detect win/loss/game-over.
+8. Call update_memory when you discover something repeatable worth remembering across sessions.
 
 COORDINATE SYSTEM:
 - All x,y coordinates are in the DOWNSCALED image space (max 1280px wide)
 - The backend auto-scales to real screen pixels
 - Be precise — click exactly on game elements
 
-IMPORTANT:
-- After each action, the response tells you whether the screen changed
-- If screen unchanged after a click, try a different position or action
-- Save strategies and discoveries with update_memory periodically${memCtx}${researchCtx}`;
+REASONING STYLE (for analyse_game_state):
+- Be concise: 1-3 sentences max
+- State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}`;
 
     // Study phase — 3 observe-only turns to understand the game state
     setPhase("study");
@@ -1218,7 +1283,50 @@ IMPORTANT:
       }
     }
 
-    // Save session memory
+    // Post-session analysis — use the LLM to extract structured lessons
+    let analysis = null;
+    if (turnCountRef.current >= 3) {
+      addLog("Running post-session analysis...", "info");
+      try {
+        const analysisPrompt = `You just completed a session of "${gameDesc}".
+Outcome: ${finalOutcome}
+Final score: ${finalScore ?? "unknown"}
+Turns played: ${turnCountRef.current}
+Goals at end: ${goalsRef.current.length > 0 ? goalsRef.current.map((g, i) => `${i === currentGoalIndexRef.current ? "▶" : i < currentGoalIndexRef.current ? "✓" : "○"} ${g}`).join("; ") : "none set"}
+
+Review the conversation above and respond with ONLY a valid JSON object in this exact format (no markdown, no commentary):
+{
+  "bestStrategy": "the single most effective strategy used (under 100 chars)",
+  "strategyReason": "why this strategy worked (under 100 chars)",
+  "discoveries": ["new game fact 1", "new game fact 2"],
+  "mistakes": ["specific mistake or stuck pattern to avoid 1", "..."],
+  "nextSessionRule": "one concrete rule to follow next session (under 100 chars)"
+}
+
+Be specific and game-actionable. Each discovery and mistake should be under 100 chars. Empty arrays are fine if nothing applies.`;
+
+        const analysisResp = await callAI(
+          providerKey, model,
+          "You are a game session analyst. Respond with ONLY valid JSON — no markdown fences, no commentary.",
+          [...stripAllImages(convRef.current).slice(-40), { role: "user", content: analysisPrompt }],
+          [], apiKey, msg => addLog(msg, "warn")
+        );
+        const text = analysisResp.content?.find(c => c.type === "text")?.text ?? "";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          analysis = JSON.parse(jsonMatch[0]);
+          if (analysis.nextSessionRule) addLog(`Rule for next session: ${analysis.nextSessionRule}`, "success");
+          if (analysis.bestStrategy) addLog(`Best strategy: ${analysis.bestStrategy}`, "success");
+        } else {
+          addLog("Analysis returned no JSON — saving raw text as discovery", "warn");
+          analysis = { discoveries: [text.slice(0, 200)] };
+        }
+      } catch (e) {
+        addLog(`Analysis failed: ${e.message}`, "warn");
+      }
+    }
+
+    // Save session memory (one consolidated call including analysis output)
     const durationSeconds = Math.round((Date.now() - startTime) / 1000);
     try {
       await saveMemory(gameKey, {
@@ -1227,6 +1335,10 @@ IMPORTANT:
         score: finalScore,
         durationSeconds,
         turnCount: turnCountRef.current,
+        strategy: analysis?.bestStrategy,
+        strategyReason: analysis?.strategyReason ?? analysis?.nextSessionRule,
+        discoveries: analysis?.discoveries,
+        avoidPatterns: analysis?.mistakes,
       });
       const updatedMem = await loadMemory(gameKey);
       setMemoryData(updatedMem);
@@ -1424,6 +1536,29 @@ IMPORTANT:
             )}
           </div>
         </div>
+
+        {/* Goals */}
+        {goals.length > 0 && (
+          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}`, background: "#0a0a18" }}>
+            <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>
+              GOALS ({Math.min(currentGoalIndex, goals.length)}/{goals.length})
+            </div>
+            {goals.map((g, i) => {
+              const done = i < currentGoalIndex;
+              const active = i === currentGoalIndex;
+              return (
+                <div key={i} style={{
+                  fontSize: 11, marginBottom: 3, lineHeight: 1.4,
+                  color: done ? C.green : active ? C.accentL : C.dim,
+                  fontWeight: active ? 700 : 400,
+                }}>
+                  <span style={{ marginRight: 5 }}>{done ? "✓" : active ? "▶" : "○"}</span>
+                  {g}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Checklist */}
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
