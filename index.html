@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RiskForge — Enterprise IT Risk & Compliance Templates | NIST CSF 2.0 · PCI DSS v4.0</title>
+<meta name="description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0 compliance workbooks — built by IT Risk and Compliance experts. One-time purchase, instant download. Starting at $99.">
+<link rel="canonical" href="https://riskforge.tech/">
+<meta property="og:title" content="RiskForge — Enterprise IT Risk & Compliance Templates">
+<meta property="og:description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0 compliance workbooks built by practitioners. One-time purchase, instant download.">
+<meta property="og:url" content="https://riskforge.tech/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="RiskForge">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="RiskForge — Enterprise IT Risk & Compliance Templates">
+<meta name="twitter:description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0 compliance workbooks. Starting at $99.">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23C8F000'/><text x='16' y='22' font-family='sans-serif' font-weight='900' font-size='14' text-anchor='middle' fill='%23000000'>RF</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Syne:wght@700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+:root{
+  --black:#000000;--white:#FFFFFF;--off:#F0EEE9;--paper:#FAFAF8;
+  --lime:#C8F000;--lime-dk:#A8CC00;--gray-1:#111111;--gray-2:#1C1C1C;
+  --gray-3:#2A2A2A;--gray-lt:#888888;--rule:#222222;--rule-lt:#E0DDD8;
+}
+body{font-family:'Space Grotesk',sans-serif;background:var(--black);color:var(--white);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+
+/* NAV */
+nav{position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;background:var(--black);border-bottom:1px solid var(--rule)}
+.logo{display:flex;align-items:center;gap:12px;text-decoration:none}
+.logo-mark{width:30px;height:30px;background:var(--lime);display:grid;place-items:center;font-family:'Syne',sans-serif;font-weight:800;font-size:12px;color:var(--black)}
+.logo-name{font-family:'Syne',sans-serif;font-weight:800;font-size:16px;color:var(--white);letter-spacing:-.02em}
+.nav-links{list-style:none;display:flex;align-items:center;gap:8px}
+.nav-links a{font-family:'Space Mono',monospace;font-size:10px;color:var(--gray-lt);text-decoration:none;padding:6px 14px;border:1px solid transparent;letter-spacing:.06em;text-transform:uppercase;transition:color .15s,border-color .15s}
+.nav-links a:hover{color:var(--white);border-color:var(--rule)}
+.nav-cta{background:var(--lime)!important;color:var(--black)!important;border-color:var(--lime)!important;font-weight:700!important}
+.nav-cta:hover{background:var(--lime-dk)!important;border-color:var(--lime-dk)!important}
+
+/* HERO */
+.hero{background:var(--black);min-height:calc(100vh - 56px);display:flex;flex-direction:column;justify-content:space-between;padding:48px 48px 64px;position:relative;overflow:hidden;border-bottom:1px solid var(--rule)}
+.hero-bg-text{position:absolute;top:50%;left:-2%;transform:translateY(-54%);font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(14rem,22vw,22rem);color:transparent;-webkit-text-stroke:1px rgba(255,255,255,0.04);letter-spacing:-.04em;line-height:.9;pointer-events:none;user-select:none;white-space:nowrap}
+.hero-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:0;position:relative;z-index:2}
+.hero-tag{font-family:'Space Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase;border:1px solid rgba(200,240,0,.25);padding:6px 14px;animation:fadeUp .5s ease both}
+.hero-version{font-family:'Space Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.12em;text-transform:uppercase;animation:fadeUp .5s .1s ease both}
+.hero-body{position:relative;z-index:2;padding-top:40px}
+.hero h1{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.9rem,3.8vw,3.6rem);color:var(--white);max-width:900px;margin-bottom:40px;animation:fadeUp .6s .15s ease both}
+.hero h1 .accent{color:var(--lime)}
+.hero h1 .thin{font-weight:700;color:rgba(255,255,255,.35)}
+.hero-bottom{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end;position:relative;z-index:2;animation:fadeUp .6s .25s ease both}
+.hero-sub{font-size:15px;font-weight:300;color:var(--gray-lt);line-height:1.8;max-width:460px}
+.hero-actions{display:flex;flex-direction:column;align-items:flex-end;gap:12px}
+.btn-lime{display:inline-flex;align-items:center;gap:10px;background:var(--lime);color:var(--black);font-family:'Space Mono',monospace;font-weight:700;font-size:11px;padding:14px 28px;text-decoration:none;letter-spacing:.1em;text-transform:uppercase;transition:background .15s,transform .15s}
+.btn-lime:hover{background:var(--lime-dk);transform:translateY(-1px)}
+.btn-wire{display:inline-flex;align-items:center;gap:10px;background:transparent;color:var(--white);font-family:'Space Mono',monospace;font-size:11px;padding:14px 28px;border:1px solid var(--rule);text-decoration:none;letter-spacing:.1em;text-transform:uppercase;transition:border-color .15s}
+.btn-wire:hover{border-color:rgba(255,255,255,.35)}
+
+
+
+/* STATS */
+.stats-band{background:var(--gray-1);border-bottom:1px solid var(--rule);display:grid;grid-template-columns:repeat(5,1fr)}
+.stat-cell{padding:36px 32px;border-right:1px solid var(--rule);display:flex;flex-direction:column;gap:6px}
+.stat-cell:last-child{border-right:none}
+.stat-num{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.4rem,2.5vw,2rem);color:var(--white);line-height:1;letter-spacing:-.03em}
+.stat-num span{color:var(--lime)}
+.stat-lbl{font-family:'Space Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase}
+
+/* BAND HEADER */
+.band-header{display:flex;align-items:center;gap:20px;padding:20px 48px;border-bottom:1px solid var(--rule)}
+.band-num{font-family:'Space Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase}
+.band-rule{flex:1;height:1px;background:var(--rule)}
+.band-title-text{font-family:'Space Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase}
+
+/* PROBLEM */
+.problem-band{background:var(--black);border-bottom:1px solid var(--rule)}
+.problem-content{display:grid;grid-template-columns:1fr 1fr}
+.problem-left{padding:56px 48px;border-right:1px solid var(--rule)}
+.problem-h2{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.6rem,2.8vw,2.6rem);color:var(--white);line-height:1.1;letter-spacing:-.03em;margin-bottom:32px}
+.problem-h2 em{font-style:normal;color:var(--lime)}
+.pain-rows{display:flex;flex-direction:column;gap:0}
+.pain-row{display:flex;gap:20px;padding:20px 0;border-top:1px solid var(--rule);align-items:flex-start}
+.pain-idx{font-family:'Space Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.1em;flex-shrink:0;width:24px;margin-top:3px}
+.pain-title{font-size:13.5px;font-weight:600;color:var(--white);margin-bottom:4px}
+.pain-desc{font-size:12.5px;font-weight:300;color:var(--gray-lt);line-height:1.7}
+.problem-right{padding:56px 48px;display:flex;flex-direction:column;justify-content:center}
+.cost-label{font-family:'Space Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.2em;text-transform:uppercase;margin-bottom:28px}
+.cost-rows{display:flex;flex-direction:column;gap:0}
+.cost-row{display:flex;align-items:center;justify-content:space-between;padding:16px 0;border-top:1px solid var(--rule)}
+.cost-row:last-child{border-bottom:1px solid var(--rule)}
+.cost-name{font-size:12.5px;font-weight:300;color:var(--gray-lt)}
+.cost-row.winner .cost-name{color:var(--lime);font-weight:600;font-size:13px}
+.cost-val{font-family:'Syne',sans-serif;font-weight:800;font-size:1.3rem;color:var(--white);letter-spacing:-.02em}
+.cost-val.red{color:#FF5555}
+.cost-val.amber{color:#FFAA44}
+.cost-val.lime{color:var(--lime);font-size:1.8rem}
+.cost-vs{text-align:center;font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:rgba(255,255,255,.12);padding:10px 0}
+.cost-note{margin-top:20px;font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:rgba(255,255,255,.15);text-align:center}
+
+/* PRODUCTS */
+.products-band{background:var(--gray-1);border-bottom:1px solid var(--rule)}
+.products-intro{padding:56px 48px 40px;border-bottom:1px solid var(--rule);display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end}
+.products-h2{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.03em;line-height:1.1}
+.products-sub{font-size:13.5px;font-weight:300;color:var(--gray-lt);line-height:1.75}
+.product-row{display:grid;grid-template-columns:60px 1fr 200px 200px 160px;align-items:center;gap:0;border-bottom:1px solid var(--rule);transition:background .15s}
+.product-row:hover{background:var(--gray-2)}
+.product-row.featured{background:var(--gray-2)}
+.product-row.featured:hover{background:var(--gray-3)}
+.pr-num{padding:28px 0 28px 28px;font-family:'Space Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.1em;border-right:1px solid var(--rule)}
+.pr-info{padding:28px 32px;border-right:1px solid var(--rule)}
+.pr-tag{font-family:'Space Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase;margin-bottom:8px}
+.product-row.featured .pr-tag{color:var(--lime)}
+.pr-name{font-family:'Syne',sans-serif;font-weight:700;font-size:1.1rem;color:var(--white);letter-spacing:-.02em;margin-bottom:6px}
+.pr-desc{font-size:12px;font-weight:300;color:var(--gray-lt);line-height:1.6;max-width:400px}
+.pr-includes{padding:28px 24px;border-right:1px solid var(--rule);align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.pr-inc-label{font-family:'Space Mono',monospace;font-size:8px;color:rgba(255,255,255,.2);letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px}
+.pr-inc-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+.pr-inc-list li{font-size:11.5px;font-weight:300;color:var(--gray-lt);padding-left:14px;position:relative;line-height:1.4}
+.pr-inc-list li::before{content:'↳';position:absolute;left:0;color:var(--lime);font-size:9px;top:1px}
+.soon{color:var(--lime);font-size:9px;margin-left:4px}
+.pr-price{padding:28px 24px;border-right:1px solid var(--rule);align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.pr-price-label{font-family:'Space Mono',monospace;font-size:8px;color:rgba(255,255,255,.2);letter-spacing:.18em;text-transform:uppercase;margin-bottom:8px}
+.pr-price-main{font-family:'Syne',sans-serif;font-weight:800;font-size:2rem;color:var(--white);letter-spacing:-.03em;line-height:1}
+.product-row.featured .pr-price-main{color:var(--lime)}
+.pr-price-note{font-size:10px;font-weight:300;color:rgba(255,255,255,.25);margin-top:5px}
+.pr-action{padding:28px 24px;display:flex;align-items:center;justify-content:center}
+.btn-row{display:block;text-align:center;font-family:'Space Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:12px 20px;text-decoration:none;border:1px solid var(--rule);color:var(--gray-lt);transition:border-color .15s,color .15s;white-space:nowrap}
+.btn-row:hover{border-color:var(--white);color:var(--white)}
+.btn-row.primary{background:var(--lime);color:var(--black);border-color:var(--lime)}
+.btn-row.primary:hover{background:var(--lime-dk);border-color:var(--lime-dk)}
+
+/* FRAMEWORKS */
+.fw-band{background:var(--black);border-bottom:1px solid var(--rule)}
+.fw-intro{padding:56px 48px 40px;border-bottom:1px solid var(--rule)}
+.fw-h2{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.03em;line-height:1.1;margin-bottom:12px}
+.fw-sub{font-size:13.5px;font-weight:300;color:var(--gray-lt);line-height:1.7;max-width:520px}
+.fw-grid{display:grid;grid-template-columns:repeat(6,1fr);border-top:1px solid var(--rule)}
+.fw-cell{padding:32px 24px;border-right:1px solid var(--rule);transition:background .15s}
+.fw-cell:last-child{border-right:none}
+.fw-cell:hover{background:var(--gray-1)}
+.fw-cell.live{border-top:2px solid var(--lime)}
+.fw-chip{display:inline-block;font-family:'Space Mono',monospace;font-size:8.5px;font-weight:700;letter-spacing:.1em;padding:2px 8px;margin-bottom:14px;text-transform:uppercase}
+.chip-nist{background:rgba(67,56,202,.2);color:#818CF8}
+.chip-pci{background:rgba(146,64,14,.2);color:#D97706}
+.chip-800{background:rgba(22,101,52,.2);color:#4ADE80}
+.chip-cri{background:rgba(157,23,77,.2);color:#F472B6}
+.chip-ccm{background:rgba(29,78,216,.2);color:#60A5FA}
+.chip-cobit{background:rgba(194,65,12,.2);color:#FB923C}
+.fw-name{font-family:'Syne',sans-serif;font-weight:700;font-size:.9rem;color:var(--white);margin-bottom:8px;line-height:1.25;letter-spacing:-.01em}
+.fw-desc{font-size:11.5px;font-weight:300;color:var(--gray-lt);line-height:1.65}
+.fw-status{display:inline-flex;align-items:center;gap:6px;margin-top:14px;font-family:'Space Mono',monospace;font-size:8.5px;letter-spacing:.12em;text-transform:uppercase}
+.dot{width:5px;height:5px;border-radius:50%}
+.dot-lime{background:var(--lime);box-shadow:0 0 5px var(--lime)}
+.dot-gray{background:var(--gray-lt)}
+.status-lime{color:var(--lime)}
+.status-gray{color:var(--gray-lt)}
+
+/* ABOUT */
+.about-band{background:var(--gray-1);border-bottom:1px solid var(--rule)}
+.about-content{display:grid;grid-template-columns:1fr 1fr}
+.about-left{padding:56px 48px;border-right:1px solid var(--rule)}
+.about-eyebrow{font-family:'Space Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.2em;text-transform:uppercase;margin-bottom:20px}
+.about-h2{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.03em;line-height:1.1;margin-bottom:20px}
+.about-body{font-size:14px;font-weight:300;color:var(--gray-lt);line-height:1.85;margin-bottom:32px}
+.about-quote{border-left:2px solid var(--lime);padding-left:20px}
+.about-quote p{font-size:14px;font-weight:300;font-style:italic;color:rgba(255,255,255,.5);line-height:1.8}
+.about-right{display:flex;flex-direction:column}
+.cred-row{display:flex;gap:20px;align-items:flex-start;padding:24px 48px;border-bottom:1px solid var(--rule);transition:background .15s}
+.cred-row:hover{background:var(--gray-2)}
+.cred-ico{width:36px;height:36px;background:var(--black);display:grid;place-items:center;font-size:16px;flex-shrink:0;border:1px solid var(--rule)}
+.cred-title{font-size:13px;font-weight:600;color:var(--white);margin-bottom:4px;line-height:1.3}
+.cred-detail{font-size:11.5px;font-weight:300;color:var(--gray-lt);line-height:1.6}
+
+/* FAQ */
+.faq-band{background:var(--black);border-bottom:1px solid var(--rule)}
+.faq-content{display:grid;grid-template-columns:280px 1fr}
+.faq-sidebar{padding:56px 48px;border-right:1px solid var(--rule)}
+.faq-sidebar-eyebrow{font-family:'Space Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.2em;text-transform:uppercase;margin-bottom:20px}
+.faq-sidebar-h2{font-family:'Syne',sans-serif;font-weight:800;font-size:2rem;color:var(--white);letter-spacing:-.03em;line-height:1.1}
+.faq-list{border-top:1px solid var(--rule)}
+.faq-item{border-bottom:1px solid var(--rule);cursor:pointer}
+.faq-q{padding:22px 48px;display:flex;align-items:center;justify-content:space-between;gap:20px;font-size:13.5px;font-weight:500;color:var(--white);user-select:none;transition:color .15s}
+.faq-item:hover .faq-q{color:var(--lime)}
+.faq-toggle{width:24px;height:24px;border:1px solid var(--rule);display:grid;place-items:center;font-size:14px;color:var(--gray-lt);flex-shrink:0;transition:transform .25s,background .15s,color .15s;font-weight:300}
+.faq-item.open .faq-toggle{transform:rotate(45deg);background:var(--lime);color:var(--black);border-color:var(--lime)}
+.faq-a{max-height:0;overflow:hidden;transition:max-height .35s ease,padding .25s;font-size:13px;font-weight:300;color:var(--gray-lt);line-height:1.8;padding:0 48px}
+.faq-item.open .faq-a{max-height:300px;padding-bottom:22px}
+
+/* FINAL CTA */
+.final-band{background:var(--lime);padding:80px 48px;display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;border-bottom:1px solid var(--rule)}
+.final-h2{font-family:'Syne',sans-serif;font-weight:800;font-size:clamp(1.6rem,3vw,3rem);color:var(--black);letter-spacing:-.04em;line-height:1.05}
+.final-h2 em{font-style:normal;text-decoration:underline;text-decoration-thickness:3px}
+.final-sub{font-size:14px;font-weight:400;color:rgba(0,0,0,.6);line-height:1.8;margin-top:16px}
+.final-actions{display:flex;flex-direction:column;gap:12px}
+.btn-black{display:block;text-align:center;background:var(--black);color:var(--lime);font-family:'Space Mono',monospace;font-weight:700;font-size:11px;padding:16px 28px;text-decoration:none;letter-spacing:.12em;text-transform:uppercase;transition:background .15s}
+.btn-black:hover{background:#111}
+.btn-black-outline{display:block;text-align:center;background:transparent;color:var(--black);font-family:'Space Mono',monospace;font-size:11px;padding:16px 28px;border:2px solid var(--black);text-decoration:none;letter-spacing:.12em;text-transform:uppercase;transition:background .15s,color .15s}
+.btn-black-outline:hover{background:var(--black);color:var(--lime)}
+.final-note{font-family:'Space Mono',monospace;font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:rgba(0,0,0,.4);text-align:center;margin-top:4px}
+
+/* FOOTER */
+footer{background:var(--black);padding:28px 48px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--rule);flex-wrap:wrap;gap:16px}
+.footer-left{display:flex;align-items:center;gap:12px}
+.footer-mark{width:26px;height:26px;background:var(--lime);display:grid;place-items:center;font-family:'Syne',sans-serif;font-weight:800;font-size:10px;color:var(--black)}
+.footer-name{font-family:'Syne',sans-serif;font-weight:700;font-size:13px;color:rgba(255,255,255,.3);letter-spacing:-.01em}
+.footer-copy{font-family:'Space Mono',monospace;font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2)}
+.footer-links{display:flex;gap:20px}
+.footer-links a{font-family:'Space Mono',monospace;font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2);text-decoration:none;transition:color .15s}
+.footer-links a:hover{color:rgba(255,255,255,.6)}
+
+@keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
+.reveal{opacity:0;transform:translateY(20px);transition:opacity .6s ease,transform .6s ease}
+.reveal.in{opacity:1;transform:translateY(0)}
+.reveal-d1{transition-delay:.1s}
+.reveal-d2{transition-delay:.2s}
+
+@media(max-width:1000px){
+  nav{padding:0 20px}.nav-links{display:none}
+  .hero{padding:32px 24px 48px}.hero-bg-text{display:none}
+  .hero-top{flex-direction:column;align-items:flex-start;gap:12px;margin-bottom:32px}
+  .hero-bottom{grid-template-columns:1fr;gap:24px}.hero-actions{align-items:flex-start}
+  .stats-band{grid-template-columns:1fr 1fr}
+  .problem-content{grid-template-columns:1fr}
+  .problem-left{border-right:none;border-bottom:1px solid var(--rule)}
+  .problem-left,.problem-right{padding:36px 24px}
+  .products-intro{grid-template-columns:1fr;padding:36px 24px 24px}
+  .product-row{grid-template-columns:1fr}
+  .pr-num{display:none}
+  .pr-info,.pr-includes,.pr-price{border-right:none;border-bottom:1px solid var(--rule);padding:20px 24px}
+  .pr-action{padding:20px 24px;justify-content:flex-start}
+  .fw-intro{padding:36px 24px}
+  .fw-grid{grid-template-columns:1fr 1fr}
+  .fw-cell:nth-child(2n){border-right:none}
+  .fw-cell:nth-child(3),.fw-cell:nth-child(4){border-bottom:1px solid var(--rule)}
+  .about-content{grid-template-columns:1fr}
+  .about-left{border-right:none;border-bottom:1px solid var(--rule);padding:36px 24px}
+  .cred-row{padding:20px 24px}
+  .faq-content{grid-template-columns:1fr}
+  .faq-sidebar{border-right:none;border-bottom:1px solid var(--rule);padding:32px 24px}
+  .faq-q{padding:18px 24px}.faq-a{padding:0 24px}
+  .faq-item.open .faq-a{padding-bottom:18px}
+  .final-band{grid-template-columns:1fr;padding:48px 24px}
+  .band-header{padding:16px 24px}
+  footer{padding:24px 20px}
+}
+@media(max-width:640px){
+  .fw-grid{grid-template-columns:1fr 1fr}
+  .stats-band{grid-template-columns:1fr 1fr}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <a href="#" class="logo"><div class="logo-mark">RF</div><span class="logo-name">RiskForge</span></a>
+  <ul class="nav-links">
+    <li><a href="#products">Products</a></li>
+    <li><a href="#frameworks">Frameworks</a></li>
+    <li><a href="#about">About</a></li>
+    <li><a href="#faq">FAQ</a></li>
+    <li><a href="#products" class="nav-cta">Get Templates</a></li>
+  </ul>
+</nav>
+
+<section class="hero">
+  <div class="hero-bg-text">RISK</div>
+  <div class="hero-top">
+    <span class="hero-tag">Enterprise IT Risk & Compliance Templates</span>
+    <span class="hero-version">NIST CSF 2.0 · PCI DSS v4.0</span>
+  </div>
+  <div class="hero-body">
+    <h1>Stop paying $15K<br>for what an <span class="accent">expert<br>compliance team</span><br><span class="thin">already built.</span></h1>
+    <div class="hero-bottom">
+      <p class="hero-sub">Professional-grade NIST CSF 2.0 and PCI-DSS v4.0 workbooks — built by a team of IT Risk and Compliance experts with 10+ years of experience across banking, defense contracting, and financial services.</p>
+      <div class="hero-actions">
+        <a href="#products" class="btn-lime">View Templates & Pricing →</a>
+        <a href="#frameworks" class="btn-wire">See What's Included</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+
+<div class="stats-band">
+  <div class="stat-cell"><div class="stat-num">10<span>+</span></div><div class="stat-lbl">Years IT Risk & Audit</div></div>
+  <div class="stat-cell"><div class="stat-num">6</div><div class="stat-lbl">Frameworks Covered</div></div>
+  <div class="stat-cell"><div class="stat-num">100<span>+</span></div><div class="stat-lbl">Controls Documented</div></div>
+  <div class="stat-cell"><div class="stat-num">v<span>4.0</span></div><div class="stat-lbl">PCI DSS 2024-Ready</div></div>
+  <div class="stat-cell"><div class="stat-num">v<span>2.0</span></div><div class="stat-lbl">NIST CSF Feb 2024</div></div>
+</div>
+
+<div class="problem-band reveal" id="problem">
+  <div class="band-header"><span class="band-num">01</span><div class="band-rule"></div><span class="band-title-text">The Problem</span></div>
+  <div class="problem-content">
+    <div class="problem-left">
+      <h2 class="problem-h2">Compliance is <em>expensive.</em><br>It doesn't have to be.</h2>
+      <div class="pain-rows">
+        <div class="pain-row"><span class="pain-idx">01</span><div><div class="pain-title">QSA assessments start at $15,000</div><div class="pain-desc">Before remediation, retesting, and annual recertification. The meter never stops for companies without a dedicated compliance team.</div></div></div>
+        <div class="pain-row"><span class="pain-idx">02</span><div><div class="pain-title">Free templates are dangerously outdated</div><div class="pain-desc">Most reference NIST CSF 1.1 and PCI DSS v3.2.1. Regulators and auditors don't accept last year's framework.</div></div></div>
+        <div class="pain-row"><span class="pain-idx">03</span><div><div class="pain-title">Building from scratch takes months</div><div class="pain-desc">Your IT team is stretched thin. Risk registers, evidence tracking, and gap analysis fall through the cracks.</div></div></div>
+        <div class="pain-row"><span class="pain-idx">04</span><div><div class="pain-title">Big firms aren't built for your size</div><div class="pain-desc">Deloitte and PwC aren't returning your calls. RiskForge was built for exactly the gap they leave behind.</div></div></div>
+      </div>
+    </div>
+    <div class="problem-right reveal reveal-d1">
+      <div class="cost-label">Cost Comparison</div>
+      <div class="cost-rows">
+        <div class="cost-row"><span class="cost-name">QSA / Big 4 Consultant</span><span class="cost-val red">$15K+</span></div>
+        <div class="cost-row"><span class="cost-name">In-house compliance hire</span><span class="cost-val red">$95K/yr</span></div>
+        <div class="cost-row"><span class="cost-name">Compliance SaaS Platform</span><span class="cost-val amber">$12K/yr</span></div>
+        <div class="cost-vs">— versus —</div>
+        <div class="cost-row winner"><span class="cost-name">RiskForge Full Vault</span><span class="cost-val lime">$349</span></div>
+      </div>
+      <div class="cost-note">One-time purchase · Instant download · Use forever</div>
+    </div>
+  </div>
+</div>
+
+<div class="products-band reveal" id="products">
+  <div class="band-header"><span class="band-num">02</span><div class="band-rule"></div><span class="band-title-text">Pricing</span></div>
+  <div class="products-intro">
+    <h2 class="products-h2">Choose your<br>compliance level.</h2>
+    <p class="products-sub">One-time payment. Instant download. No subscriptions, no renewal fees. Secure checkout — pay and download immediately.</p>
+  </div>
+  <div class="product-row">
+    <div class="pr-num">01</div>
+    <div class="pr-info"><div class="pr-tag">Available Now</div><div class="pr-name">NIST CSF 2.0 Gap Assessment Workbook</div><p class="pr-desc">Complete workbook — all 6 CSF functions, 100+ subcategories, Executive Summary, maturity scoring, and Remediation Roadmap. Built to NIST CSF 2.0 (Feb 2024).</p></div>
+    <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>8 sheets + Executive Dashboard</li><li>GV, ID, PR, DE, RS, RC tabs</li><li>Maturity scoring 0–5 scale</li><li>Remediation Roadmap</li></ul></div>
+    <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$99</div><div class="pr-price-note">Instant download</div></div>
+    <div class="pr-action"><a href="https://payhip.com/b/9ucFo" class="btn-row primary" target="_blank">Buy NIST Pack →</a></div>
+  </div>
+  <div class="product-row">
+    <div class="pr-num">02</div>
+    <div class="pr-info"><div class="pr-tag">Available Now</div><div class="pr-name">PCI DSS v4.0 SAQ Prep Workbook</div><p class="pr-desc">SAQ type selector, SAQ-A/B/D checklists, 70+ sub-requirements with testing procedures, Evidence Tracker, and Remediation Roadmap. Mandatory since March 2024.</p></div>
+    <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>SAQ Type Selector (8 questions)</li><li>SAQ-A, B, D checklists</li><li>Evidence Tracker (18 items)</li><li>Priority scoring roadmap</li></ul></div>
+    <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$149</div><div class="pr-price-note">Instant download</div></div>
+    <div class="pr-action"><a href="https://payhip.com/b/xCJhD" class="btn-row primary" target="_blank">Buy PCI Pack →</a></div>
+  </div>
+  <div class="product-row featured">
+    <div class="pr-num">03</div>
+    <div class="pr-info"><div class="pr-tag">⭐ Best Value — Full Vault</div><div class="pr-name">RiskForge Full Compliance Vault</div><p class="pr-desc">Everything in both packs, plus NIST 800-53, CRI Profile 2.0, CCM, and COBIT as they release — at no extra cost. All future updates included.</p></div>
+    <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>NIST CSF 2.0 + PCI DSS v4.0</li><li>NIST 800-53 <span class="soon">(soon)</span></li><li>CRI · CCM · COBIT <span class="soon">(soon)</span></li><li>All future updates + support</li></ul></div>
+    <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$349</div><div class="pr-price-note">All updates included</div></div>
+    <div class="pr-action"><a href="https://payhip.com/b/cx1lY" class="btn-row primary" target="_blank">Get Full Vault →</a></div>
+  </div>
+</div>
+
+<div class="fw-band reveal" id="frameworks">
+  <div class="band-header"><span class="band-num">03</span><div class="band-rule"></div><span class="band-title-text">Frameworks</span></div>
+  <div class="fw-intro"><h2 class="fw-h2">Built around the standards that matter.</h2><p class="fw-sub">Every template aligned to the current version — not last year's. Most free resources are still on NIST CSF 1.1 and PCI DSS v3.2.1.</p></div>
+  <div class="fw-grid">
+    <div class="fw-cell live"><span class="fw-chip chip-nist">NIST CSF 2.0</span><div class="fw-name">NIST Cybersecurity Framework</div><p class="fw-desc">All 6 functions including the new Govern function (Feb 2024). 100+ subcategories with maturity scoring.</p><div class="fw-status"><div class="dot dot-lime"></div><span class="status-lime">Live</span></div></div>
+    <div class="fw-cell live"><span class="fw-chip chip-pci">PCI DSS v4.0</span><div class="fw-name">Payment Card Industry</div><p class="fw-desc">Mandatory March 2024. SAQ selector, checklists, evidence tracker, and full roadmap.</p><div class="fw-status"><div class="dot dot-lime"></div><span class="status-lime">Live</span></div></div>
+    <div class="fw-cell"><span class="fw-chip chip-800">NIST 800-53</span><div class="fw-name">Security & Privacy Controls</div><p class="fw-desc">Federal gold standard — government agencies and defense contractors. Control families + evidence mapping.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+    <div class="fw-cell"><span class="fw-chip chip-cri">CRI Profile 2.0</span><div class="fw-name">Cyber Risk Institute</div><p class="fw-desc">Financial sector's preferred profile — banks, credit unions, and fintechs aligned to NIST CSF.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+    <div class="fw-cell"><span class="fw-chip chip-ccm">CSA CCM</span><div class="fw-name">Cloud Controls Matrix</div><p class="fw-desc">Essential for AWS, Azure, and GCP environments and cloud-native organizations.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+    <div class="fw-cell"><span class="fw-chip chip-cobit">COBIT</span><div class="fw-name">COBIT Governance</div><p class="fw-desc">IT governance for audit committees, boards, and IT leadership globally.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+  </div>
+</div>
+
+<div class="about-band reveal" id="about">
+  <div class="band-header"><span class="band-num">04</span><div class="band-rule"></div><span class="band-title-text">About</span></div>
+  <div class="about-content">
+    <div class="about-left">
+      <div class="about-eyebrow">Built by practitioners</div>
+      <h2 class="about-h2">Not a template mill.<br>Real enterprise experience.</h2>
+      <p class="about-body">Every workbook in the RiskForge vault is designed by a team of IT Risk and Compliance experts — practitioners who have spent the last decade working directly with regulators, QSAs, and audit committees across some of the most regulated industries in the world.</p>
+      <div class="about-quote"><p>"Our templates aren't checklists assembled from a Google search. They come from real assessments, real control gaps, and real regulatory findings — applied across banking, defense, and financial services environments."</p></div>
+    </div>
+    <div class="about-right">
+      <div class="cred-row"><div class="cred-ico">🏦</div><div><div class="cred-title">Banking & Financial Services</div><div class="cred-detail">Risk frameworks, KRI dashboards, control committees, and regulatory reporting experience across major banking and financial services institutions.</div></div></div>
+      <div class="cred-row"><div class="cred-ico">✈️</div><div><div class="cred-title">U.S. Defense & Aerospace Sector</div><div class="cred-detail">Multi-country IT audits, internal controls assessments, and data analytics work across Fortune 500 defense and aerospace operations.</div></div></div>
+      <div class="cred-row"><div class="cred-ico">📊</div><div><div class="cred-title">Regulated Financial Services</div><div class="cred-detail">PCI-DSS, SOX, and regulatory compliance audits — evidence collection, control testing, and findings reporting across regulated FinTech and financial services environments.</div></div></div>
+      <div class="cred-row"><div class="cred-ico">🎖️</div><div><div class="cred-title">NIST CSF · PCI-DSS · NIST 800-53 · COBIT · CRI · CCM</div><div class="cred-detail">Hands-on assessment and design experience across all six frameworks in the vault — applied in real enterprise environments.</div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="faq-band reveal" id="faq">
+  <div class="band-header"><span class="band-num">05</span><div class="band-rule"></div><span class="band-title-text">FAQ</span></div>
+  <div class="faq-content">
+    <div class="faq-sidebar"><div class="faq-sidebar-eyebrow">Questions</div><h2 class="faq-sidebar-h2">Common<br>questions.</h2></div>
+    <div class="faq-list">
+      <div class="faq-item" onclick="this.classList.toggle('open')"><div class="faq-q">What format are the templates in?<div class="faq-toggle">+</div></div><p class="faq-a">All templates are delivered as .xlsx files compatible with Microsoft Excel 2016+, Microsoft 365, Google Sheets, and LibreOffice. No additional software required.</p></div>
+      <div class="faq-item" onclick="this.classList.toggle('open')"><div class="faq-q">Are these aligned to the latest framework versions?<div class="faq-toggle">+</div></div><p class="faq-a">Yes. NIST CSF 2.0 (February 2024) including the new Govern function, and PCI DSS v4.0 mandatory March 31, 2024. Most free resources are still on previous versions.</p></div>
+      <div class="faq-item" onclick="this.classList.toggle('open')"><div class="faq-q">Can I use these for client engagements?<div class="faq-toggle">+</div></div><p class="faq-a">Yes. Single license covers use within your organization or for client projects. Contact us for multi-license arrangements for consultants and MSPs.</p></div>
+      <div class="faq-item" onclick="this.classList.toggle('open')"><div class="faq-q">What happens when I buy the Full Vault?<div class="faq-toggle">+</div></div><p class="faq-a">Immediate access to both current workbooks. As new templates are completed you'll receive download links automatically at no additional charge.</p></div>
+      <div class="faq-item" onclick="this.classList.toggle('open')"><div class="faq-q">Do these replace a formal QSA assessment?<div class="faq-toggle">+</div></div><p class="faq-a">No — these workbooks help you prepare for and manage your compliance posture internally. Formal certification still requires a qualified assessor where mandated.</p></div>
+      <div class="faq-item" onclick="this.classList.toggle('open')"><div class="faq-q">What is the refund policy?<div class="faq-toggle">+</div></div><p class="faq-a">All sales are final due to the digital nature of the product. If a template has a technical issue or differs from its description, contact us within 7 days.</p></div>
+    </div>
+  </div>
+</div>
+
+<div class="final-band reveal">
+  <div>
+    <h2 class="final-h2">Your compliance<br>posture, <em>sorted<br>today.</em></h2>
+    <p class="final-sub">Download both workbooks, open in Excel or Google Sheets, and start your first gap assessment this afternoon. No consultants. No waiting. No guesswork.</p>
+  </div>
+  <div class="final-actions">
+    <a href="https://payhip.com/b/cx1lY" class="btn-black" target="_blank">Get the Full Vault — $349 →</a>
+    <a href="https://payhip.com/b/9ucFo" class="btn-black-outline" target="_blank">NIST CSF 2.0 Pack — $99 →</a>
+    <a href="https://payhip.com/b/xCJhD" class="btn-black-outline" target="_blank">PCI DSS v4.0 Pack — $149 →</a>
+    <p class="final-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</p>
+  </div>
+</div>
+
+<footer>
+  <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
+  <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
+  <div class="footer-links"><a href="#">Privacy</a><a href="#">Terms</a><a href="mailto:hello@riskforge.tech">hello@riskforge.tech</a></div>
+</footer>
+
+<script>
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(el => { if(el.isIntersecting) el.target.classList.add('in'); });
+}, { threshold: 0.08 });
+document.querySelectorAll('.reveal').forEach(el => obs.observe(el));
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+[[redirects]]
+  from = "http://riskforge.tech/*"
+  to = "https://riskforge.tech/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "http://www.riskforge.tech/*"
+  to = "https://riskforge.tech/:splat"
+  status = 301
+  force = true
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-XSS-Protection = "1; mode=block"
+    Content-Security-Policy = "default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://payhip.com; img-src 'self' data:;"
