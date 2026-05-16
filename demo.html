@@ -1,0 +1,834 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RiskForge — Interactive Product Demo | NIST CSF 2.0 · PCI DSS v4.0</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+:root{
+  --black:#000000;--white:#FFFFFF;
+  --lime:#C8F000;--lime-dk:#A8CC00;--gray-1:#111111;--gray-2:#1C1C1C;
+  --gray-3:#2A2A2A;--gray-lt:#888888;--rule:#222222;
+  --green:#22c55e;--yellow:#d4a017;--red:#FF5555;
+}
+body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--black);color:var(--white);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+
+/* NAV */
+nav{position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;background:var(--black);border-bottom:1px solid var(--rule)}
+.logo{display:flex;align-items:center;gap:12px;cursor:pointer;text-decoration:none}
+.logo-mark{width:30px;height:30px;background:var(--lime);display:grid;place-items:center;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:12px;color:var(--black);flex-shrink:0}
+.logo-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:16px;color:var(--white);letter-spacing:-.03em}
+.nav-tabs{display:flex;align-items:center;border:1px solid var(--rule)}
+.nav-tab{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);padding:9px 20px;border:none;background:transparent;cursor:pointer;letter-spacing:.08em;text-transform:uppercase;border-right:1px solid var(--rule);transition:color .15s,background .15s}
+.nav-tab:last-child{border-right:none}
+.nav-tab:hover{color:var(--white)}
+.nav-tab.active{background:var(--lime);color:var(--black);font-weight:700}
+.nav-cta{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:10px 22px;background:var(--lime);color:var(--black);border:none;cursor:pointer;transition:background .15s;text-decoration:none;display:inline-flex;align-items:center}
+.nav-cta:hover{background:var(--lime-dk)}
+
+/* SECTIONS */
+.section{display:none}
+.section.active{display:block}
+
+/* HERO */
+.hero{background:var(--black);min-height:calc(100vh - 56px);display:flex;flex-direction:column;justify-content:space-between;padding:48px 48px 64px;position:relative;overflow:hidden;border-bottom:1px solid var(--rule)}
+.hero-bg-text{position:absolute;top:50%;left:-2%;transform:translateY(-54%);font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(14rem,22vw,22rem);color:transparent;-webkit-text-stroke:1px rgba(255,255,255,0.04);letter-spacing:-.04em;line-height:.9;pointer-events:none;user-select:none;white-space:nowrap}
+.hero-top{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:2}
+.hero-tag{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase;border:1px solid rgba(200,240,0,.25);padding:6px 14px}
+.hero-ver{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.12em;text-transform:uppercase}
+.hero-body{position:relative;z-index:2;padding-top:28px}
+.hero h1{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.8rem,3.5vw,3.4rem);color:var(--white);max-width:900px;margin-bottom:40px;letter-spacing:-.04em;line-height:1.05}
+.hero h1 .accent{color:var(--lime)}
+.hero h1 .thin{font-weight:300;color:rgba(255,255,255,.35)}
+.hero-bottom{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end;position:relative;z-index:2}
+.hero-sub{font-size:15px;font-weight:300;color:var(--gray-lt);line-height:1.8;max-width:460px}
+.hero-actions{display:flex;flex-direction:column;align-items:flex-end;gap:12px}
+.btn-lime{display:inline-flex;align-items:center;gap:10px;background:var(--lime);color:var(--black);font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:11px;padding:14px 28px;border:none;cursor:pointer;letter-spacing:.08em;text-transform:uppercase;transition:background .15s,transform .15s}
+.btn-lime:hover{background:var(--lime-dk);transform:translateY(-1px)}
+.btn-wire{display:inline-flex;align-items:center;gap:10px;background:transparent;color:var(--white);font-family:'IBM Plex Mono',monospace;font-size:11px;padding:14px 28px;border:1px solid var(--rule);cursor:pointer;letter-spacing:.08em;text-transform:uppercase;transition:border-color .15s}
+.btn-wire:hover{border-color:rgba(255,255,255,.35)}
+
+/* PRODUCTS LIST */
+.products-section{background:var(--gray-1);border-bottom:1px solid var(--rule)}
+.products-intro{padding:56px 48px 40px;border-bottom:1px solid var(--rule);display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end}
+.products-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.04em;line-height:1.05}
+.products-sub{font-size:13.5px;font-weight:300;color:var(--gray-lt);line-height:1.75}
+.product-row{display:grid;grid-template-columns:60px 1fr 220px 160px;align-items:center;border-bottom:1px solid var(--rule);transition:background .15s;cursor:pointer}
+.product-row:hover{background:var(--gray-2)}
+.product-row.featured{background:var(--gray-2)}
+.product-row.featured:hover{background:var(--gray-3)}
+.pr-num{padding:28px 0 28px 28px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.1em;border-right:1px solid var(--rule);align-self:stretch;display:flex;align-items:center}
+.pr-info{padding:28px 32px;border-right:1px solid var(--rule)}
+.pr-tag{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.14em;text-transform:uppercase;margin-bottom:8px}
+.pr-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1.05rem;color:var(--white);letter-spacing:-.03em;margin-bottom:6px}
+.pr-desc{font-size:12px;font-weight:300;color:var(--gray-lt);line-height:1.6;max-width:400px}
+.pr-includes{padding:28px 24px;border-right:1px solid var(--rule);align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.pr-inc-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:rgba(255,255,255,.2);letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px}
+.pr-inc-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+.pr-inc-list li{font-size:11.5px;font-weight:300;color:var(--gray-lt);padding-left:14px;position:relative;line-height:1.4}
+.pr-inc-list li::before{content:'↳';position:absolute;left:0;color:var(--lime);font-size:9px;top:1px}
+.pr-action{padding:28px 24px;display:flex;align-items:center;justify-content:center}
+.btn-row{display:block;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:12px 20px;border:1px solid var(--rule);color:var(--gray-lt);cursor:pointer;background:transparent;transition:border-color .15s,color .15s;white-space:nowrap}
+.btn-row:hover{border-color:var(--white);color:var(--white)}
+.btn-row.primary{background:var(--lime);color:var(--black);border-color:var(--lime)}
+.btn-row.primary:hover{background:var(--lime-dk);border-color:var(--lime-dk)}
+
+/* BAND HEADER */
+.band-header{display:flex;align-items:center;gap:20px;padding:20px 48px;border-bottom:1px solid var(--rule)}
+.band-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase}
+.band-rule-line{flex:1;height:1px;background:var(--rule)}
+.band-title-text{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase}
+
+/* SECTION HEADER */
+.section-header-band{padding:56px 48px;border-bottom:1px solid var(--rule);background:var(--black)}
+.section-eyebrow{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.2em;text-transform:uppercase;margin-bottom:16px}
+.section-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.6rem,2.8vw,2.8rem);color:var(--white);letter-spacing:-.04em;line-height:1.05;margin-bottom:16px}
+.section-h2 .accent{color:var(--lime)}
+.section-desc{font-size:14px;font-weight:300;color:var(--gray-lt);line-height:1.8;max-width:520px}
+.back-btn{display:inline-flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--gray-lt);background:transparent;border:1px solid var(--rule);padding:8px 16px;cursor:pointer;margin-bottom:36px;transition:color .15s,border-color .15s}
+.back-btn:hover{color:var(--white);border-color:rgba(255,255,255,.3)}
+
+/* WORKBOOK DEMO */
+.demo-band{background:var(--gray-1);border-bottom:1px solid var(--rule)}
+.demo-inner{padding:48px}
+.demo-container{background:var(--black);border:1px solid var(--rule);overflow:hidden}
+.demo-topbar{background:var(--gray-2);border-bottom:1px solid var(--rule);padding:12px 20px;display:flex;align-items:center;gap:12px}
+.topbar-dots{display:flex;gap:6px}
+.topbar-dot{width:11px;height:11px;border-radius:50%}
+.dot-r{background:#ff5f57}.dot-y{background:#febc2e}.dot-g{background:#28c840}
+.topbar-title{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.06em;margin-left:8px}
+.sheet-tabs{display:flex;background:var(--gray-2);border-bottom:1px solid var(--rule);overflow-x:auto;scrollbar-width:none}
+.sheet-tabs::-webkit-scrollbar{display:none}
+.sheet-tab{padding:10px 18px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;white-space:nowrap;color:var(--gray-lt);background:transparent;border:none;border-right:1px solid var(--rule);transition:color .15s,background .15s}
+.sheet-tab:hover{color:var(--white);background:var(--gray-3)}
+.sheet-tab.active{background:var(--black);color:var(--lime);border-bottom:2px solid var(--lime)}
+.sheet-content{padding:28px;overflow-x:auto;min-height:360px}
+
+/* TABLES */
+.wb-table{width:100%;border-collapse:collapse;font-size:13px}
+.wb-table th{background:var(--gray-1);color:var(--gray-lt);padding:10px 14px;text-align:left;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.12em;text-transform:uppercase;font-weight:400;border-bottom:1px solid var(--rule)}
+.wb-table td{padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.5;font-size:12.5px;font-weight:300;color:var(--gray-lt)}
+.wb-table tr:last-child td{border-bottom:none}
+.wb-table tr:hover td{background:rgba(255,255,255,.012)}
+.req-id{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);font-weight:400;white-space:nowrap}
+.section-row td{background:rgba(200,240,0,.04);color:var(--lime);font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;border-bottom:1px solid var(--rule)}
+
+/* STATUS BADGES */
+.status-badge{display:inline-flex;align-items:center;padding:3px 9px;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;border:1px solid}
+.status-in-place,.status-collected{background:rgba(34,197,94,.08);color:#22c55e;border-color:rgba(34,197,94,.25)}
+.status-not-tested,.status-pending{background:rgba(212,160,23,.08);color:#d4a017;border-color:rgba(212,160,23,.25)}
+.status-not-in-place,.status-missing{background:rgba(255,85,85,.08);color:#FF5555;border-color:rgba(255,85,85,.25)}
+.status-na{background:rgba(136,136,136,.08);color:var(--gray-lt);border-color:rgba(136,136,136,.25)}
+
+/* SCORE DASHBOARD */
+.score-band{background:var(--black);border-bottom:1px solid var(--rule);padding:48px}
+.score-label-top{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.2em;text-transform:uppercase;margin-bottom:24px}
+.score-grid{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--rule)}
+.score-card{padding:24px 20px;border-right:1px solid var(--rule)}
+.score-card:last-child{border-right:none}
+.score-card-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px}
+.score-card-val{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:2rem;color:var(--white);line-height:1;margin-bottom:4px;letter-spacing:-.04em}
+.score-card-level{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.08em;margin-bottom:14px}
+.score-bar-bg{height:2px;background:var(--rule)}
+.score-bar-fill{height:100%;background:var(--lime);transition:width .8s ease}
+.findings-grid{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--rule);margin-top:24px}
+.finding-cell{padding:20px 24px;border-right:1px solid var(--rule)}
+.finding-cell:last-child{border-right:none}
+.finding-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px}
+.finding-val{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:.95rem;color:var(--white);margin-bottom:4px;letter-spacing:-.02em}
+.finding-note{font-size:11.5px;font-weight:300;color:var(--gray-lt);line-height:1.5}
+
+/* MATURITY BAR */
+.maturity-bar{display:flex;align-items:center;gap:10px}
+.maturity-track{flex:1;height:3px;background:var(--rule)}
+.maturity-fill-bar{height:100%;background:var(--lime)}
+.maturity-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--white);white-space:nowrap}
+
+/* FEATURES */
+.features-band{background:var(--black);border-bottom:1px solid var(--rule)}
+.features-grid{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--rule)}
+.feature-cell{padding:36px 32px;border-right:1px solid var(--rule);transition:background .15s}
+.feature-cell:last-child{border-right:none}
+.feature-cell:hover{background:var(--gray-1)}
+.feature-icon{font-size:1.4rem;margin-bottom:16px}
+.feature-title{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:.95rem;color:var(--white);margin-bottom:10px;letter-spacing:-.03em}
+.feature-desc{font-size:12px;font-weight:300;color:var(--gray-lt);line-height:1.7}
+
+/* CTA BAND */
+.cta-band{background:var(--lime);padding:56px 48px;display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;border-bottom:1px solid var(--rule)}
+.cta-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.4rem,2.5vw,2.4rem);color:var(--black);letter-spacing:-.04em;line-height:1.05}
+.cta-h2 em{font-style:normal;text-decoration:underline;text-decoration-thickness:3px}
+.cta-sub{font-size:13px;font-weight:400;color:rgba(0,0,0,.55);line-height:1.8;margin-top:12px}
+.cta-actions{display:flex;flex-direction:column;gap:10px}
+.btn-black{display:block;text-align:center;background:var(--black);color:var(--lime);font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:11px;padding:16px 28px;text-decoration:none;letter-spacing:.1em;text-transform:uppercase;border:none;cursor:pointer;transition:background .15s}
+.btn-black:hover{background:#111}
+.btn-outline-black{display:block;text-align:center;background:transparent;color:var(--black);font-family:'IBM Plex Mono',monospace;font-size:11px;padding:14px 28px;border:2px solid var(--black);text-decoration:none;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:background .15s,color .15s}
+.btn-outline-black:hover{background:var(--black);color:var(--lime)}
+.cta-note{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:rgba(0,0,0,.35);text-align:center;margin-top:4px}
+
+/* VAULT — VALUE COMPARISON */
+.value-band{background:var(--gray-1);border-bottom:1px solid var(--rule);padding:48px}
+.value-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:0;align-items:stretch;border:1px solid var(--rule)}
+.value-col{padding:36px 40px}
+.value-col.individual{border-right:1px solid var(--rule)}
+.value-col.vault{background:rgba(200,240,0,.04);border-left:2px solid var(--lime)}
+.value-vs{display:flex;align-items:center;justify-content:center;padding:0 32px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:rgba(255,255,255,.15);letter-spacing:.2em;text-transform:uppercase;border-right:1px solid var(--rule)}
+.value-label{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.18em;text-transform:uppercase;margin-bottom:20px}
+.value-items{display:flex;flex-direction:column;gap:12px;margin-bottom:24px}
+.value-item{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--rule)}
+.value-item:last-child{border-bottom:none}
+.value-item-name{font-size:13px;font-weight:300;color:var(--gray-lt)}
+.value-item-price{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;color:var(--white);letter-spacing:-.03em}
+.value-total{display:flex;justify-content:space-between;align-items:center;padding-top:16px;border-top:2px solid var(--rule)}
+.value-total-label{font-size:13px;font-weight:500;color:var(--white)}
+.value-total-price{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.4rem;letter-spacing:-.04em}
+.value-total-price.crossed{color:var(--gray-lt);text-decoration:line-through;font-size:1.1rem}
+.value-total-price.lime{color:var(--lime);font-size:1.8rem}
+.value-note{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.2);margin-top:12px}
+.value-bonus{margin-top:20px;padding:14px 16px;border:1px solid rgba(200,240,0,.2);background:rgba(200,240,0,.04)}
+.value-bonus-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--lime);letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px}
+.value-bonus-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+.value-bonus-list li{font-size:11.5px;font-weight:300;color:var(--gray-lt);padding-left:14px;position:relative;line-height:1.4}
+.value-bonus-list li::before{content:'↳';position:absolute;left:0;color:var(--lime);font-size:9px;top:1px}
+
+/* VAULT — FRAMEWORKS GRID */
+.fw-band{background:var(--black);border-bottom:1px solid var(--rule)}
+.fw-intro{padding:48px 48px 32px;border-bottom:1px solid var(--rule)}
+.fw-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.4rem,2.2vw,2rem);color:var(--white);letter-spacing:-.04em;line-height:1.05;margin-bottom:10px}
+.fw-sub{font-size:13px;font-weight:300;color:var(--gray-lt);line-height:1.7;max-width:520px}
+.fw-grid{display:grid;grid-template-columns:repeat(6,1fr);border-top:1px solid var(--rule)}
+.fw-cell{padding:28px 20px;border-right:1px solid var(--rule);transition:background .15s}
+.fw-cell:last-child{border-right:none}
+.fw-cell:hover{background:var(--gray-1)}
+.fw-cell.live{border-top:2px solid var(--lime)}
+.fw-chip{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;padding:2px 8px;margin-bottom:12px;text-transform:uppercase}
+.chip-nist{background:rgba(67,56,202,.2);color:#818CF8}
+.chip-pci{background:rgba(146,64,14,.2);color:#D97706}
+.chip-800{background:rgba(22,101,52,.2);color:#4ADE80}
+.chip-cri{background:rgba(157,23,77,.2);color:#F472B6}
+.chip-ccm{background:rgba(29,78,216,.2);color:#60A5FA}
+.chip-cobit{background:rgba(194,65,12,.2);color:#FB923C}
+.fw-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:.85rem;color:var(--white);margin-bottom:6px;line-height:1.25;letter-spacing:-.03em}
+.fw-desc{font-size:11px;font-weight:300;color:var(--gray-lt);line-height:1.65}
+.fw-status{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.12em;text-transform:uppercase}
+.dot{width:5px;height:5px;border-radius:50%}
+.dot-lime{background:var(--lime);box-shadow:0 0 5px var(--lime)}
+.dot-gray{background:var(--gray-lt)}
+.status-lime{color:var(--lime)}
+.status-gray{color:var(--gray-lt)}
+
+/* FOOTER */
+footer{background:var(--black);padding:28px 48px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--rule);flex-wrap:wrap;gap:16px}
+.footer-left{display:flex;align-items:center;gap:12px}
+.footer-mark{width:26px;height:26px;background:var(--lime);display:grid;place-items:center;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:10px;color:var(--black)}
+.footer-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:13px;color:rgba(255,255,255,.3);letter-spacing:-.02em}
+.footer-copy{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2)}
+.footer-links{display:flex;gap:20px}
+.footer-links a{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2);text-decoration:none;transition:color .15s}
+.footer-links a:hover{color:rgba(255,255,255,.6)}
+
+@media(max-width:1000px){
+  nav{padding:0 20px}.nav-tabs{display:none}
+  .hero{padding:32px 24px 48px}.hero-bg-text{display:none}
+  .hero-bottom{grid-template-columns:1fr;gap:24px}.hero-actions{align-items:flex-start}
+  .products-intro{grid-template-columns:1fr;padding:32px 24px 24px}
+  .product-row{grid-template-columns:1fr}.pr-num{display:none}
+  .pr-info,.pr-includes{border-right:none;border-bottom:1px solid var(--rule);padding:20px 24px}
+  .pr-action{padding:20px 24px;justify-content:flex-start}
+  .section-header-band{padding:36px 24px}
+  .demo-inner{padding:24px}
+  .score-band{padding:32px 24px}
+  .score-grid{grid-template-columns:repeat(3,1fr)}
+  .score-card:nth-child(3){border-right:none}
+  .score-card:nth-child(n+4){border-top:1px solid var(--rule)}
+  .findings-grid{grid-template-columns:1fr}.finding-cell{border-right:none;border-bottom:1px solid var(--rule)}
+  .features-grid{grid-template-columns:1fr 1fr}
+  .feature-cell:nth-child(2n){border-right:none}
+  .feature-cell:nth-child(n+3){border-top:1px solid var(--rule)}
+  .cta-band{grid-template-columns:1fr;padding:40px 24px}
+  .value-band{padding:32px 24px}
+  .value-grid{grid-template-columns:1fr}.value-vs{display:none}.value-col.individual{border-right:none;border-bottom:1px solid var(--rule)}.value-col.vault{border-left:none;border-top:2px solid var(--lime)}
+  .fw-grid{grid-template-columns:1fr 1fr}.fw-cell:nth-child(2n){border-right:none}.fw-cell:nth-child(3),.fw-cell:nth-child(4){border-top:1px solid var(--rule)}
+  footer{padding:24px 20px}
+  .band-header{padding:16px 24px}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="logo" onclick="showSection('home')">
+    <div class="logo-mark">RF</div>
+    <span class="logo-name">RiskForge</span>
+  </div>
+  <div class="nav-tabs">
+    <button class="nav-tab active" onclick="showSection('home')">Overview</button>
+    <button class="nav-tab" onclick="showSection('pci')">PCI DSS v4</button>
+    <button class="nav-tab" onclick="showSection('nist')">NIST CSF 2.0</button>
+    <button class="nav-tab" onclick="showSection('vault')">Full Vault</button>
+  </div>
+  <a href="https://riskforge.tech" target="_blank" class="nav-cta">riskforge.tech ↗</a>
+</nav>
+
+
+<!-- HOME -->
+<div id="home" class="section active">
+  <div class="hero">
+    <div class="hero-bg-text">DEMO</div>
+    <div class="hero-top">
+      <div class="hero-tag">Interactive Product Demo</div>
+      <div class="hero-ver">PCI DSS v4.0 · NIST CSF 2.0</div>
+    </div>
+    <div class="hero-body">
+      <h1>Stop scrambling<br><span class="thin">before your</span> <span class="accent">audit.</span></h1>
+      <div class="hero-bottom">
+        <p class="hero-sub">Professional-grade compliance workbooks built by a team of IT Risk and Compliance experts with 10+ years across banking, defense, and financial services. Explore both products interactively below.</p>
+        <div class="hero-actions">
+          <button class="btn-lime" onclick="showSection('pci')">Explore PCI DSS Workbook →</button>
+          <button class="btn-wire" onclick="showSection('nist')">Explore NIST CSF Workbook →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="products-section">
+    <div class="products-intro">
+      <div class="products-h2">Two workbooks.<br>Every control covered.</div>
+      <div class="products-sub">Click either product to explore an interactive preview — see every sheet, every requirement, and exactly how it works before you buy.</div>
+    </div>
+
+    <div class="product-row" onclick="showSection('pci')">
+      <div class="pr-num">01</div>
+      <div class="pr-info">
+        <div class="pr-tag">PCI DSS v4.0 · Available Now</div>
+        <div class="pr-name">SAQ Preparation Workbook</div>
+        <div class="pr-desc">SAQ type selector, full requirements checklists for SAQ-A through D, evidence tracker, and prioritized remediation roadmap. Mandatory since March 2024.</div>
+      </div>
+      <div class="pr-includes">
+        <div class="pr-inc-label">Includes</div>
+        <ul class="pr-inc-list">
+          <li>SAQ Type Selector (8 questions)</li>
+          <li>SAQ-A, B, B-IP, C, D checklists</li>
+          <li>Evidence Tracker (18 items)</li>
+          <li>Priority scoring roadmap</li>
+        </ul>
+      </div>
+      <div class="pr-action"><button class="btn-row primary">Explore Demo →</button></div>
+    </div>
+
+    <div class="product-row" onclick="showSection('nist')">
+      <div class="pr-num">02</div>
+      <div class="pr-info">
+        <div class="pr-tag">NIST CSF 2.0 · Available Now</div>
+        <div class="pr-name">Gap Assessment Workbook</div>
+        <div class="pr-desc">All 6 CSF functions including the new Govern function. 100+ subcategories with 0–5 maturity scoring, auto-calculated Executive Dashboard, and Remediation Roadmap.</div>
+      </div>
+      <div class="pr-includes">
+        <div class="pr-inc-label">Includes</div>
+        <ul class="pr-inc-list">
+          <li>Executive Summary Dashboard</li>
+          <li>GV, ID, PR, DE, RS, RC tabs</li>
+          <li>Maturity scoring 0–5 scale</li>
+          <li>Remediation Roadmap</li>
+        </ul>
+      </div>
+      <div class="pr-action"><button class="btn-row">Explore Demo →</button></div>
+    </div>
+
+    <div class="product-row featured" onclick="showSection('vault')">
+      <div class="pr-num">03</div>
+      <div class="pr-info">
+        <div class="pr-tag">⭐ Best Value — Full Compliance Vault</div>
+        <div class="pr-name">Both Workbooks + All Future Frameworks</div>
+        <div class="pr-desc">Everything in both packs, plus NIST 800-53, CRI Profile 2.0, CCM, and COBIT as they release — at no extra cost. One price, forever.</div>
+      </div>
+      <div class="pr-includes">
+        <div class="pr-inc-label">Includes</div>
+        <ul class="pr-inc-list">
+          <li>NIST CSF 2.0 + PCI DSS v4.0</li>
+          <li>NIST 800-53 (coming soon)</li>
+          <li>CRI · CCM · COBIT (coming soon)</li>
+          <li>All future updates, free forever</li>
+        </ul>
+      </div>
+      <div class="pr-action"><button class="btn-row primary">View Value →</button></div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
+    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
+    <div class="footer-links">
+      <a href="https://riskforge.tech" target="_blank">Main Site</a>
+      <a href="https://payhip.com/b/cx1lY" target="_blank">Full Vault — $349</a>
+    </div>
+  </footer>
+</div>
+
+
+<!-- PCI DSS v4.0 -->
+<div id="pci" class="section">
+
+  <div class="section-header-band">
+    <button class="back-btn" onclick="showSection('home')">← Back to Overview</button>
+    <div class="section-eyebrow">PCI DSS v4.0 · SAQ Preparation Workbook</div>
+    <h2 class="section-h2">From chaos to compliant —<br>before your QSA arrives.</h2>
+    <p class="section-desc">Walk through every SAQ type with structured checklists, evidence logging, and a remediation roadmap that tells you exactly what to fix first.</p>
+  </div>
+
+  <div class="demo-band">
+    <div class="demo-inner">
+      <div class="demo-container">
+        <div class="demo-topbar">
+          <div class="topbar-dots"><div class="topbar-dot dot-r"></div><div class="topbar-dot dot-y"></div><div class="topbar-dot dot-g"></div></div>
+          <span class="topbar-title">PCI_DSS_v4_SAQ_Prep_Workbook.xlsx — RiskForge</span>
+        </div>
+        <div class="sheet-tabs">
+          <button class="sheet-tab active" onclick="switchSheet(this,'pci-cover','pci-sheets')">📋 Cover</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'pci-selector','pci-sheets')">🎯 SAQ Selector</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'pci-saqa','pci-sheets')">⚙️ SAQ-A</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'pci-evidence','pci-sheets')">📁 Evidence Tracker</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'pci-roadmap','pci-sheets')">🗺️ Roadmap</button>
+        </div>
+        <div id="pci-sheets">
+
+          <div id="pci-cover" class="sheet-content">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;">
+              <div>
+                <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:1.3rem;font-weight:800;margin-bottom:6px;color:var(--white);letter-spacing:-.04em;">PCI DSS v4.0</div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.15em;text-transform:uppercase;margin-bottom:20px;">SAQ Preparation Workbook</div>
+                <div style="font-size:11.5px;font-weight:300;color:var(--gray-lt);margin-bottom:28px;line-height:1.7;">SAQ Type Selector · Requirements Checklist · Evidence Tracker · Remediation Roadmap</div>
+                <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
+                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">Merchant / Entity Name</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--white);">Acme Corp</td></tr>
+                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">Assessment Date</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--white);">May 2026</td></tr>
+                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">SAQ Type Selected</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--lime);font-family:'IBM Plex Mono',monospace;font-size:11px;">SAQ-A</td></tr>
+                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">Merchant Level</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--white);">Level 3</td></tr>
+                  <tr><td style="padding:10px 0;color:var(--gray-lt);font-weight:300;">Document Version</td><td style="padding:10px 12px;color:var(--white);">1.0</td></tr>
+                </table>
+              </div>
+              <div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.18em;text-transform:uppercase;margin-bottom:16px;">Compliance Status Legend</div>
+                <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:28px;">
+                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-in-place">In Place</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Control fully implemented & operating</span></div>
+                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-not-tested">Not Tested</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Exists but not yet validated</span></div>
+                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-not-in-place">Not in Place</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Missing or failing — action required</span></div>
+                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-na">Not Applicable</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Requirement does not apply</span></div>
+                </div>
+                <div style="border-left:2px solid var(--lime);padding-left:16px;">
+                  <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.15em;text-transform:uppercase;margin-bottom:10px;">Workbook Structure</div>
+                  <div style="font-size:11.5px;font-weight:300;color:var(--gray-lt);line-height:2.1;">🎯 SAQ Type Selector<br>⚙️ SAQ-A through SAQ-D<br>📁 Evidence Tracker<br>🗺️ Remediation Roadmap</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="pci-selector" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">SAQ Type Selector</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:24px;">Answer each question to determine which SAQ applies to your organization.</div>
+            <table class="wb-table">
+              <thead><tr><th>#</th><th>Question</th><th style="min-width:110px;">Answer</th><th>Result</th></tr></thead>
+              <tbody>
+                <tr><td class="req-id">Q1</td><td>Does your organization store, process, or transmit cardholder data?</td><td><span class="status-badge status-in-place">Yes</span></td><td style="font-size:11px;color:var(--gray-lt);">Continue →</td></tr>
+                <tr><td class="req-id">Q2</td><td>Do you use a fully outsourced payment page (e.g. PayPal, Stripe) with no card data touching your servers?</td><td><span class="status-badge status-in-place">Yes</span></td><td style="font-size:11px;color:var(--lime);font-family:'IBM Plex Mono',monospace;font-weight:700;">→ SAQ-A</td></tr>
+                <tr><td class="req-id">Q3</td><td>Do you use only standalone, dial-out terminals not connected to internet?</td><td><span class="status-badge status-na">N/A</span></td><td style="font-size:11px;color:var(--gray-lt);">→ SAQ-B</td></tr>
+                <tr><td class="req-id">Q4</td><td>Do you use IP-connected PTS-approved point-of-interaction devices only?</td><td><span class="status-badge status-na">N/A</span></td><td style="font-size:11px;color:var(--gray-lt);">→ SAQ-B-IP</td></tr>
+                <tr><td class="req-id">Q5</td><td>Do you use a payment application on internet-connected systems?</td><td><span class="status-badge status-na">N/A</span></td><td style="font-size:11px;color:var(--gray-lt);">→ SAQ-C</td></tr>
+              </tbody>
+            </table>
+            <div style="margin-top:20px;display:inline-flex;align-items:center;gap:16px;padding:14px 20px;border:1px solid rgba(200,240,0,.25);background:rgba(200,240,0,.04);">
+              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.1em;text-transform:uppercase;">📌 Recommended SAQ Type</span>
+              <span style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.1rem;color:var(--lime);letter-spacing:-.04em;">SAQ-A</span>
+            </div>
+          </div>
+
+          <div id="pci-saqa" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">SAQ-A — Card-Not-Present Merchants</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Fully Outsourced Processing · PCI DSS v4.0</div>
+            <table class="wb-table">
+              <thead><tr><th>Req #</th><th>Description</th><th>Testing Procedure</th><th>Status</th><th>Evidence Ref</th><th>Owner</th></tr></thead>
+              <tbody>
+                <tr class="section-row"><td colspan="6">◆ Req 2 — Apply Secure Configurations to All System Components</td></tr>
+                <tr><td class="req-id">2.1.1</td><td>All security policies for Req 2 are documented, kept current, and in active use.</td><td style="font-size:11px;">Examine docs; verify reviewed annually.</td><td><span class="status-badge status-in-place">In Place</span></td><td style="font-size:11px;">SEC-POL-001</td><td style="font-size:11px;">J. Smith</td></tr>
+                <tr><td class="req-id">2.2.1</td><td>Configuration standards are developed, implemented, and maintained.</td><td style="font-size:11px;">Compare to CIS/NIST hardening guides.</td><td><span class="status-badge status-not-tested">Not Tested</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;">IT Ops</td></tr>
+                <tr><td class="req-id">2.2.7</td><td>All non-console administrative access uses strong cryptography.</td><td style="font-size:11px;">Observe admin sessions; verify encryption.</td><td><span class="status-badge status-in-place">In Place</span></td><td style="font-size:11px;">NET-ENC-004</td><td style="font-size:11px;">SysAdmin</td></tr>
+                <tr class="section-row"><td colspan="6">◆ Req 8 — Identify Users &amp; Authenticate Access to System Components</td></tr>
+                <tr><td class="req-id">8.2.1</td><td>All user IDs and authentication credentials are managed for valid and authorized users only.</td><td style="font-size:11px;">Review accounts; verify no orphan accounts.</td><td><span class="status-badge status-not-in-place">Not in Place</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
+                <tr><td class="req-id">8.3.6</td><td>Passwords/passphrases must meet minimum length of at least 12 characters.</td><td style="font-size:11px;">Review policy; test system enforcement.</td><td><span class="status-badge status-not-tested">Not Tested</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;">IT Ops</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="pci-evidence" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">Evidence Tracker</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Master log of all evidence documents required for compliance</div>
+            <table class="wb-table">
+              <thead><tr><th>Evidence ID</th><th>Requirement</th><th>Document Name</th><th>Status</th><th>Last Updated</th><th>Owner</th></tr></thead>
+              <tbody>
+                <tr><td class="req-id">SEC-POL-001</td><td style="font-size:11px;">2.1.1</td><td>Information Security Policy v3.2</td><td><span class="status-badge status-collected">Collected</span></td><td style="font-size:11px;">Apr 2026</td><td style="font-size:11px;">J. Smith</td></tr>
+                <tr><td class="req-id">NET-ENC-004</td><td style="font-size:11px;">2.2.7</td><td>Network Encryption Config Screenshots</td><td><span class="status-badge status-collected">Collected</span></td><td style="font-size:11px;">Mar 2026</td><td style="font-size:11px;">SysAdmin</td></tr>
+                <tr><td class="req-id">ACC-REV-002</td><td style="font-size:11px;">8.2.1</td><td>User Access Review Report</td><td><span class="status-badge status-missing">Missing</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
+                <tr><td class="req-id">PWD-POL-003</td><td style="font-size:11px;">8.3.6</td><td>Password Policy Documentation</td><td><span class="status-badge status-pending">Pending</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;">IT Ops</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="pci-roadmap" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">Remediation Roadmap</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Prioritized by risk impact · Assign owners and track to audit readiness</div>
+            <table class="wb-table">
+              <thead><tr><th>Priority</th><th>Req #</th><th>Action Required</th><th>Effort</th><th>Impact</th><th>Owner</th><th>Target Date</th></tr></thead>
+              <tbody>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);font-weight:700;">🔴 Critical</td><td class="req-id">8.2.1</td><td>Conduct full user access review; remove orphan accounts</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;color:var(--red);">High</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td><td style="font-size:11px;">Jun 2026</td></tr>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--yellow);font-weight:700;">🟡 High</td><td class="req-id">8.3.6</td><td>Update password policy to enforce 12+ character minimum</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;">IT Ops</td><td style="font-size:11px;">May 2026</td></tr>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--green);font-weight:700;">🟢 Low</td><td class="req-id">2.2.1</td><td>Document and test configuration standards against CIS benchmarks</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;">IT Ops</td><td style="font-size:11px;">Jul 2026</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="features-band">
+    <div class="band-header"><span class="band-num">Features</span><div class="band-rule-line"></div><span class="band-title-text">What's inside the workbook</span></div>
+    <div class="features-grid">
+      <div class="feature-cell"><div class="feature-icon">🎯</div><div class="feature-title">SAQ Type Selector</div><p class="feature-desc">8 guided questions that instantly identify which Self-Assessment Questionnaire applies to your organization — no guesswork required.</p></div>
+      <div class="feature-cell"><div class="feature-icon">⚙️</div><div class="feature-title">Full Requirements Checklists</div><p class="feature-desc">Pre-loaded with every sub-requirement for SAQ-A through SAQ-D, with testing procedures and status dropdowns built in.</p></div>
+      <div class="feature-cell"><div class="feature-icon">📁</div><div class="feature-title">Evidence Tracker</div><p class="feature-desc">Master log linking every evidence document to its requirement. Know exactly what's collected, missing, and who owns it.</p></div>
+      <div class="feature-cell"><div class="feature-icon">🗺️</div><div class="feature-title">Remediation Roadmap</div><p class="feature-desc">Prioritize gaps by effort vs. impact. Assign owners, set deadlines, and track progress from gap to audit-ready.</p></div>
+    </div>
+  </div>
+
+  <div class="cta-band">
+    <div>
+      <div class="cta-h2">Ready to start your<br>PCI DSS prep?</div>
+      <p class="cta-sub">One-time purchase. Instant download. Open in Excel or Google Sheets and start your first SAQ this afternoon. No consultants. No waiting.</p>
+    </div>
+    <div class="cta-actions">
+      <a href="https://payhip.com/b/xCJhD" target="_blank" class="btn-black">Buy PCI DSS Pack — $149 →</a>
+      <a href="https://payhip.com/b/cx1lY" target="_blank" class="btn-outline-black">Get Full Vault (Both Products) — $349</a>
+      <div class="cta-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
+    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
+    <div class="footer-links"><a href="https://riskforge.tech" target="_blank">Main Site</a><a href="https://payhip.com/b/cx1lY" target="_blank">Full Vault</a></div>
+  </footer>
+</div>
+
+
+<!-- NIST CSF 2.0 -->
+<div id="nist" class="section">
+
+  <div class="section-header-band">
+    <button class="back-btn" onclick="showSection('home')">← Back to Overview</button>
+    <div class="section-eyebrow">NIST CSF 2.0 · Gap Assessment Workbook</div>
+    <h2 class="section-h2">Know your gaps.<br>Build your roadmap.</h2>
+    <p class="section-desc">Score your maturity across all 6 NIST CSF functions, identify critical gaps, and generate a prioritized remediation plan — all in one workbook.</p>
+  </div>
+
+  <div class="score-band">
+    <div class="score-label-top">📊 Executive Summary — Scores auto-calculated from each function tab</div>
+    <div class="score-grid">
+      <div class="score-card"><div class="score-card-label">🔵 GV — Govern</div><div class="score-card-val">1.4</div><div class="score-card-level">Initial</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:28%"></div></div></div>
+      <div class="score-card"><div class="score-card-label">🟡 ID — Identify</div><div class="score-card-val">2.1</div><div class="score-card-level">Developing</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:42%"></div></div></div>
+      <div class="score-card"><div class="score-card-label">🟠 PR — Protect</div><div class="score-card-val">1.8</div><div class="score-card-level">Developing</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:36%"></div></div></div>
+      <div class="score-card"><div class="score-card-label">🔴 DE — Detect</div><div class="score-card-val" style="color:var(--red)">0.8</div><div class="score-card-level" style="color:var(--red)">⚠ Critical Gap</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:16%;background:var(--red)"></div></div></div>
+      <div class="score-card"><div class="score-card-label">🟣 RS — Respond</div><div class="score-card-val">1.2</div><div class="score-card-level">Initial</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:24%"></div></div></div>
+      <div class="score-card" style="border-right:none"><div class="score-card-label">🟢 RC — Recover</div><div class="score-card-val">1.6</div><div class="score-card-level">Initial</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:32%"></div></div></div>
+    </div>
+    <div class="findings-grid">
+      <div class="finding-cell"><div class="finding-label" style="color:var(--red);">⚠ Highest Risk Function</div><div class="finding-val">DE — Detect (0.8 / 5)</div><div class="finding-note">No monitoring or anomaly detection currently in place</div></div>
+      <div class="finding-cell"><div class="finding-label" style="color:var(--lime);">✓ Quick Win Opportunity</div><div class="finding-val">GV.RM — Risk Policy</div><div class="finding-note">Formalizing risk appetite is low-effort, high-impact</div></div>
+    </div>
+  </div>
+
+  <div class="demo-band">
+    <div class="demo-inner">
+      <div class="demo-container">
+        <div class="demo-topbar">
+          <div class="topbar-dots"><div class="topbar-dot dot-r"></div><div class="topbar-dot dot-y"></div><div class="topbar-dot dot-g"></div></div>
+          <span class="topbar-title">NIST_CSF2_Gap_Assessment_Workbook.xlsx — RiskForge</span>
+        </div>
+        <div class="sheet-tabs">
+          <button class="sheet-tab active" onclick="switchSheet(this,'nist-govern','nist-sheets')">🔵 GV — Govern</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'nist-identify','nist-sheets')">🟡 ID — Identify</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'nist-detect','nist-sheets')">🔴 DE — Detect</button>
+          <button class="sheet-tab" onclick="switchSheet(this,'nist-roadmap','nist-sheets')">🗺️ Roadmap</button>
+        </div>
+        <div id="nist-sheets">
+
+          <div id="nist-govern" class="sheet-content">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">GV — Govern</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Score 0–5 for each subcategory. Gap column auto-calculated.</div>
+            <table class="wb-table">
+              <thead><tr><th>ID</th><th>Subcategory Description</th><th>Current (0–5)</th><th>Target</th><th>Gap</th><th>Owner</th></tr></thead>
+              <tbody>
+                <tr class="section-row"><td colspan="6">◆ GV.OC — Organizational Context</td></tr>
+                <tr><td class="req-id">GV.OC-01</td><td>Organizational mission informs cybersecurity risk management.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--yellow);font-family:'IBM Plex Mono',monospace;">-1</td><td style="font-size:11px;">CISO</td></tr>
+                <tr><td class="req-id">GV.OC-02</td><td>Stakeholders are identified and their cybersecurity needs understood.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:20%"></div></div><span class="maturity-num">1 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">GRC Team</td></tr>
+                <tr><td class="req-id">GV.OC-03</td><td>Legal, regulatory, and contractual requirements are understood and managed.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">Legal / GRC</td></tr>
+                <tr class="section-row"><td colspan="6">◆ GV.RM — Risk Management Strategy</td></tr>
+                <tr><td class="req-id">GV.RM-01</td><td>Risk management objectives are established and agreed upon by stakeholders.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-3</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
+                <tr><td class="req-id">GV.RM-02</td><td>Risk appetite and tolerance statements are established and communicated.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-3</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="nist-identify" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">ID — Identify</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Asset management, risk assessment, supply chain risk management</div>
+            <table class="wb-table">
+              <thead><tr><th>ID</th><th>Subcategory Description</th><th>Current (0–5)</th><th>Target</th><th>Gap</th><th>Evidence</th></tr></thead>
+              <tbody>
+                <tr class="section-row"><td colspan="6">◆ ID.AM — Asset Management</td></tr>
+                <tr><td class="req-id">ID.AM-01</td><td>Inventories of hardware managed by the organization are maintained.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:60%"></div></div><span class="maturity-num">3 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--yellow);font-family:'IBM Plex Mono',monospace;">-1</td><td style="font-size:11px;">CMDB Export</td></tr>
+                <tr><td class="req-id">ID.AM-02</td><td>Inventories of software, services, and systems managed by the organization are maintained.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">Partial list</td></tr>
+                <tr class="section-row"><td colspan="6">◆ ID.RA — Risk Assessment</td></tr>
+                <tr><td class="req-id">ID.RA-01</td><td>Vulnerabilities in assets are identified, validated, and recorded.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">Vuln Scan Q1</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="nist-detect" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">DE — Detect</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);letter-spacing:.06em;margin-bottom:20px;">⚠ Critical gap — lowest scoring function at 0.8 average</div>
+            <table class="wb-table">
+              <thead><tr><th>ID</th><th>Subcategory Description</th><th>Current (0–5)</th><th>Target</th><th>Gap</th><th>Owner</th></tr></thead>
+              <tbody>
+                <tr class="section-row"><td colspan="6">◆ DE.CM — Continuous Monitoring</td></tr>
+                <tr><td class="req-id">DE.CM-01</td><td>Networks and network services are monitored to detect potential adverse events.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%;background:var(--red)"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-4</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
+                <tr><td class="req-id">DE.CM-03</td><td>Personnel activity and technology usage are monitored to find potential adverse events.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:20%;background:var(--red)"></div></div><span class="maturity-num" style="color:var(--red)">1 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">IT Ops</td></tr>
+                <tr class="section-row"><td colspan="6">◆ DE.AE — Adverse Event Analysis</td></tr>
+                <tr><td class="req-id">DE.AE-02</td><td>Potentially adverse events are analyzed to better characterize them.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%;background:var(--red)"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-3</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="nist-roadmap" class="sheet-content" style="display:none;">
+            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">Remediation Roadmap</div>
+            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Prioritized by effort vs. impact scoring</div>
+            <table class="wb-table">
+              <thead><tr><th>Priority</th><th>Function</th><th>Control</th><th>Action Required</th><th>Effort</th><th>Impact</th><th>Target</th></tr></thead>
+              <tbody>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);font-weight:700;">🔴 1</td><td style="font-size:11px;">RS — Respond</td><td class="req-id">RS.RP-01</td><td>Create and approve Incident Response Plan</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;color:var(--red);">Critical</td><td style="font-size:11px;">Jun 2026</td></tr>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);font-weight:700;">🔴 2</td><td style="font-size:11px;">DE — Detect</td><td class="req-id">DE.CM-01</td><td>Deploy SIEM or log monitoring solution</td><td style="font-size:11px;color:var(--red);">High</td><td style="font-size:11px;color:var(--red);">Critical</td><td style="font-size:11px;">Q3 2026</td></tr>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--yellow);font-weight:700;">🟡 3</td><td style="font-size:11px;">GV — Govern</td><td class="req-id">GV.RM-02</td><td>Draft and board-approve Risk Appetite Statement</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;color:var(--yellow);">High</td><td style="font-size:11px;">May 2026</td></tr>
+                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--yellow);font-weight:700;">🟡 4</td><td style="font-size:11px;">ID — Identify</td><td class="req-id">ID.AM-02</td><td>Complete software and services inventory</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;color:var(--yellow);">High</td><td style="font-size:11px;">Jul 2026</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="features-band">
+    <div class="band-header"><span class="band-num">Features</span><div class="band-rule-line"></div><span class="band-title-text">What's inside the workbook</span></div>
+    <div class="features-grid">
+      <div class="feature-cell"><div class="feature-icon">📊</div><div class="feature-title">Auto-Calculated Dashboard</div><p class="feature-desc">Fill in your scores and the Executive Summary auto-populates — current vs. target maturity across all 6 CSF functions with gap analysis.</p></div>
+      <div class="feature-cell"><div class="feature-icon">🔵</div><div class="feature-title">All 6 CSF Functions</div><p class="feature-desc">Complete coverage of Govern, Identify, Protect, Detect, Respond, and Recover — including the new GV function in CSF 2.0.</p></div>
+      <div class="feature-cell"><div class="feature-icon">📈</div><div class="feature-title">0–5 Maturity Scoring</div><p class="feature-desc">Score each subcategory from Not Implemented to Optimizing. Every entry includes implementation guidance so you know exactly how to improve.</p></div>
+      <div class="feature-cell"><div class="feature-icon">🗺️</div><div class="feature-title">Prioritized Roadmap</div><p class="feature-desc">Effort vs. impact scoring surfaces quick wins and critical gaps so leadership can allocate resources where it matters most.</p></div>
+    </div>
+  </div>
+
+  <div class="cta-band">
+    <div>
+      <div class="cta-h2">Know your gaps.<br>Fix them <em>first.</em></div>
+      <p class="cta-sub">One-time purchase. Instant download. Open in Excel or Google Sheets and start your NIST gap assessment today. No consultants. No waiting.</p>
+    </div>
+    <div class="cta-actions">
+      <a href="https://payhip.com/b/9ucFo" target="_blank" class="btn-black">Buy NIST CSF 2.0 Pack — $99 →</a>
+      <a href="https://payhip.com/b/cx1lY" target="_blank" class="btn-outline-black">Get Full Vault (Both Products) — $349</a>
+      <div class="cta-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
+    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
+    <div class="footer-links"><a href="https://riskforge.tech" target="_blank">Main Site</a><a href="https://payhip.com/b/cx1lY" target="_blank">Full Vault</a></div>
+  </footer>
+</div>
+
+
+<!-- FULL VAULT -->
+<div id="vault" class="section">
+
+  <div class="section-header-band">
+    <button class="back-btn" onclick="showSection('home')">← Back to Overview</button>
+    <div class="section-eyebrow">Full Compliance Vault · Best Value</div>
+    <h2 class="section-h2">Both workbooks. Every framework.<br><span class="accent">One price.</span></h2>
+    <p class="section-desc">Everything in the NIST CSF 2.0 and PCI DSS packs, plus all future frameworks as they release — at no extra cost. Buy once, stay current forever.</p>
+  </div>
+
+  <!-- Value Comparison -->
+  <div class="value-band">
+    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.2em;text-transform:uppercase;margin-bottom:24px;">Cost Comparison</div>
+    <div class="value-grid">
+      <div class="value-col individual">
+        <div class="value-label">Buying individually</div>
+        <div class="value-items">
+          <div class="value-item">
+            <span class="value-item-name">NIST CSF 2.0 Gap Assessment</span>
+            <span class="value-item-price">$99</span>
+          </div>
+          <div class="value-item">
+            <span class="value-item-name">PCI DSS v4.0 SAQ Prep</span>
+            <span class="value-item-price">$149</span>
+          </div>
+          <div class="value-item">
+            <span class="value-item-name">Future frameworks (each)</span>
+            <span class="value-item-price" style="color:var(--gray-lt);">TBD</span>
+          </div>
+        </div>
+        <div class="value-total">
+          <span class="value-total-label">Current total</span>
+          <span class="value-total-price crossed">$248+</span>
+        </div>
+        <div class="value-note">Price increases with each new framework added</div>
+      </div>
+      <div class="value-vs">— vs —</div>
+      <div class="value-col vault">
+        <div class="value-label" style="color:var(--lime);">Full Compliance Vault</div>
+        <div class="value-items">
+          <div class="value-item">
+            <span class="value-item-name">NIST CSF 2.0 Gap Assessment</span>
+            <span style="color:var(--lime);font-size:11px;font-family:'IBM Plex Mono',monospace;">Included</span>
+          </div>
+          <div class="value-item">
+            <span class="value-item-name">PCI DSS v4.0 SAQ Prep</span>
+            <span style="color:var(--lime);font-size:11px;font-family:'IBM Plex Mono',monospace;">Included</span>
+          </div>
+          <div class="value-item">
+            <span class="value-item-name">All future frameworks</span>
+            <span style="color:var(--lime);font-size:11px;font-family:'IBM Plex Mono',monospace;">Free forever</span>
+          </div>
+        </div>
+        <div class="value-total">
+          <span class="value-total-label" style="color:var(--white);font-weight:600;">One-time price</span>
+          <span class="value-total-price lime">$349</span>
+        </div>
+        <div class="value-bonus">
+          <div class="value-bonus-label">Also included — coming soon</div>
+          <ul class="value-bonus-list">
+            <li>NIST 800-53 — Federal security controls</li>
+            <li>CRI Profile 2.0 — Financial sector standard</li>
+            <li>CSA CCM — Cloud environments</li>
+            <li>COBIT — IT governance framework</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- What's in each workbook — links to demos -->
+  <div class="products-section">
+    <div class="products-intro">
+      <div class="products-h2">Explore what's<br>already included.</div>
+      <div class="products-sub">Both interactive demos are fully built. Click either product below to walk through every sheet before you buy.</div>
+    </div>
+
+    <div class="product-row" onclick="showSection('pci')">
+      <div class="pr-num">01</div>
+      <div class="pr-info">
+        <div class="pr-tag">PCI DSS v4.0 · Included in Vault</div>
+        <div class="pr-name">SAQ Preparation Workbook</div>
+        <div class="pr-desc">SAQ type selector, full checklists for SAQ-A through D, evidence tracker, and remediation roadmap. Mandatory compliance since March 2024.</div>
+      </div>
+      <div class="pr-includes">
+        <div class="pr-inc-label">Includes</div>
+        <ul class="pr-inc-list">
+          <li>SAQ Type Selector (8 questions)</li>
+          <li>SAQ-A, B, B-IP, C, D checklists</li>
+          <li>Evidence Tracker (18 items)</li>
+          <li>Priority scoring roadmap</li>
+        </ul>
+      </div>
+      <div class="pr-action"><button class="btn-row">Explore Demo →</button></div>
+    </div>
+
+    <div class="product-row" onclick="showSection('nist')">
+      <div class="pr-num">02</div>
+      <div class="pr-info">
+        <div class="pr-tag">NIST CSF 2.0 · Included in Vault</div>
+        <div class="pr-name">Gap Assessment Workbook</div>
+        <div class="pr-desc">All 6 CSF functions with 0–5 maturity scoring, auto-calculated Executive Dashboard, gap analysis, and prioritized roadmap.</div>
+      </div>
+      <div class="pr-includes">
+        <div class="pr-inc-label">Includes</div>
+        <ul class="pr-inc-list">
+          <li>Executive Summary Dashboard</li>
+          <li>GV, ID, PR, DE, RS, RC tabs</li>
+          <li>Maturity scoring 0–5 scale</li>
+          <li>Remediation Roadmap</li>
+        </ul>
+      </div>
+      <div class="pr-action"><button class="btn-row">Explore Demo →</button></div>
+    </div>
+  </div>
+
+  <!-- Framework Roadmap -->
+  <div class="fw-band">
+    <div class="fw-intro">
+      <div class="fw-h2">The full framework roadmap.</div>
+      <p class="fw-sub">Vault buyers get every framework below as it releases — no additional charge, no re-purchase. All future updates included.</p>
+    </div>
+    <div class="fw-grid">
+      <div class="fw-cell live"><span class="fw-chip chip-nist">NIST CSF 2.0</span><div class="fw-name">NIST Cybersecurity Framework</div><p class="fw-desc">All 6 functions including new Govern. 100+ subcategories with maturity scoring.</p><div class="fw-status"><div class="dot dot-lime"></div><span class="status-lime">Live — Included</span></div></div>
+      <div class="fw-cell live"><span class="fw-chip chip-pci">PCI DSS v4.0</span><div class="fw-name">Payment Card Industry</div><p class="fw-desc">Mandatory March 2024. SAQ selector, checklists, evidence tracker, roadmap.</p><div class="fw-status"><div class="dot dot-lime"></div><span class="status-lime">Live — Included</span></div></div>
+      <div class="fw-cell"><span class="fw-chip chip-800">NIST 800-53</span><div class="fw-name">Security & Privacy Controls</div><p class="fw-desc">Federal gold standard — government, defense contractors. Control families + evidence mapping.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+      <div class="fw-cell"><span class="fw-chip chip-cri">CRI Profile 2.0</span><div class="fw-name">Cyber Risk Institute</div><p class="fw-desc">Financial sector preferred — banks, credit unions, and fintechs aligned to NIST CSF.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+      <div class="fw-cell"><span class="fw-chip chip-ccm">CSA CCM</span><div class="fw-name">Cloud Controls Matrix</div><p class="fw-desc">Essential for AWS, Azure, and GCP environments and cloud-native organizations.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+      <div class="fw-cell"><span class="fw-chip chip-cobit">COBIT</span><div class="fw-name">COBIT Governance</div><p class="fw-desc">IT governance for audit committees, boards, and IT leadership globally.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
+    </div>
+  </div>
+
+  <div class="cta-band">
+    <div>
+      <div class="cta-h2">The smartest compliance<br>investment you can make.</div>
+      <p class="cta-sub">One price. Both current workbooks. Every framework that follows. No renewals, no re-purchasing, no surprises — just compliance coverage that grows with you.</p>
+    </div>
+    <div class="cta-actions">
+      <a href="https://payhip.com/b/cx1lY" target="_blank" class="btn-black">Get Full Vault — $349 →</a>
+      <a href="https://payhip.com/b/xCJhD" target="_blank" class="btn-outline-black">PCI DSS Only — $149</a>
+      <a href="https://payhip.com/b/9ucFo" target="_blank" class="btn-outline-black">NIST CSF Only — $99</a>
+      <div class="cta-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
+    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
+    <div class="footer-links"><a href="https://riskforge.tech" target="_blank">Main Site</a><a href="https://payhip.com/b/cx1lY" target="_blank">Buy Full Vault</a></div>
+  </footer>
+</div>
+
+
+<script>
+function showSection(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  const idx = {home:0, pci:1, nist:2, vault:3}[id];
+  const tabs = document.querySelectorAll('.nav-tab');
+  if (tabs[idx]) tabs[idx].classList.add('active');
+  window.scrollTo({top:0, behavior:'smooth'});
+}
+function switchSheet(btn, sheetId, containerId) {
+  document.getElementById(containerId).querySelectorAll('.sheet-content').forEach(s => s.style.display = 'none');
+  document.getElementById(sheetId).style.display = 'block';
+  btn.closest('.sheet-tabs').querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+}
+</script>
+</body>
+</html>
