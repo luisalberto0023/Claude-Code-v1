@@ -36,6 +36,17 @@ nav{position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:cente
 .nav-links a:hover{color:var(--white);border-color:var(--rule)}
 .nav-cta{background:var(--lime)!important;color:var(--black)!important;border-color:var(--lime)!important;font-weight:700!important}
 .nav-cta:hover{background:var(--lime-dk)!important;border-color:var(--lime-dk)!important}
+.hamburger{display:none;flex-direction:column;gap:5px;cursor:pointer;padding:6px;background:none;border:none}
+.hamburger span{display:block;width:22px;height:2px;background:var(--white);transition:transform .25s,opacity .2s}
+.hamburger.open span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+.hamburger.open span:nth-child(2){opacity:0;transform:scaleX(0)}
+.hamburger.open span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+.mobile-menu{display:none;position:fixed;top:56px;left:0;right:0;bottom:0;background:var(--black);z-index:250;flex-direction:column;border-top:1px solid var(--rule);overflow-y:auto}
+.mobile-menu.open{display:flex}
+.mobile-menu a{font-family:'Space Mono',monospace;font-size:11px;color:var(--gray-lt);text-decoration:none;padding:24px;letter-spacing:.1em;text-transform:uppercase;border-bottom:1px solid var(--rule);transition:color .15s,background .15s}
+.mobile-menu a:hover{color:var(--white);background:var(--gray-1)}
+.mobile-menu .m-cta{background:var(--lime);color:var(--black);font-weight:700;text-align:center}
+.mobile-menu .m-cta:hover{background:var(--lime-dk);color:var(--black)}
 
 /* HERO */
 .hero{background:var(--black);min-height:calc(100vh - 56px);display:flex;flex-direction:column;justify-content:space-between;padding:48px 48px 64px;position:relative;overflow:hidden;border-bottom:1px solid var(--rule)}
@@ -214,7 +225,7 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
 .reveal-d2{transition-delay:.2s}
 
 @media(max-width:1000px){
-  nav{padding:0 20px}.nav-links{display:none}
+  nav{padding:0 20px}.nav-links{display:none}.hamburger{display:flex}
   .hero{padding:32px 24px 48px}.hero-bg-text{display:none}
   .hero-top{flex-direction:column;align-items:flex-start;gap:12px;margin-bottom:32px}
   .hero-bottom{grid-template-columns:1fr;gap:24px}.hero-actions{align-items:flex-start}
@@ -259,7 +270,15 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
     <li><a href="#faq">FAQ</a></li>
     <li><a href="#products" class="nav-cta">Get Templates</a></li>
   </ul>
+  <button class="hamburger" id="hamburger" aria-label="Toggle menu"><span></span><span></span><span></span></button>
 </nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="#products" onclick="closeMobile()">Products</a>
+  <a href="#frameworks" onclick="closeMobile()">Frameworks</a>
+  <a href="#about" onclick="closeMobile()">About</a>
+  <a href="#faq" onclick="closeMobile()">FAQ</a>
+  <a href="#products" class="m-cta" onclick="closeMobile()">Get Templates →</a>
+</div>
 
 <section class="hero">
   <div class="hero-bg-text">RISK</div>
@@ -410,6 +429,11 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
 </footer>
 
 <script>
+const ham=document.getElementById('hamburger');
+const mob=document.getElementById('mobile-menu');
+function closeMobile(){ham.classList.remove('open');mob.classList.remove('open');document.body.style.overflow=''}
+ham.addEventListener('click',()=>{const o=mob.classList.toggle('open');ham.classList.toggle('open');document.body.style.overflow=o?'hidden':''});
+
 const obs = new IntersectionObserver((entries) => {
   entries.forEach(el => { if(el.isIntersecting) el.target.classList.add('in'); });
 }, { threshold: 0.08 });

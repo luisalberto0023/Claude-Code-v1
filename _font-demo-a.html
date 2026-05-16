@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Font Demo A — Corporate Clean (Plus Jakarta Sans + IBM Plex Mono)</title>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+:root{
+  --black:#000000;--white:#FFFFFF;
+  --lime:#C8F000;--lime-dk:#A8CC00;--gray-1:#111111;--gray-2:#1C1C1C;
+  --gray-3:#2A2A2A;--gray-lt:#888888;--rule:#222222;
+  --f-head:'Plus Jakarta Sans',sans-serif;
+  --f-body:'Plus Jakarta Sans',sans-serif;
+  --f-mono:'IBM Plex Mono',monospace;
+}
+body{font-family:var(--f-body);background:var(--black);color:var(--white);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+
+/* DEMO LABEL */
+.demo-label{background:var(--lime);color:var(--black);font-family:var(--f-mono);font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:10px 24px;text-align:center}
+
+/* NAV */
+nav{height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;background:var(--black);border-bottom:1px solid var(--rule)}
+.logo{display:flex;align-items:center;gap:12px;text-decoration:none}
+.logo-mark{width:30px;height:30px;background:var(--lime);display:grid;place-items:center;font-family:var(--f-head);font-weight:800;font-size:12px;color:var(--black)}
+.logo-name{font-family:var(--f-head);font-weight:800;font-size:16px;color:var(--white);letter-spacing:-.02em}
+.nav-links{list-style:none;display:flex;align-items:center;gap:8px}
+.nav-links a{font-family:var(--f-mono);font-size:10px;color:var(--gray-lt);text-decoration:none;padding:6px 14px;border:1px solid transparent;letter-spacing:.06em;text-transform:uppercase}
+.nav-cta{background:var(--lime)!important;color:var(--black)!important;border-color:var(--lime)!important;font-weight:700!important}
+
+/* HERO */
+.hero{background:var(--black);min-height:calc(100vh - 90px);display:flex;flex-direction:column;justify-content:space-between;padding:48px 48px 64px;border-bottom:1px solid var(--rule)}
+.hero-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:0}
+.hero-tag{font-family:var(--f-mono);font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase;border:1px solid rgba(200,240,0,.25);padding:6px 14px}
+.hero-version{font-family:var(--f-mono);font-size:10px;color:var(--gray-lt);letter-spacing:.12em;text-transform:uppercase}
+.hero-body{padding-top:40px}
+.hero h1{font-family:var(--f-head);font-weight:800;font-size:clamp(2rem,4vw,3.8rem);color:var(--white);max-width:900px;margin-bottom:40px;line-height:1.05;letter-spacing:-.04em}
+.hero h1 .accent{color:var(--lime)}
+.hero h1 .thin{font-weight:300;color:rgba(255,255,255,.35)}
+.hero-bottom{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end}
+.hero-sub{font-size:15px;font-weight:300;color:var(--gray-lt);line-height:1.8;max-width:460px}
+.hero-actions{display:flex;flex-direction:column;align-items:flex-end;gap:12px}
+.btn-lime{display:inline-flex;align-items:center;gap:10px;background:var(--lime);color:var(--black);font-family:var(--f-mono);font-weight:700;font-size:11px;padding:14px 28px;text-decoration:none;letter-spacing:.08em;text-transform:uppercase}
+.btn-wire{display:inline-flex;align-items:center;gap:10px;background:transparent;color:var(--white);font-family:var(--f-mono);font-size:11px;padding:14px 28px;border:1px solid var(--rule);text-decoration:none;letter-spacing:.08em;text-transform:uppercase}
+
+/* STATS */
+.stats-band{background:var(--gray-1);border-bottom:1px solid var(--rule);display:grid;grid-template-columns:repeat(5,1fr)}
+.stat-cell{padding:36px 32px;border-right:1px solid var(--rule);display:flex;flex-direction:column;gap:6px}
+.stat-cell:last-child{border-right:none}
+.stat-num{font-family:var(--f-head);font-weight:800;font-size:clamp(1.4rem,2.5vw,2rem);color:var(--white);line-height:1;letter-spacing:-.04em}
+.stat-num span{color:var(--lime)}
+.stat-lbl{font-family:var(--f-mono);font-size:9px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase}
+
+/* BAND HEADER */
+.band-header{display:flex;align-items:center;gap:20px;padding:20px 48px;border-bottom:1px solid var(--rule)}
+.band-num{font-family:var(--f-mono);font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase}
+.band-rule{flex:1;height:1px;background:var(--rule)}
+.band-title-text{font-family:var(--f-mono);font-size:10px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase}
+
+/* PRODUCTS */
+.products-band{background:var(--gray-1);border-bottom:1px solid var(--rule)}
+.products-intro{padding:56px 48px 40px;border-bottom:1px solid var(--rule);display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end}
+.products-h2{font-family:var(--f-head);font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.04em;line-height:1.05}
+.products-sub{font-size:13.5px;font-weight:300;color:var(--gray-lt);line-height:1.75}
+.product-row{display:grid;grid-template-columns:60px 1fr 200px 200px 160px;align-items:center;border-bottom:1px solid var(--rule)}
+.product-row.featured{background:var(--gray-2)}
+.pr-num{padding:28px 0 28px 28px;font-family:var(--f-mono);font-size:10px;color:var(--lime);letter-spacing:.1em;border-right:1px solid var(--rule)}
+.pr-info{padding:28px 32px;border-right:1px solid var(--rule)}
+.pr-tag{font-family:var(--f-mono);font-size:9px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase;margin-bottom:8px}
+.product-row.featured .pr-tag{color:var(--lime)}
+.pr-name{font-family:var(--f-head);font-weight:700;font-size:1.1rem;color:var(--white);letter-spacing:-.02em;margin-bottom:6px}
+.pr-desc{font-size:12px;font-weight:400;color:var(--gray-lt);line-height:1.6;max-width:400px}
+.pr-includes{padding:28px 24px;border-right:1px solid var(--rule);align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.pr-inc-label{font-family:var(--f-mono);font-size:8px;color:rgba(255,255,255,.2);letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px}
+.pr-inc-list{list-style:none;display:flex;flex-direction:column;gap:6px}
+.pr-inc-list li{font-size:11.5px;font-weight:300;color:var(--gray-lt);padding-left:14px;position:relative;line-height:1.4}
+.pr-inc-list li::before{content:'↳';position:absolute;left:0;color:var(--lime);font-size:9px;top:1px}
+.pr-price{padding:28px 24px;border-right:1px solid var(--rule);align-self:stretch;display:flex;flex-direction:column;justify-content:center}
+.pr-price-label{font-family:var(--f-mono);font-size:8px;color:rgba(255,255,255,.2);letter-spacing:.18em;text-transform:uppercase;margin-bottom:8px}
+.pr-price-main{font-family:var(--f-head);font-weight:800;font-size:2rem;color:var(--white);letter-spacing:-.04em;line-height:1}
+.product-row.featured .pr-price-main{color:var(--lime)}
+.pr-price-note{font-size:10px;font-weight:300;color:rgba(255,255,255,.25);margin-top:5px}
+.pr-action{padding:28px 24px;display:flex;align-items:center;justify-content:center}
+.btn-row{display:block;text-align:center;font-family:var(--f-mono);font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:12px 20px;text-decoration:none;border:1px solid var(--rule);color:var(--gray-lt);white-space:nowrap}
+.btn-row.primary{background:var(--lime);color:var(--black);border-color:var(--lime)}
+
+/* ABOUT */
+.about-band{background:var(--gray-1);border-bottom:1px solid var(--rule)}
+.about-content{display:grid;grid-template-columns:1fr 1fr}
+.about-left{padding:56px 48px;border-right:1px solid var(--rule)}
+.about-eyebrow{font-family:var(--f-mono);font-size:9px;color:var(--lime);letter-spacing:.2em;text-transform:uppercase;margin-bottom:20px}
+.about-h2{font-family:var(--f-head);font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.04em;line-height:1.05;margin-bottom:20px}
+.about-body{font-size:14px;font-weight:300;color:var(--gray-lt);line-height:1.85;margin-bottom:32px}
+.about-quote{border-left:2px solid var(--lime);padding-left:20px}
+.about-quote p{font-size:14px;font-weight:300;font-style:italic;color:rgba(255,255,255,.5);line-height:1.8}
+
+/* FINAL CTA */
+.final-band{background:var(--lime);padding:80px 48px;display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;border-bottom:1px solid var(--rule)}
+.final-h2{font-family:var(--f-head);font-weight:800;font-size:clamp(1.6rem,3vw,3rem);color:var(--black);letter-spacing:-.04em;line-height:1.05}
+.final-h2 em{font-style:normal;text-decoration:underline;text-decoration-thickness:3px}
+.final-sub{font-size:14px;font-weight:400;color:rgba(0,0,0,.6);line-height:1.8;margin-top:16px}
+.final-actions{display:flex;flex-direction:column;gap:12px}
+.btn-black{display:block;text-align:center;background:var(--black);color:var(--lime);font-family:var(--f-mono);font-weight:700;font-size:11px;padding:16px 28px;text-decoration:none;letter-spacing:.1em;text-transform:uppercase}
+.btn-black-outline{display:block;text-align:center;background:transparent;color:var(--black);font-family:var(--f-mono);font-size:11px;padding:16px 28px;border:2px solid var(--black);text-decoration:none;letter-spacing:.1em;text-transform:uppercase}
+.final-note{font-family:var(--f-mono);font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:rgba(0,0,0,.4);text-align:center;margin-top:4px}
+
+/* FOOTER */
+footer{background:var(--black);padding:28px 48px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--rule);flex-wrap:wrap;gap:16px}
+.footer-left{display:flex;align-items:center;gap:12px}
+.footer-mark{width:26px;height:26px;background:var(--lime);display:grid;place-items:center;font-family:var(--f-head);font-weight:800;font-size:10px;color:var(--black)}
+.footer-name{font-family:var(--f-head);font-weight:700;font-size:13px;color:rgba(255,255,255,.3);letter-spacing:-.01em}
+.footer-copy{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2)}
+.footer-links{display:flex;gap:20px}
+.footer-links a{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2);text-decoration:none}
+</style>
+</head>
+<body>
+
+<div class="demo-label">FONT DEMO A — Corporate Clean: Plus Jakarta Sans + IBM Plex Mono &nbsp;|&nbsp; Deloitte / KPMG modern style</div>
+
+<nav>
+  <a href="#" class="logo"><div class="logo-mark">RF</div><span class="logo-name">RiskForge</span></a>
+  <ul class="nav-links">
+    <li><a href="#">Products</a></li>
+    <li><a href="#">Frameworks</a></li>
+    <li><a href="#">About</a></li>
+    <li><a href="#">FAQ</a></li>
+    <li><a href="#" class="nav-cta">Get Templates</a></li>
+  </ul>
+</nav>
+
+<section class="hero">
+  <div class="hero-top">
+    <span class="hero-tag">Enterprise IT Risk & Compliance Templates</span>
+    <span class="hero-version">NIST CSF 2.0 · PCI DSS v4.0</span>
+  </div>
+  <div class="hero-body">
+    <h1>Stop paying $15K<br>for what an <span class="accent">expert<br>compliance team</span><br><span class="thin">already built.</span></h1>
+    <div class="hero-bottom">
+      <p class="hero-sub">Professional-grade NIST CSF 2.0 and PCI-DSS v4.0 workbooks — built by a team of IT Risk and Compliance experts with 10+ years of experience across banking, defense contracting, and financial services.</p>
+      <div class="hero-actions">
+        <a href="#" class="btn-lime">View Templates & Pricing →</a>
+        <a href="#" class="btn-wire">See What's Included</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="stats-band">
+  <div class="stat-cell"><div class="stat-num">10<span>+</span></div><div class="stat-lbl">Years IT Risk & Audit</div></div>
+  <div class="stat-cell"><div class="stat-num">6</div><div class="stat-lbl">Frameworks Covered</div></div>
+  <div class="stat-cell"><div class="stat-num">100<span>+</span></div><div class="stat-lbl">Controls Documented</div></div>
+  <div class="stat-cell"><div class="stat-num">v<span>4.0</span></div><div class="stat-lbl">PCI DSS 2024-Ready</div></div>
+  <div class="stat-cell"><div class="stat-num">v<span>2.0</span></div><div class="stat-lbl">NIST CSF Feb 2024</div></div>
+</div>
+
+<div class="products-band">
+  <div class="band-header"><span class="band-num">02</span><div class="band-rule"></div><span class="band-title-text">Pricing</span></div>
+  <div class="products-intro">
+    <h2 class="products-h2">Choose your<br>compliance level.</h2>
+    <p class="products-sub">One-time payment. Instant download. No subscriptions, no renewal fees. Secure checkout — pay and download immediately.</p>
+  </div>
+  <div class="product-row">
+    <div class="pr-num">01</div>
+    <div class="pr-info"><div class="pr-tag">Available Now</div><div class="pr-name">NIST CSF 2.0 Gap Assessment Workbook</div><p class="pr-desc">Complete workbook — all 6 CSF functions, 100+ subcategories, Executive Summary, maturity scoring, and Remediation Roadmap. Built to NIST CSF 2.0 (Feb 2024).</p></div>
+    <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>8 sheets + Executive Dashboard</li><li>GV, ID, PR, DE, RS, RC tabs</li><li>Maturity scoring 0–5 scale</li><li>Remediation Roadmap</li></ul></div>
+    <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$99</div><div class="pr-price-note">Instant download</div></div>
+    <div class="pr-action"><a href="#" class="btn-row primary">Buy NIST Pack →</a></div>
+  </div>
+  <div class="product-row featured">
+    <div class="pr-num">03</div>
+    <div class="pr-info"><div class="pr-tag">⭐ Best Value — Full Vault</div><div class="pr-name">RiskForge Full Compliance Vault</div><p class="pr-desc">Everything in both packs, plus NIST 800-53, CRI Profile 2.0, CCM, and COBIT as they release — at no extra cost. All future updates included.</p></div>
+    <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>NIST CSF 2.0 + PCI DSS v4.0</li><li>NIST 800-53 (soon)</li><li>CRI · CCM · COBIT (soon)</li><li>All future updates + support</li></ul></div>
+    <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$349</div><div class="pr-price-note">All updates included</div></div>
+    <div class="pr-action"><a href="#" class="btn-row primary">Get Full Vault →</a></div>
+  </div>
+</div>
+
+<div class="about-band">
+  <div class="band-header"><span class="band-num">04</span><div class="band-rule"></div><span class="band-title-text">About</span></div>
+  <div class="about-content">
+    <div class="about-left">
+      <div class="about-eyebrow">Built by practitioners</div>
+      <h2 class="about-h2">Not a template mill.<br>Real enterprise experience.</h2>
+      <p class="about-body">Every workbook in the RiskForge vault is designed by a team of IT Risk and Compliance experts — practitioners who have spent the last decade working directly with regulators, QSAs, and audit committees across some of the most regulated industries in the world.</p>
+      <div class="about-quote"><p>"Our templates aren't checklists assembled from a Google search. They come from real assessments, real control gaps, and real regulatory findings — applied across banking, defense, and financial services environments."</p></div>
+    </div>
+  </div>
+</div>
+
+<div class="final-band">
+  <div>
+    <h2 class="final-h2">Your compliance<br>posture, <em>sorted<br>today.</em></h2>
+    <p class="final-sub">Download both workbooks, open in Excel or Google Sheets, and start your first gap assessment this afternoon. No consultants. No waiting. No guesswork.</p>
+  </div>
+  <div class="final-actions">
+    <a href="#" class="btn-black">Get the Full Vault — $349 →</a>
+    <a href="#" class="btn-black-outline">NIST CSF 2.0 Pack — $99 →</a>
+    <a href="#" class="btn-black-outline">PCI DSS v4.0 Pack — $149 →</a>
+    <p class="final-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</p>
+  </div>
+</div>
+
+<footer>
+  <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
+  <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
+  <div class="footer-links"><a href="#">Privacy</a><a href="#">Terms</a><a href="#">hello@riskforge.tech</a></div>
+</footer>
+
+</body>
+</html>
