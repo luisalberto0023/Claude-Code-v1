@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#0b1020" />
+  <title>Hopster — Frog Royale</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="game" width="540" height="960"></canvas>
+
+    <!-- HUD -->
+    <div id="hud" class="hidden">
+      <div class="hud-row top">
+        <div class="hud-card">
+          <span class="hud-label">SCORE</span>
+          <span id="hud-score" class="hud-value">0</span>
+        </div>
+        <div class="hud-card combo">
+          <span class="hud-label">COMBO</span>
+          <span id="hud-combo" class="hud-value">x1</span>
+        </div>
+        <div class="hud-card">
+          <span class="hud-label">COINS</span>
+          <span id="hud-coins" class="hud-value">0</span>
+        </div>
+      </div>
+      <div class="hud-row left">
+        <div id="hud-lives" class="hud-lives">
+          <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
+        </div>
+      </div>
+      <button id="btn-pause" class="icon-btn" aria-label="Pause">II</button>
+      <div id="powerup-bar"></div>
+    </div>
+
+    <!-- Touch zones (invisible, for mobile swipes/taps) -->
+    <div id="touch-layer"></div>
+
+    <!-- Main Menu -->
+    <div id="menu" class="screen">
+      <div class="logo">
+        <div class="logo-frog">🐸</div>
+        <h1>HOPSTER</h1>
+        <p class="tagline">FROG ROYALE</p>
+      </div>
+      <div class="menu-stats">
+        <div class="stat"><span>Best</span><strong id="menu-best">0</strong></div>
+        <div class="stat"><span>Coins</span><strong id="menu-coins">0</strong></div>
+        <div class="stat"><span>Level</span><strong id="menu-level">1</strong></div>
+      </div>
+      <button id="btn-play" class="btn btn-primary">TAP TO HOP</button>
+      <div class="menu-buttons">
+        <button id="btn-characters" class="btn btn-ghost">🐸 Skins</button>
+        <button id="btn-daily" class="btn btn-ghost">🎁 Daily</button>
+        <button id="btn-shop" class="btn btn-ghost">💎 Shop</button>
+        <button id="btn-leaderboard" class="btn btn-ghost">🏆 Ranks</button>
+      </div>
+      <div class="menu-footer">
+        <span>v0.1.0 · Swipe or tap edges to hop</span>
+      </div>
+    </div>
+
+    <!-- Pause -->
+    <div id="pause" class="screen hidden modal">
+      <div class="modal-card">
+        <h2>Paused</h2>
+        <button id="btn-resume" class="btn btn-primary">Resume</button>
+        <button id="btn-quit" class="btn btn-ghost">Quit Run</button>
+      </div>
+    </div>
+
+    <!-- Game Over -->
+    <div id="gameover" class="screen hidden modal">
+      <div class="modal-card">
+        <h2>SPLAT!</h2>
+        <div class="result-row">
+          <div><span>Score</span><strong id="go-score">0</strong></div>
+          <div><span>Best</span><strong id="go-best">0</strong></div>
+          <div><span>Coins</span><strong id="go-coins">0</strong></div>
+        </div>
+        <div id="go-quests" class="quests"></div>
+        <button id="btn-revive" class="btn btn-revive">▶ Watch Ad · Revive</button>
+        <button id="btn-retry" class="btn btn-primary">Retry</button>
+        <button id="btn-home" class="btn btn-ghost">Home</button>
+      </div>
+    </div>
+
+    <!-- Daily Reward -->
+    <div id="daily" class="screen hidden modal">
+      <div class="modal-card">
+        <h2>Daily Hop</h2>
+        <p class="muted">Streak rewards reset at midnight.</p>
+        <div id="daily-grid" class="daily-grid"></div>
+        <button id="daily-claim" class="btn btn-primary">Claim</button>
+        <button id="daily-close" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+
+    <!-- Characters -->
+    <div id="characters" class="screen hidden modal">
+      <div class="modal-card wide">
+        <h2>Skins</h2>
+        <p class="muted">Each skin gives a unique buff. Unlock with coins or gems.</p>
+        <div id="char-grid" class="char-grid"></div>
+        <button id="char-close" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+
+    <!-- Shop -->
+    <div id="shop" class="screen hidden modal">
+      <div class="modal-card wide">
+        <h2>Shop</h2>
+        <p class="muted">No pay-to-win. Cosmetics, conveniences, and the Hop Pass.</p>
+        <div class="shop-grid">
+          <div class="shop-item featured">
+            <div class="shop-tag">BEST VALUE</div>
+            <h3>Hop Pass · Season 1</h3>
+            <p>50 tiers · exclusive frogs · 2× coins all season</p>
+            <button class="btn btn-primary">$4.99</button>
+          </div>
+          <div class="shop-item">
+            <h3>Starter Bundle</h3>
+            <p>500 gems + Neon Frog skin</p>
+            <button class="btn btn-primary">$1.99</button>
+          </div>
+          <div class="shop-item">
+            <h3>Remove Ads</h3>
+            <p>Keep rewarded ads for bonuses</p>
+            <button class="btn btn-primary">$2.99</button>
+          </div>
+          <div class="shop-item">
+            <h3>Pile of Gems</h3>
+            <p>1200 gems</p>
+            <button class="btn btn-primary">$4.99</button>
+          </div>
+        </div>
+        <button id="shop-close" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+
+    <!-- Leaderboard placeholder -->
+    <div id="leaderboard" class="screen hidden modal">
+      <div class="modal-card">
+        <h2>Leaderboards</h2>
+        <p class="muted">Connect an account in a future build to compete globally.</p>
+        <ol class="lb-list">
+          <li><span>1</span><strong>Hoptimus</strong><em>14,820</em></li>
+          <li><span>2</span><strong>RibbitKing</strong><em>12,440</em></li>
+          <li><span>3</span><strong>You</strong><em id="lb-you">0</em></li>
+        </ol>
+        <button id="lb-close" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="js/storage.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/entities.js"></script>
+  <script src="js/world.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
