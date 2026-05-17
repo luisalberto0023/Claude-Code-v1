@@ -14,7 +14,7 @@ const Storage = (() => {
     lastDaily: null,
     totalRuns: 0,
     totalHops: 0,
-    settings: { sfx: true, music: true, haptics: true },
+    settings: { sfx: true, music: true, haptics: true, musicVol: 0.5, sfxVol: 0.8 },
     quests: { today: null, progress: {} },
   };
 

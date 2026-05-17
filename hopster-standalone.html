@@ -225,6 +225,7 @@ html, body {
   margin-top: 6px;
 }
 .menu-buttons .btn { min-width: 0; padding: 12px; font-size: 14px; }
+.menu-buttons .btn.btn-wide { grid-column: span 2; }
 .menu-footer { margin-top: 22px; color: var(--txt-2); font-size: 11px; letter-spacing: 1.5px; }
 
 /* === Game over === */
@@ -272,8 +273,34 @@ html, body {
 .daily-cell.today {
   border-color: var(--neon-1); box-shadow: 0 0 18px rgba(0,255,213,0.25);
 }
-.daily-cell.claimed { opacity: 0.4; }
+.daily-cell.claimed {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.daily-cell.claimed.today::after {
+  content: "✓";
+  position: absolute;
+  top: 4px; right: 6px;
+  color: var(--good); font-weight: 800; font-size: 14px;
+}
+.daily-cell.future {
+  opacity: 0.35;
+  filter: grayscale(0.8);
+  color: var(--txt-2);
+  pointer-events: none;
+}
+.daily-cell { position: relative; }
 .daily-cell strong { display:block; font-size: 16px; margin-top: 4px; }
+
+/* Disabled button (e.g. Daily Claim after claim) */
+.btn:disabled,
+.btn[disabled] {
+  cursor: not-allowed;
+  filter: grayscale(0.6) brightness(0.7);
+  box-shadow: none;
+}
+.btn:disabled:active,
+.btn[disabled]:active { transform: none; }
 
 /* === Characters === */
 .char-grid {
@@ -336,6 +363,77 @@ html, body {
 }
 .lb-list li span { color: var(--neon-3); font-weight: 800; margin-right: 8px; }
 .lb-list li em { font-style: normal; font-weight: 700; }
+
+/* === Settings === */
+.set-row {
+  display: grid;
+  grid-template-columns: 90px 44px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.set-row:last-of-type { border-bottom: none; }
+.set-row label {
+  font-weight: 700; font-size: 14px; color: var(--txt-0);
+  text-align: left;
+}
+.set-row input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  outline: none;
+}
+.set-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px;
+  background: var(--neon-1);
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(0,255,213,0.5);
+  cursor: pointer;
+}
+.set-row input[type="range"]::-moz-range-thumb {
+  width: 20px; height: 20px;
+  background: var(--neon-1);
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+.set-row input[type="range"]:disabled {
+  opacity: 0.35;
+}
+.set-row input[type="range"]:disabled::-webkit-slider-thumb { background: var(--txt-2); box-shadow: none; }
+.set-row input[type="range"]:disabled::-moz-range-thumb { background: var(--txt-2); }
+
+/* Toggle (checkbox styled as switch) */
+.set-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 44px; height: 24px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.18s;
+  outline: none;
+}
+.set-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.18s;
+}
+.set-row input[type="checkbox"]:checked {
+  background: var(--neon-1);
+}
+.set-row input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+  background: #06202b;
+}
+.set-spacer { width: 100%; }
 
 /* === Floating score text === */
 .float-text {
@@ -408,6 +506,7 @@ html, body {
         <button id="btn-daily" class="btn btn-ghost">🎁 Daily</button>
         <button id="btn-shop" class="btn btn-ghost">💎 Shop</button>
         <button id="btn-leaderboard" class="btn btn-ghost">🏆 Ranks</button>
+        <button id="btn-settings" class="btn btn-ghost btn-wide">⚙ Settings</button>
       </div>
       <div class="menu-footer">
         <span>v0.1.0 · Swipe or tap edges to hop</span>
@@ -419,6 +518,7 @@ html, body {
       <div class="modal-card">
         <h2>Paused</h2>
         <button id="btn-resume" class="btn btn-primary">Resume</button>
+        <button id="btn-pause-settings" class="btn btn-ghost">⚙ Settings</button>
         <button id="btn-quit" class="btn btn-ghost">Quit Run</button>
       </div>
     </div>
@@ -492,6 +592,34 @@ html, body {
       </div>
     </div>
 
+    <!-- Settings -->
+    <div id="settings" class="screen hidden modal">
+      <div class="modal-card">
+        <h2>Settings</h2>
+        <p class="muted">Audio &amp; haptics</p>
+
+        <div class="set-row">
+          <label for="set-music">Music</label>
+          <input type="checkbox" id="set-music" />
+          <input type="range" id="set-music-vol" min="0" max="100" />
+        </div>
+
+        <div class="set-row">
+          <label for="set-sfx">Sound FX</label>
+          <input type="checkbox" id="set-sfx" />
+          <input type="range" id="set-sfx-vol" min="0" max="100" />
+        </div>
+
+        <div class="set-row">
+          <label for="set-haptics">Haptics</label>
+          <input type="checkbox" id="set-haptics" />
+          <span class="set-spacer"></span>
+        </div>
+
+        <button id="settings-close" class="btn btn-primary">Done</button>
+      </div>
+    </div>
+
     <!-- Leaderboard placeholder -->
     <div id="leaderboard" class="screen hidden modal">
       <div class="modal-card">
@@ -526,7 +654,7 @@ const Storage = (() => {
     lastDaily: null,
     totalRuns: 0,
     totalHops: 0,
-    settings: { sfx: true, music: true, haptics: true },
+    settings: { sfx: true, music: true, haptics: true, musicVol: 0.5, sfxVol: 0.8 },
     quests: { today: null, progress: {} },
   };
 
@@ -564,14 +692,31 @@ const Storage = (() => {
 })();
 
 // ===== js/audio.js =====
-// === Lightweight procedural SFX (WebAudio) ===
-// No assets required for v0.1. Real audio (music + SFX packs) lands in v0.3.
+// === Procedural SFX + chiptune music (WebAudio) ===
+// No assets required — everything is synthesized on the fly.
 const Audio = (() => {
   let ctx = null;
+  let masterSfx = null;
+  let masterMusic = null;
+
+  // Music state
+  let musicPlaying = false;
+  let musicStep = 0;
+  let musicNextTime = 0;
+  let musicTimer = null;
+
   function ensure() {
     if (!ctx) {
-      try { ctx = new (window.AudioContext || window.webkitAudioContext)(); }
-      catch (e) { ctx = null; }
+      try {
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
+        masterSfx = ctx.createGain();
+        masterMusic = ctx.createGain();
+        const s = Storage.get().settings;
+        masterSfx.gain.value = s.sfxVol ?? 0.8;
+        masterMusic.gain.value = s.musicVol ?? 0.5;
+        masterSfx.connect(ctx.destination);
+        masterMusic.connect(ctx.destination);
+      } catch (e) { ctx = null; }
     }
     if (ctx && ctx.state === 'suspended') ctx.resume();
     return ctx;
@@ -587,10 +732,91 @@ const Audio = (() => {
     if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, freq + slide), c.currentTime + dur);
     g.gain.setValueAtTime(vol, c.currentTime);
     g.gain.exponentialRampToValueAtTime(0.0001, c.currentTime + dur);
-    o.connect(g).connect(c.destination);
+    o.connect(g).connect(masterSfx);
     o.start();
     o.stop(c.currentTime + dur);
   }
+
+  // === Music: a 4-bar chiptune loop in C major, I-vi-IV-V (C-Am-F-G) ===
+  const NOTES = {
+    F2: 87.31, G2: 98.00, A2: 110.00, B2: 123.47,
+    C3: 130.81, D3: 146.83, E3: 164.81, F3: 174.61, G3: 196.00, A3: 220.00, B3: 246.94,
+    C4: 261.63, D4: 293.66, E4: 329.63, F4: 349.23, G4: 392.00, A4: 440.00, B4: 493.88,
+    C5: 523.25, D5: 587.33, E5: 659.25, F5: 698.46, G5: 783.99, A5: 880.00,
+  };
+  // 32 8th-note steps = 4 bars at 4/4
+  const LEAD = [
+    'C5','E5','G5','E5', 'C5','D5','E5','G5',   // bar 1: C
+    'A4','C5','E5','C5', 'A4','B4','C5','E5',   // bar 2: Am
+    'F4','A4','C5','A4', 'F4','G4','A4','C5',   // bar 3: F
+    'G4','B4','D5','B4', 'G4','A4','B4','D5',   // bar 4: G
+  ];
+  const BASS = [
+    'C3', null,'C3', null, 'G3', null,'G3', null,
+    'A2', null,'A2', null, 'E3', null,'E3', null,
+    'F2', null,'F2', null, 'C3', null,'C3', null,
+    'G2', null,'G2', null, 'D3', null,'D3', null,
+  ];
+  const TEMPO = 118; // BPM
+  const STEP = 60 / TEMPO / 2; // 8th note in seconds
+
+  function scheduleNote(noteName, time, dur, type, vol) {
+    const f = NOTES[noteName]; if (!f) return;
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type;
+    o.frequency.value = f;
+    g.gain.setValueAtTime(0, time);
+    g.gain.linearRampToValueAtTime(vol, time + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+    o.connect(g).connect(masterMusic);
+    o.start(time);
+    o.stop(time + dur + 0.02);
+  }
+
+  function musicTick() {
+    if (!ctx || !musicPlaying) return;
+    const horizon = ctx.currentTime + 0.18;
+    while (musicNextTime < horizon) {
+      const lead = LEAD[musicStep % LEAD.length];
+      const bass = BASS[musicStep % BASS.length];
+      if (lead) scheduleNote(lead, musicNextTime, STEP * 0.9, 'triangle', 0.14);
+      if (bass) scheduleNote(bass, musicNextTime, STEP * 1.95, 'square', 0.10);
+      musicStep++;
+      musicNextTime += STEP;
+    }
+  }
+
+  function startMusic() {
+    if (!Storage.get().settings.music) return;
+    const c = ensure(); if (!c) return;
+    if (musicPlaying) return;
+    musicPlaying = true;
+    musicStep = 0;
+    musicNextTime = c.currentTime + 0.06;
+    musicTimer = setInterval(musicTick, 30);
+  }
+
+  function stopMusic() {
+    musicPlaying = false;
+    if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+  }
+
+  function setMusicVolume(v) {
+    const c = ensure(); if (!c || !masterMusic) return;
+    masterMusic.gain.setTargetAtTime(v, c.currentTime, 0.02);
+  }
+  function setSfxVolume(v) {
+    const c = ensure(); if (!c || !masterSfx) return;
+    masterSfx.gain.setTargetAtTime(v, c.currentTime, 0.02);
+  }
+
+  // Pause/resume music with visibility so we don't waste CPU in a backgrounded tab.
+  // Only resume if audio has already been unlocked by a user gesture.
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopMusic();
+    else if (ctx && Storage.get().settings.music) startMusic();
+  });
 
   return {
     hop()      { tone({ freq: 520, dur: 0.07, type: 'square', slide: 160 }); },
@@ -603,7 +829,9 @@ const Audio = (() => {
     button()   { tone({ freq: 660, dur: 0.04, type: 'square', vol: 0.12 }); },
     levelup()  { [0,80,160,240].forEach((d,i) => setTimeout(() =>
                    tone({ freq: 500 + i*200, dur: 0.1, type: 'triangle' }), d)); },
-    unlock(ctx) { ensure(); }, // call from a user gesture to unlock audio
+    unlock()   { ensure(); },
+    startMusic, stopMusic, setMusicVolume, setSfxVolume,
+    isMusicPlaying() { return musicPlaying; },
   };
 })();
 
@@ -1309,7 +1537,7 @@ function pickColor() {
 // ===== js/ui.js =====
 // === UI: menus, modals, HUD updates ===
 const UI = (() => {
-  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard'];
+  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard', 'settings'];
   function show(id) { document.getElementById(id).classList.remove('hidden'); }
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
   function only(id) { screens.forEach(s => s === id ? show(s) : hide(s)); }
@@ -1371,17 +1599,35 @@ const UI = (() => {
       { day: 4, gold: 200 }, { day: 5, gold: 300 }, { day: 6, gold: 400 },
       { day: 7, gem: 25 },
     ];
+    const cycle = rewards.length;
+    const claimable = canClaimDaily();
+    // If today is already claimed, the most recent claim sits at (streak-1).
+    // If today is still claimable, the next reward sits at streak.
+    const todayIdx = claimable
+      ? (s.dailyStreak % cycle)
+      : (((s.dailyStreak - 1) % cycle) + cycle) % cycle;
+
     grid.innerHTML = '';
     rewards.forEach((r, i) => {
       const cell = document.createElement('div');
       cell.className = 'daily-cell';
-      const todayIdx = (s.dailyStreak % rewards.length);
-      if (i < (s.dailyStreak % rewards.length)) cell.classList.add('claimed');
-      if (i === todayIdx) cell.classList.add('today');
+      if (i < todayIdx) cell.classList.add('claimed');
+      if (i === todayIdx) {
+        cell.classList.add('today');
+        if (!claimable) cell.classList.add('claimed');
+      }
+      if (i > todayIdx) cell.classList.add('future');
       cell.innerHTML = `Day ${r.day}<strong>${r.gem ? r.gem + '💎' : r.gold + '🪙'}</strong>`;
       grid.appendChild(cell);
     });
-    return rewards[s.dailyStreak % rewards.length];
+
+    // Sync the Claim button
+    const btn = document.getElementById('daily-claim');
+    if (btn) {
+      btn.disabled = !claimable;
+      btn.textContent = claimable ? 'Claim' : 'Come Back Tomorrow';
+    }
+    return rewards[todayIdx];
   }
   function canClaimDaily() {
     const last = Storage.get().lastDaily;
@@ -1478,10 +1724,23 @@ const UI = (() => {
   }
   function hash(s) { let h = 0; for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
+  // === Settings ===
+  function renderSettings() {
+    const s = Storage.get().settings;
+    document.getElementById('set-music').checked   = !!s.music;
+    document.getElementById('set-sfx').checked     = !!s.sfx;
+    document.getElementById('set-haptics').checked = !!s.haptics;
+    document.getElementById('set-music-vol').value = Math.round((s.musicVol ?? 0.5) * 100);
+    document.getElementById('set-sfx-vol').value   = Math.round((s.sfxVol   ?? 0.8) * 100);
+    document.getElementById('set-music-vol').disabled = !s.music;
+    document.getElementById('set-sfx-vol').disabled   = !s.sfx;
+  }
+
   return {
     show, hide, only, setHUD, refreshMenu, floatText,
     renderDaily, canClaimDaily, claimDaily,
     renderCharacters, todaysQuests, renderQuests,
+    renderSettings,
   };
 })();
 
@@ -1510,10 +1769,26 @@ class Game {
 
     this._bindInput();
     this._bindUI();
+    this._bindFirstGesture();
     UI.refreshMenu();
     UI.only('menu');
     this._showDailyIfDue();
     requestAnimationFrame(this._loop.bind(this));
+  }
+
+  // Browsers require a user gesture before AudioContext can run.
+  // Unlock audio + start music on the very first touch/click/key.
+  _bindFirstGesture() {
+    const kick = () => {
+      Audio.unlock();
+      if (Storage.get().settings.music) Audio.startMusic();
+      window.removeEventListener('touchstart', kick);
+      window.removeEventListener('click', kick);
+      window.removeEventListener('keydown', kick);
+    };
+    window.addEventListener('touchstart', kick, { once: true, passive: true });
+    window.addEventListener('click', kick, { once: true });
+    window.addEventListener('keydown', kick, { once: true });
   }
 
   // === Input ===
@@ -1589,6 +1864,7 @@ class Game {
     document.getElementById('btn-daily').onclick    = () => { Audio.button(); UI.renderDaily(); UI.only('daily'); };
     document.getElementById('daily-close').onclick  = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
     document.getElementById('daily-claim').onclick  = () => {
+      if (document.getElementById('daily-claim').disabled) return;
       Audio.button();
       const r = UI.claimDaily();
       if (r) { Audio.levelup(); UI.renderDaily(); UI.refreshMenu(); }
@@ -1597,6 +1873,56 @@ class Game {
     document.getElementById('shop-close').onclick   = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
     document.getElementById('btn-leaderboard').onclick = () => { Audio.button(); UI.only('leaderboard'); };
     document.getElementById('lb-close').onclick     = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
+
+    // --- Settings ---
+    const openSettings = (returnTo) => {
+      Audio.button();
+      UI.renderSettings();
+      this._settingsReturnTo = returnTo;
+      UI.only('settings');
+    };
+    document.getElementById('btn-settings').onclick       = () => openSettings('menu');
+    document.getElementById('btn-pause-settings').onclick = () => openSettings('pause');
+    document.getElementById('settings-close').onclick     = () => {
+      Audio.button();
+      const back = this._settingsReturnTo || 'menu';
+      if (back === 'pause') {
+        UI.only('pause');
+      } else {
+        UI.only('menu'); UI.refreshMenu();
+      }
+    };
+
+    const setMusic = document.getElementById('set-music');
+    const setSfx = document.getElementById('set-sfx');
+    const setHaptics = document.getElementById('set-haptics');
+    const setMusicVol = document.getElementById('set-music-vol');
+    const setSfxVol = document.getElementById('set-sfx-vol');
+
+    setMusic.onchange = () => {
+      Storage.patch({ settings: { ...Storage.get().settings, music: setMusic.checked } });
+      setMusicVol.disabled = !setMusic.checked;
+      if (setMusic.checked) Audio.startMusic(); else Audio.stopMusic();
+    };
+    setSfx.onchange = () => {
+      Storage.patch({ settings: { ...Storage.get().settings, sfx: setSfx.checked } });
+      setSfxVol.disabled = !setSfx.checked;
+      if (setSfx.checked) Audio.button();
+    };
+    setHaptics.onchange = () => {
+      Storage.patch({ settings: { ...Storage.get().settings, haptics: setHaptics.checked } });
+    };
+    setMusicVol.oninput = () => {
+      const v = setMusicVol.value / 100;
+      Storage.patch({ settings: { ...Storage.get().settings, musicVol: v } });
+      Audio.setMusicVolume(v);
+    };
+    setSfxVol.oninput = () => {
+      const v = setSfxVol.value / 100;
+      Storage.patch({ settings: { ...Storage.get().settings, sfxVol: v } });
+      Audio.setSfxVolume(v);
+    };
+    setSfxVol.onchange = () => Audio.button(); // preview on release
   }
 
   _showDailyIfDue() {

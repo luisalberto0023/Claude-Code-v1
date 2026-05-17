@@ -1,6 +1,6 @@
 // === UI: menus, modals, HUD updates ===
 const UI = (() => {
-  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard'];
+  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard', 'settings'];
   function show(id) { document.getElementById(id).classList.remove('hidden'); }
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
   function only(id) { screens.forEach(s => s === id ? show(s) : hide(s)); }
@@ -62,17 +62,35 @@ const UI = (() => {
       { day: 4, gold: 200 }, { day: 5, gold: 300 }, { day: 6, gold: 400 },
       { day: 7, gem: 25 },
     ];
+    const cycle = rewards.length;
+    const claimable = canClaimDaily();
+    // If today is already claimed, the most recent claim sits at (streak-1).
+    // If today is still claimable, the next reward sits at streak.
+    const todayIdx = claimable
+      ? (s.dailyStreak % cycle)
+      : (((s.dailyStreak - 1) % cycle) + cycle) % cycle;
+
     grid.innerHTML = '';
     rewards.forEach((r, i) => {
       const cell = document.createElement('div');
       cell.className = 'daily-cell';
-      const todayIdx = (s.dailyStreak % rewards.length);
-      if (i < (s.dailyStreak % rewards.length)) cell.classList.add('claimed');
-      if (i === todayIdx) cell.classList.add('today');
+      if (i < todayIdx) cell.classList.add('claimed');
+      if (i === todayIdx) {
+        cell.classList.add('today');
+        if (!claimable) cell.classList.add('claimed');
+      }
+      if (i > todayIdx) cell.classList.add('future');
       cell.innerHTML = `Day ${r.day}<strong>${r.gem ? r.gem + '💎' : r.gold + '🪙'}</strong>`;
       grid.appendChild(cell);
     });
-    return rewards[s.dailyStreak % rewards.length];
+
+    // Sync the Claim button
+    const btn = document.getElementById('daily-claim');
+    if (btn) {
+      btn.disabled = !claimable;
+      btn.textContent = claimable ? 'Claim' : 'Come Back Tomorrow';
+    }
+    return rewards[todayIdx];
   }
   function canClaimDaily() {
     const last = Storage.get().lastDaily;
@@ -169,9 +187,22 @@ const UI = (() => {
   }
   function hash(s) { let h = 0; for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
+  // === Settings ===
+  function renderSettings() {
+    const s = Storage.get().settings;
+    document.getElementById('set-music').checked   = !!s.music;
+    document.getElementById('set-sfx').checked     = !!s.sfx;
+    document.getElementById('set-haptics').checked = !!s.haptics;
+    document.getElementById('set-music-vol').value = Math.round((s.musicVol ?? 0.5) * 100);
+    document.getElementById('set-sfx-vol').value   = Math.round((s.sfxVol   ?? 0.8) * 100);
+    document.getElementById('set-music-vol').disabled = !s.music;
+    document.getElementById('set-sfx-vol').disabled   = !s.sfx;
+  }
+
   return {
     show, hide, only, setHUD, refreshMenu, floatText,
     renderDaily, canClaimDaily, claimDaily,
     renderCharacters, todaysQuests, renderQuests,
+    renderSettings,
   };
 })();

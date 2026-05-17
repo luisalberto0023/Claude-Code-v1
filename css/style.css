@@ -214,6 +214,7 @@ html, body {
   margin-top: 6px;
 }
 .menu-buttons .btn { min-width: 0; padding: 12px; font-size: 14px; }
+.menu-buttons .btn.btn-wide { grid-column: span 2; }
 .menu-footer { margin-top: 22px; color: var(--txt-2); font-size: 11px; letter-spacing: 1.5px; }
 
 /* === Game over === */
@@ -261,8 +262,34 @@ html, body {
 .daily-cell.today {
   border-color: var(--neon-1); box-shadow: 0 0 18px rgba(0,255,213,0.25);
 }
-.daily-cell.claimed { opacity: 0.4; }
+.daily-cell.claimed {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.daily-cell.claimed.today::after {
+  content: "✓";
+  position: absolute;
+  top: 4px; right: 6px;
+  color: var(--good); font-weight: 800; font-size: 14px;
+}
+.daily-cell.future {
+  opacity: 0.35;
+  filter: grayscale(0.8);
+  color: var(--txt-2);
+  pointer-events: none;
+}
+.daily-cell { position: relative; }
 .daily-cell strong { display:block; font-size: 16px; margin-top: 4px; }
+
+/* Disabled button (e.g. Daily Claim after claim) */
+.btn:disabled,
+.btn[disabled] {
+  cursor: not-allowed;
+  filter: grayscale(0.6) brightness(0.7);
+  box-shadow: none;
+}
+.btn:disabled:active,
+.btn[disabled]:active { transform: none; }
 
 /* === Characters === */
 .char-grid {
@@ -325,6 +352,77 @@ html, body {
 }
 .lb-list li span { color: var(--neon-3); font-weight: 800; margin-right: 8px; }
 .lb-list li em { font-style: normal; font-weight: 700; }
+
+/* === Settings === */
+.set-row {
+  display: grid;
+  grid-template-columns: 90px 44px 1fr;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 4px;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.set-row:last-of-type { border-bottom: none; }
+.set-row label {
+  font-weight: 700; font-size: 14px; color: var(--txt-0);
+  text-align: left;
+}
+.set-row input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 2px;
+  outline: none;
+}
+.set-row input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 20px; height: 20px;
+  background: var(--neon-1);
+  border-radius: 50%;
+  box-shadow: 0 0 10px rgba(0,255,213,0.5);
+  cursor: pointer;
+}
+.set-row input[type="range"]::-moz-range-thumb {
+  width: 20px; height: 20px;
+  background: var(--neon-1);
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+}
+.set-row input[type="range"]:disabled {
+  opacity: 0.35;
+}
+.set-row input[type="range"]:disabled::-webkit-slider-thumb { background: var(--txt-2); box-shadow: none; }
+.set-row input[type="range"]:disabled::-moz-range-thumb { background: var(--txt-2); }
+
+/* Toggle (checkbox styled as switch) */
+.set-row input[type="checkbox"] {
+  -webkit-appearance: none; appearance: none;
+  width: 44px; height: 24px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.18s;
+  outline: none;
+}
+.set-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.18s;
+}
+.set-row input[type="checkbox"]:checked {
+  background: var(--neon-1);
+}
+.set-row input[type="checkbox"]:checked::before {
+  transform: translateX(20px);
+  background: #06202b;
+}
+.set-spacer { width: 100%; }
 
 /* === Floating score text === */
 .float-text {

@@ -22,10 +22,26 @@ class Game {
 
     this._bindInput();
     this._bindUI();
+    this._bindFirstGesture();
     UI.refreshMenu();
     UI.only('menu');
     this._showDailyIfDue();
     requestAnimationFrame(this._loop.bind(this));
+  }
+
+  // Browsers require a user gesture before AudioContext can run.
+  // Unlock audio + start music on the very first touch/click/key.
+  _bindFirstGesture() {
+    const kick = () => {
+      Audio.unlock();
+      if (Storage.get().settings.music) Audio.startMusic();
+      window.removeEventListener('touchstart', kick);
+      window.removeEventListener('click', kick);
+      window.removeEventListener('keydown', kick);
+    };
+    window.addEventListener('touchstart', kick, { once: true, passive: true });
+    window.addEventListener('click', kick, { once: true });
+    window.addEventListener('keydown', kick, { once: true });
   }
 
   // === Input ===
@@ -101,6 +117,7 @@ class Game {
     document.getElementById('btn-daily').onclick    = () => { Audio.button(); UI.renderDaily(); UI.only('daily'); };
     document.getElementById('daily-close').onclick  = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
     document.getElementById('daily-claim').onclick  = () => {
+      if (document.getElementById('daily-claim').disabled) return;
       Audio.button();
       const r = UI.claimDaily();
       if (r) { Audio.levelup(); UI.renderDaily(); UI.refreshMenu(); }
@@ -109,6 +126,56 @@ class Game {
     document.getElementById('shop-close').onclick   = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
     document.getElementById('btn-leaderboard').onclick = () => { Audio.button(); UI.only('leaderboard'); };
     document.getElementById('lb-close').onclick     = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
+
+    // --- Settings ---
+    const openSettings = (returnTo) => {
+      Audio.button();
+      UI.renderSettings();
+      this._settingsReturnTo = returnTo;
+      UI.only('settings');
+    };
+    document.getElementById('btn-settings').onclick       = () => openSettings('menu');
+    document.getElementById('btn-pause-settings').onclick = () => openSettings('pause');
+    document.getElementById('settings-close').onclick     = () => {
+      Audio.button();
+      const back = this._settingsReturnTo || 'menu';
+      if (back === 'pause') {
+        UI.only('pause');
+      } else {
+        UI.only('menu'); UI.refreshMenu();
+      }
+    };
+
+    const setMusic = document.getElementById('set-music');
+    const setSfx = document.getElementById('set-sfx');
+    const setHaptics = document.getElementById('set-haptics');
+    const setMusicVol = document.getElementById('set-music-vol');
+    const setSfxVol = document.getElementById('set-sfx-vol');
+
+    setMusic.onchange = () => {
+      Storage.patch({ settings: { ...Storage.get().settings, music: setMusic.checked } });
+      setMusicVol.disabled = !setMusic.checked;
+      if (setMusic.checked) Audio.startMusic(); else Audio.stopMusic();
+    };
+    setSfx.onchange = () => {
+      Storage.patch({ settings: { ...Storage.get().settings, sfx: setSfx.checked } });
+      setSfxVol.disabled = !setSfx.checked;
+      if (setSfx.checked) Audio.button();
+    };
+    setHaptics.onchange = () => {
+      Storage.patch({ settings: { ...Storage.get().settings, haptics: setHaptics.checked } });
+    };
+    setMusicVol.oninput = () => {
+      const v = setMusicVol.value / 100;
+      Storage.patch({ settings: { ...Storage.get().settings, musicVol: v } });
+      Audio.setMusicVolume(v);
+    };
+    setSfxVol.oninput = () => {
+      const v = setSfxVol.value / 100;
+      Storage.patch({ settings: { ...Storage.get().settings, sfxVol: v } });
+      Audio.setSfxVolume(v);
+    };
+    setSfxVol.onchange = () => Audio.button(); // preview on release
   }
 
   _showDailyIfDue() {
