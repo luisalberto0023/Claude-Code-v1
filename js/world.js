@@ -26,8 +26,8 @@ class World {
     this.theme = BIOMES[0];
     this.themeIndex = 0;
     this.cameraY = 0;          // world Y at the back of the visible area
-    this.scrollSpeed = 12;
-    this.scrollAccel = 0.6;
+    this.scrollSpeed = 6;      // starts gentle; ramps with depth
+    this.scrollAccel = 0.4;
     this.scrollPaused = 0;
 
     // First 3 lanes are safe grass so the player gets a beat to read the field
@@ -78,7 +78,9 @@ class World {
       lane.entities = this._spawnFloaters(gy);
       lane.coins = this._maybeCoin(gy, 0.18);
     } else if (type === LANE.RAIL) {
-      lane.trainTimer = 4 + Math.random() * 5;
+      // Trains start rare; tighten cycle with depth.
+      const railTier = Math.min(5, gy / 15);
+      lane.trainTimer = 6 + Math.random() * 6 + Math.max(0, 3 - railTier);
       lane.trainPending = false;
     }
     // Power-up sprinkle
@@ -123,12 +125,18 @@ class World {
   _spawnTraffic(gy) {
     const cars = [];
     const dir = Math.random() < 0.5 ? -1 : 1;
-    const baseSpeed = 80 + Math.random() * 90 + Math.min(120, gy * 1.4);
+    // Difficulty tier: 0 (gentle) for the first ~15 lanes, then ramps.
+    const tier = Math.min(5, gy / 15);
+    // Speeds: 50–95 at tier 0; ~150–280 at tier 5.
+    const baseSpeed = 50 + tier * 25 + Math.random() * (45 + tier * 18);
     const speed = baseSpeed * dir;
-    const gap = 160 + Math.random() * 120;
+    // Gaps wide enough to always give 1 tile of side-step room.
+    const minGap = Math.max(220, 340 - tier * 24);
+    const maxGap = Math.max(360, 480 - tier * 26);
+    const gap = minGap + Math.random() * (maxGap - minGap);
     const startOffset = Math.random() * gap;
     for (let x = -200 + startOffset; x < COLS * TILE + 200; x += gap) {
-      const truck = Math.random() < 0.3;
+      const truck = Math.random() < 0.25;
       cars.push(new Vehicle({
         x, y: gy * TILE,
         w: truck ? 110 : 70,
@@ -144,9 +152,15 @@ class World {
   _spawnFloaters(gy) {
     const items = [];
     const dir = Math.random() < 0.5 ? -1 : 1;
-    const speed = (40 + Math.random() * 70) * dir;
+    const tier = Math.min(5, gy / 15);
+    // River drifts slow at first, gets quicker deeper.
+    const baseSpeed = 28 + tier * 12 + Math.random() * (32 + tier * 12);
+    const speed = baseSpeed * dir;
     const useLogs = Math.random() < 0.7;
-    const gap = useLogs ? 180 + Math.random() * 80 : 110 + Math.random() * 60;
+    // Slightly tighter gaps for lily pads since they're smaller.
+    const gap = useLogs
+      ? 180 + Math.random() * 80
+      : 120 + Math.random() * 60;
     const startOffset = Math.random() * gap;
     for (let x = -200 + startOffset; x < COLS * TILE + 200; x += gap) {
       if (useLogs) {
@@ -155,7 +169,7 @@ class World {
         }));
       } else {
         items.push(new Floater({
-          x, y: gy * TILE, w: 50, h: 50, vx: speed, type: 'lily',
+          x, y: gy * TILE, w: 56, h: 56, vx: speed, type: 'lily',
         }));
       }
     }
@@ -163,10 +177,11 @@ class World {
   }
 
   update(dt) {
-    // Auto-scroll pressure: rises with progress
-    const tier = Math.min(60, this.game.frog.gridY) * 0.4;
-    const target = 14 + tier;
-    this.scrollSpeed += (target - this.scrollSpeed) * Math.min(1, dt * 0.5);
+    // Auto-scroll pressure: rises gently with progress.
+    // Lanes 0..80 ramp from 8 -> ~36 px/s; first ~10 lanes barely scroll.
+    const depth = Math.min(80, this.game.frog.gridY);
+    const target = 8 + (depth / 80) * 28;
+    this.scrollSpeed += (target - this.scrollSpeed) * Math.min(1, dt * 0.4);
     let scroll = this.scrollSpeed * dt;
     if (this.scrollPaused > 0) {
       scroll *= 0.25;
@@ -363,16 +378,35 @@ class World {
 
 function pickLaneType(prev, gy) {
   const r = Math.random();
-  // early lanes weighted toward roads
-  if (gy < 4) return r < 0.55 ? LANE.ROAD : LANE.GRASS;
+  // Lane 0–5: pure grass/road learner field.
+  if (gy < 6) return r < 0.45 ? LANE.ROAD : LANE.GRASS;
+  // Lane 6–14: introduce occasional water, no trains yet.
+  if (gy < 15) {
+    if (prev === LANE.WATER) return r < 0.45 ? LANE.WATER : LANE.GRASS;
+    if (r < 0.30) return LANE.ROAD;
+    if (r < 0.80) return LANE.GRASS;
+    return LANE.WATER;
+  }
+  // Lane 15–29: trains start appearing.
+  if (gy < 30) {
+    if (prev === LANE.WATER) {
+      if (r < 0.50) return LANE.WATER;
+      if (r < 0.85) return LANE.GRASS;
+      return LANE.ROAD;
+    }
+    if (prev === LANE.RAIL) return r < 0.7 ? LANE.GRASS : LANE.ROAD;
+    if (r < 0.36) return LANE.ROAD;
+    if (r < 0.64) return LANE.GRASS;
+    if (r < 0.90) return LANE.WATER;
+    return LANE.RAIL;
+  }
+  // 30+: full mix.
   if (prev === LANE.WATER) {
-    if (r < 0.55) return LANE.WATER;          // chain water lanes
+    if (r < 0.55) return LANE.WATER;
     if (r < 0.85) return LANE.GRASS;
     return LANE.ROAD;
   }
-  if (prev === LANE.RAIL) {
-    return r < 0.7 ? LANE.GRASS : LANE.ROAD;
-  }
+  if (prev === LANE.RAIL) return r < 0.7 ? LANE.GRASS : LANE.ROAD;
   if (r < 0.38) return LANE.ROAD;
   if (r < 0.62) return LANE.GRASS;
   if (r < 0.86) return LANE.WATER;
