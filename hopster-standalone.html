@@ -818,6 +818,28 @@ const Audio = (() => {
     else if (ctx && Storage.get().settings.music) startMusic();
   });
 
+  // Try to start music as early as possible. Mobile browsers (Chrome on
+  // Android, Safari on iOS) block AudioContext until a user gesture, but
+  // returning visitors and PWA-installed launches usually have prior
+  // engagement and auto-resume succeeds — so music can start before the
+  // first tap. If the resume Promise rejects, we silently fall back to the
+  // gesture path in game.js.
+  function tryAutoStart() {
+    const c = ensure();
+    if (!c) return;
+    const go = () => {
+      if (c.state === 'running' && Storage.get().settings.music) startMusic();
+    };
+    const r = c.resume();
+    if (r && typeof r.then === 'function') r.then(go).catch(() => {});
+    else go();
+  }
+  if (document.readyState === 'loading') {
+    window.addEventListener('DOMContentLoaded', tryAutoStart, { once: true });
+  } else {
+    setTimeout(tryAutoStart, 0);
+  }
+
   return {
     hop()      { tone({ freq: 520, dur: 0.07, type: 'square', slide: 160 }); },
     coin()     { tone({ freq: 880, dur: 0.06, type: 'triangle' });
