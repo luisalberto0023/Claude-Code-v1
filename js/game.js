@@ -1,5 +1,5 @@
 // === Game: state machine, loop, input ===
-const GAME_STATE = { MENU: 'menu', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover' };
+const GAME_STATE = { MENU: 'menu', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover', STAGECLEAR: 'stageclear' };
 
 class Game {
   constructor(canvas) {
@@ -16,6 +16,7 @@ class Game {
     this.powerups = {}; // { shield: { timeLeft }, magnet: { timeLeft }, slowmo: { timeLeft } }
     this.questProgress = {};
     this.lastTime = 0;
+    this.currentStage = Storage.get().currentStage || 1;
 
     this.frog = null;
     this.world = null;
@@ -113,9 +114,22 @@ class Game {
   }
 
   _bindUI() {
-    document.getElementById('btn-play').onclick = () => { Audio.unlock(); Audio.button(); this.startRun(); };
-    document.getElementById('btn-retry').onclick = () => { Audio.button(); this.startRun(); };
+    document.getElementById('btn-play').onclick = () => {
+      Audio.unlock(); Audio.button();
+      UI.renderWorldMap();
+      UI.only('worldmap');
+    };
+    document.getElementById('btn-retry').onclick = () => { Audio.button(); this.startRun(this.currentStage); };
     document.getElementById('btn-home').onclick = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); this.state = GAME_STATE.MENU; };
+    document.getElementById('worldmap-close').onclick = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
+    document.getElementById('sc-next').onclick = () => {
+      Audio.button();
+      const nextId = (this.world.stageDef.id + 1);
+      if (Storage.get().unlockedStages.includes(nextId)) this.startRun(nextId);
+      else { UI.renderWorldMap(); UI.only('worldmap'); }
+    };
+    document.getElementById('sc-map').onclick = () => { Audio.button(); UI.renderWorldMap(); UI.only('worldmap'); };
+    document.getElementById('sc-home').onclick = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); this.state = GAME_STATE.MENU; };
     document.getElementById('btn-pause').onclick = () => { Audio.button(); this.togglePause(); };
     document.getElementById('btn-resume').onclick = () => { Audio.button(); this.togglePause(); };
     document.getElementById('btn-quit').onclick = () => { Audio.button(); this.gameOver('quit'); };
@@ -240,7 +254,11 @@ class Game {
   }
 
   // === Lifecycle ===
-  startRun() {
+  startRun(stageId) {
+    if (stageId) {
+      this.currentStage = stageId;
+      Storage.patch({ currentStage: stageId });
+    }
     this.score = 0; this.coinsRun = 0; this.combo = 1; this.comboTimer = 0;
     const skin = skinDef(Storage.get().activeSkin);
     let baseLives = 3;
@@ -251,10 +269,15 @@ class Game {
     this.world = new World(this);
     this.frog = new Frog(this);
     this.state = GAME_STATE.PLAYING;
-    UI.only('menu'); document.getElementById('menu').classList.add('hidden');
-    UI.hide('gameover'); UI.hide('pause'); UI.hide('daily');
+    ['menu','gameover','pause','daily','characters','shop','leaderboard','settings','worldmap','stage-complete'].forEach(s => {
+      const el = document.getElementById(s);
+      if (el) el.classList.add('hidden');
+    });
     document.getElementById('hud').classList.remove('hidden');
-    UI.setHUD({ score: 0, combo: 1, coins: 0, lives: this.lives, powerups: [] });
+    UI.setHUD({
+      score: 0, combo: 1, coins: 0, lives: this.lives, powerups: [],
+      stage: this.currentStage, progress: 0, total: this.world.difficulty.lanes,
+    });
     Storage.patch({ totalRuns: Storage.get().totalRuns + 1 });
   }
 
@@ -385,6 +408,14 @@ class Game {
     this.frog.update(dt);
     this.world.checkCollisions(this.frog);
 
+    // Reached the finish line?
+    if (this.state === GAME_STATE.PLAYING &&
+        this.frog.gridY >= this.world.difficulty.lanes &&
+        this.frog.alive) {
+      this.completeStage();
+      return;
+    }
+
     // Combo decay
     if (this.comboTimer > 0) {
       this.comboTimer -= dt;
@@ -432,7 +463,32 @@ class Game {
       score: this.score, combo: this.combo,
       coins: this.coinsRun, lives: this.lives,
       powerups: list,
+      stage: this.currentStage,
+      progress: Math.max(0, this.frog.gridY),
+      total: this.world.difficulty.lanes,
     });
+  }
+
+  completeStage() {
+    this.state = GAME_STATE.STAGECLEAR;
+    const stage = this.world.stageDef;
+    const s = Storage.get();
+    const prevBest = s.stageBest[stage.id] || 0;
+    const isBest = this.score > prevBest;
+    const newBest = Math.max(prevBest, this.score);
+    const unlocked = new Set(s.unlockedStages || [1]);
+    if (stage.id < STAGES.length) unlocked.add(stage.id + 1);
+    Storage.patch({
+      stageBest: { ...s.stageBest, [stage.id]: newBest },
+      unlockedStages: [...unlocked].sort((a,b) => a-b),
+      bestScore: Math.max(s.bestScore, this.score),
+      coins: s.coins + this.coinsRun,
+    });
+    Storage.addXP(Math.max(20, Math.floor(this.score / 2)));
+    Audio.levelup();
+    UI.renderStageComplete(stage, this.score, this.coinsRun, isBest);
+    document.getElementById('hud').classList.add('hidden');
+    UI.only('stage-complete');
   }
 
   _render() {

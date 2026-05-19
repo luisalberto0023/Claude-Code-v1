@@ -1,17 +1,23 @@
 // === UI: menus, modals, HUD updates ===
 const UI = (() => {
-  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard', 'settings'];
+  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard', 'settings', 'worldmap', 'stage-complete'];
   function show(id) { document.getElementById(id).classList.remove('hidden'); }
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
   function only(id) { screens.forEach(s => s === id ? show(s) : hide(s)); }
 
-  function setHUD({ score, combo, coins, lives, powerups }) {
+  function setHUD({ score, combo, coins, lives, powerups, stage, progress, total }) {
     if (score !== undefined) document.getElementById('hud-score').textContent = score;
     if (combo !== undefined) document.getElementById('hud-combo').textContent = 'x' + combo.toFixed(combo < 2 ? 0 : 1);
     if (coins !== undefined) document.getElementById('hud-coins').textContent = coins;
     if (lives !== undefined) {
       const hs = document.querySelectorAll('#hud-lives .heart');
       hs.forEach((h, i) => h.classList.toggle('lost', i >= lives));
+    }
+    if (stage !== undefined) document.getElementById('hud-stage-label').textContent = 'Stage ' + stage;
+    if (progress !== undefined && total !== undefined) {
+      const clamped = Math.max(0, Math.min(total, progress));
+      document.getElementById('hud-progress-text').textContent = `${clamped}/${total}`;
+      document.getElementById('hud-progress-fill').style.width = (clamped / total * 100) + '%';
     }
     if (powerups) {
       const bar = document.getElementById('powerup-bar');
@@ -323,6 +329,61 @@ const UI = (() => {
   }
   function hash(s) { let h = 0; for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
+  // === World map ===
+  function renderWorldMap() {
+    const list = document.getElementById('worldmap-list');
+    const s = Storage.get();
+    const unlocked = new Set(s.unlockedStages || [1]);
+    list.innerHTML = '';
+    STAGES.forEach(stage => {
+      const isUnlocked = unlocked.has(stage.id);
+      // A stage counts as cleared if the next stage is unlocked (or it's the
+      // last stage and has a recorded score).
+      const isCleared = stage.id < STAGES.length
+        ? unlocked.has(stage.id + 1)
+        : !!(s.stageBest && s.stageBest[stage.id] !== undefined);
+      const best = (s.stageBest && s.stageBest[stage.id]) || 0;
+      const diff = stageDifficulty(stage.id);
+      const biome = BIOMES[stage.biome] || BIOMES.meadow;
+      const tile = document.createElement('div');
+      tile.className = 'stage-tile' + (isUnlocked ? '' : ' locked') + (isCleared ? ' cleared' : '');
+      tile.innerHTML = `
+        <div class="stage-badge" style="background:linear-gradient(135deg, ${biome.grass}, ${biome.water});">
+          ${isUnlocked ? stage.id : '🔒'}
+        </div>
+        <div class="stage-info">
+          <div class="stage-name">${stage.name}${isCleared ? '  ✓' : ''}</div>
+          <div class="stage-meta">${diff.lanes} lanes${best ? ' · Best ' + best : ''}</div>
+        </div>
+        <div class="stage-action">${isUnlocked ? '▶' : ''}</div>
+      `;
+      if (isUnlocked) {
+        tile.addEventListener('click', () => {
+          Audio.button();
+          window._game.startRun(stage.id);
+        });
+      }
+      list.appendChild(tile);
+    });
+  }
+
+  // === Stage complete ===
+  function renderStageComplete(stage, score, coinsRun, isBest) {
+    document.getElementById('sc-title').textContent = isBest ? 'NEW BEST!' : 'Stage Cleared!';
+    document.getElementById('sc-name').textContent = `Stage ${stage.id} — ${stage.name}`;
+    document.getElementById('sc-score').textContent = score;
+    document.getElementById('sc-coins').textContent = coinsRun;
+    const s = Storage.get();
+    document.getElementById('sc-best').textContent = (s.stageBest && s.stageBest[stage.id]) || score;
+    const nextBtn = document.getElementById('sc-next');
+    if (stage.id < STAGES.length) {
+      nextBtn.textContent = `Next: Stage ${stage.id + 1}`;
+      nextBtn.style.display = '';
+    } else {
+      nextBtn.style.display = 'none';
+    }
+  }
+
   // === Settings ===
   function renderSettings() {
     const s = Storage.get().settings;
@@ -342,5 +403,6 @@ const UI = (() => {
     startCharPreviewAnim, stopCharPreviewAnim,
     todaysQuests, renderQuests,
     renderSettings,
+    renderWorldMap, renderStageComplete,
   };
 })();

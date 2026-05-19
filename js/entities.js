@@ -23,6 +23,67 @@ const SKINS = {
 
 function skinDef(id) { return SKINS[id] || SKINS.frog; }
 
+// === Stages and biomes ===
+// 20 stages, each with a unique biome palette. Lane counts: stage N = 24 + N.
+// Per-stage difficulty (camera base + traffic speed) is computed from id.
+const BIOMES = {
+  meadow:    { grass: '#3aa050', grassAlt: '#358a45', road: '#2a3050', roadStripe: '#ffe066', water: '#2a73b5', rail: '#3a3a3a' },
+  forest:    { grass: '#1f5a2c', grassAlt: '#2a7a3b', road: '#3a2010', roadStripe: '#aaff66', water: '#1d4a6d', rail: '#3a3a3a' },
+  beach:     { grass: '#f0d68a', grassAlt: '#d8c074', road: '#a08560', roadStripe: '#ffffff', water: '#56c8e0', rail: '#3a3a3a' },
+  mountain:  { grass: '#7b8aa0', grassAlt: '#6a7a90', road: '#3a3850', roadStripe: '#dddddd', water: '#3a73b5', rail: '#5a5a5a' },
+  desert:    { grass: '#d4a35a', grassAlt: '#b88845', road: '#5a4030', roadStripe: '#ffe066', water: '#56a0d0', rail: '#3a3a3a' },
+  tundra:    { grass: '#d8e8f8', grassAlt: '#bccfe0', road: '#4a5a70', roadStripe: '#ffffff', water: '#7ab8d8', rail: '#3a3a3a' },
+  volcanic:  { grass: '#3a1a14', grassAlt: '#4a201a', road: '#1a0808', roadStripe: '#ff6620', water: '#c93810', rail: '#3a3a3a' },
+  jungle:    { grass: '#2a6a1a', grassAlt: '#3a8a25', road: '#3a2818', roadStripe: '#aaff44', water: '#2a8a4a', rail: '#3a3a3a' },
+  swamp:     { grass: '#4a5a3a', grassAlt: '#3a4a2a', road: '#3a3020', roadStripe: '#88aa44', water: '#4a6a3a', rail: '#3a3a3a' },
+  city:      { grass: '#5a5a5a', grassAlt: '#454545', road: '#1a1a1a', roadStripe: '#ffe066', water: '#3a73b5', rail: '#3a3a3a' },
+  underwater:{ grass: '#1a4a6a', grassAlt: '#2a5a7a', road: '#0a2a3a', roadStripe: '#88e8ff', water: '#1a6a9a', rail: '#3a3a3a' },
+  cloud:     { grass: '#e0e8ff', grassAlt: '#c8d4f8', road: '#7898ff', roadStripe: '#ffffff', water: '#a8c8ff', rail: '#5a5a5a' },
+  space:     { grass: '#1a1030', grassAlt: '#251840', road: '#0a0820', roadStripe: '#ff3bd9', water: '#0a3050', rail: '#2a2050' },
+  crystal:   { grass: '#a884ff', grassAlt: '#9070e0', road: '#3a2050', roadStripe: '#ffffff', water: '#88c8ff', rail: '#5a4080' },
+  candy:     { grass: '#ff9bcc', grassAlt: '#ff7bb8', road: '#a04068', roadStripe: '#ffffff', water: '#ff5fb8', rail: '#5a3050' },
+  toxic:     { grass: '#5aaa20', grassAlt: '#4a9a18', road: '#202820', roadStripe: '#aaff00', water: '#3a8a3a', rail: '#3a3a3a' },
+  cyberpunk: { grass: '#222850', grassAlt: '#2c3470', road: '#0c0c1a', roadStripe: '#ff3bd9', water: '#003a55', rail: '#2a3050' },
+  sunset:    { grass: '#ff8855', grassAlt: '#e07045', road: '#5a3020', roadStripe: '#ffd23b', water: '#ff5577', rail: '#5a3030' },
+  aurora:    { grass: '#1a4a3a', grassAlt: '#2a6a4a', road: '#0a2820', roadStripe: '#88f5cc', water: '#1a5a7a', rail: '#3a3a3a' },
+  mythic:    { grass: '#5a3070', grassAlt: '#4a2060', road: '#2a1040', roadStripe: '#ffd23b', water: '#7a4090', rail: '#5a3070' },
+};
+
+const STAGES = [
+  { id: 1,  name: 'Meadow Crossing', biome: 'meadow' },
+  { id: 2,  name: 'Forest Trail',    biome: 'forest' },
+  { id: 3,  name: 'Beach Hop',       biome: 'beach' },
+  { id: 4,  name: 'Mountain Pass',   biome: 'mountain' },
+  { id: 5,  name: 'Desert Run',      biome: 'desert' },
+  { id: 6,  name: 'Tundra Trek',     biome: 'tundra' },
+  { id: 7,  name: 'Volcano Vault',   biome: 'volcanic' },
+  { id: 8,  name: 'Jungle Jaunt',    biome: 'jungle' },
+  { id: 9,  name: 'Swamp Skip',      biome: 'swamp' },
+  { id: 10, name: 'City Limits',     biome: 'city' },
+  { id: 11, name: 'Deep Dive',       biome: 'underwater' },
+  { id: 12, name: 'Cloud Nine',      biome: 'cloud' },
+  { id: 13, name: 'Star Sprint',     biome: 'space' },
+  { id: 14, name: 'Crystal Cavern',  biome: 'crystal' },
+  { id: 15, name: 'Candy Caper',     biome: 'candy' },
+  { id: 16, name: 'Toxic Tide',      biome: 'toxic' },
+  { id: 17, name: 'Neon Drive',      biome: 'cyberpunk' },
+  { id: 18, name: 'Sunset Saga',     biome: 'sunset' },
+  { id: 19, name: 'Aurora Echo',     biome: 'aurora' },
+  { id: 20, name: 'Mythic Finale',   biome: 'mythic' },
+];
+
+function stageDef(id) { return STAGES.find(s => s.id === id) || STAGES[0]; }
+
+function stageDifficulty(id) {
+  const tier = Math.max(0, id - 1);
+  return {
+    cameraBase: 6 + tier * 1.5,           // 6 → 34.5 by stage 20
+    carSpeedMult: 1 + tier * 0.10,        // 1.0 → 2.9 by stage 20
+    floaterSpeedMult: 1 + tier * 0.07,    // 1.0 → 2.33 by stage 20
+    lanes: 24 + id,                        // stage 1=25 lanes, stage 20=44
+  };
+}
+
 // === Frog (player) ===
 class Frog {
   constructor(game) {
@@ -36,10 +97,10 @@ class Frog {
     this.hopProgress = 1;       // 0..1
     this.hopFromX = this.x;
     this.hopFromY = this.y;
-    this.facing = 0;            // 0=up, 1=right, 2=down, 3=left
+    this.facing = 0;            // 0=back, 1=right, 2=forward, 3=left
     this.alive = true;
     this.ridingLog = null;
-    this.ridingOffset = 0;
+    this.logOffset = 0;         // pixel offset from grid-aligned x due to log drift
     this.skin = skinDef(Storage.get().activeSkin);
   }
 
@@ -56,7 +117,10 @@ class Frog {
     this.gridY = newGY;
     this.hopFromX = this.x;
     this.hopFromY = this.y;
-    this.targetX = newGX * TILE + TILE/2;
+    // Target is RELATIVE to the current displayed position. This makes a
+    // forward hop from a drifted log position go straight forward instead
+    // of snapping horizontally to the grid mid-air (the old "side hop" bug).
+    this.targetX = this.x + dx * TILE;
     this.targetY = newGY * TILE;
     this.hopProgress = 0;
     if (dy < 0) this.facing = 0;
@@ -73,22 +137,36 @@ class Frog {
     if (!this.alive) return;
     if (this.hopProgress < 1) {
       // While riding a log, drift BOTH endpoints with the log so the hop
-      // still completes at the same logical offset relative to the log.
-      // This fixes side-hops feeling stunted on water lanes.
+      // tracks the moving platform underneath it.
       if (this.ridingLog) {
         const drift = this.ridingLog.vx * dt;
         this.hopFromX += drift;
         this.targetX += drift;
+        this.logOffset += drift;
       }
       this.hopProgress = Math.min(1, this.hopProgress + dt * 10);
       const t = easeOutCubic(this.hopProgress);
       this.x = this.hopFromX + (this.targetX - this.hopFromX) * t;
       this.y = this.hopFromY + (this.targetY - this.hopFromY) * t;
     } else {
-      this.x = this.targetX;
       this.y = this.targetY;
       if (this.ridingLog) {
-        this.x += this.ridingLog.vx * dt;
+        const drift = this.ridingLog.vx * dt;
+        this.x = this.targetX + drift;
+        this.logOffset += drift;
+        this.targetX = this.x;
+        this.hopFromX = this.x;
+      } else {
+        // Not on a log → smoothly slide to grid-aligned column. Most hops
+        // already land grid-aligned, so this is a no-op unless we just
+        // stepped off a log onto land with a non-zero logOffset.
+        const gridAlignedX = this.gridX * TILE + TILE/2;
+        const diff = gridAlignedX - this.x;
+        if (Math.abs(diff) > 0.5) {
+          this.x += diff * Math.min(1, dt * 14);
+        } else {
+          this.x = gridAlignedX;
+        }
         this.targetX = this.x;
         this.hopFromX = this.x;
       }

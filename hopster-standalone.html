@@ -97,8 +97,34 @@ html, body {
 .hud-value {
   font-size: 20px; font-weight: 800; letter-spacing: 0.5px;
 }
+.hud-stage {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 4px 0;
+  background: rgba(11,16,32,0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 4px 10px;
+  font-size: 11px; letter-spacing: 1px; color: var(--txt-1);
+}
+#hud-stage-label { font-weight: 800; color: var(--txt-0); }
+.hud-progress {
+  flex: 1; height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px; overflow: hidden;
+}
+#hud-progress-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--neon-1), var(--neon-3));
+  transition: width 0.18s ease-out;
+}
+#hud-progress-text {
+  font-weight: 800; min-width: 40px; text-align: right;
+}
+
 .hud-row.left {
-  position: absolute; top: 70px; left: 12px;
+  position: absolute; top: 116px; left: 12px;
 }
 .hud-lives { display: flex; gap: 4px; }
 .heart {
@@ -109,7 +135,7 @@ html, body {
 .heart.lost { opacity: 0.18; transform: scale(0.8); }
 
 .icon-btn {
-  position: absolute; top: 70px; right: 14px;
+  position: absolute; top: 116px; right: 14px;
   width: 44px; height: 44px; border-radius: 12px;
   background: rgba(11,16,32,0.65);
   color: var(--txt-0); border: 1px solid rgba(255,255,255,0.08);
@@ -515,6 +541,81 @@ html, body {
 }
 .set-spacer { width: 100%; }
 
+/* === World map === */
+.worldmap-modal {
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.worldmap-list {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 12px 0 16px;
+}
+.stage-tile {
+  display: grid;
+  grid-template-columns: 56px 1fr 32px;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+  text-align: left;
+}
+.stage-tile:active { transform: scale(0.985); }
+.stage-tile:not(.locked):hover {
+  border-color: rgba(0,255,213,0.35);
+}
+.stage-tile.locked {
+  cursor: not-allowed;
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.stage-tile.cleared {
+  border-color: rgba(0,255,213,0.35);
+  box-shadow: 0 0 12px rgba(0,255,213,0.10);
+}
+.stage-badge {
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 900;
+  color: #06202b;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,0.20);
+}
+.stage-tile.locked .stage-badge {
+  color: var(--txt-2);
+  text-shadow: none;
+  font-size: 22px;
+}
+.stage-info { min-width: 0; }
+.stage-name {
+  font-size: 15px; font-weight: 800; color: var(--txt-0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stage-meta {
+  font-size: 11px; color: var(--txt-2); letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+.stage-action {
+  font-size: 22px; color: var(--neon-1); text-align: center;
+}
+
+/* === Stage complete badge === */
+.sc-badge {
+  background: linear-gradient(90deg, var(--neon-1), var(--neon-3));
+  color: #06202b;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin: 14px 0 6px;
+  box-shadow: 0 0 18px rgba(0,255,213,0.35);
+}
+
 /* === Floating score text === */
 .float-text {
   position: absolute; pointer-events: none;
@@ -556,6 +657,11 @@ html, body {
           <span id="hud-coins" class="hud-value">0</span>
         </div>
       </div>
+      <div class="hud-stage">
+        <span id="hud-stage-label">Stage 1</span>
+        <div class="hud-progress"><div id="hud-progress-fill"></div></div>
+        <span id="hud-progress-text">0/25</span>
+      </div>
       <div class="hud-row left">
         <div id="hud-lives" class="hud-lives">
           <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
@@ -580,7 +686,7 @@ html, body {
         <div class="stat"><span>Coins</span><strong id="menu-coins">0</strong></div>
         <div class="stat"><span>Level</span><strong id="menu-level">1</strong></div>
       </div>
-      <button id="btn-play" class="btn btn-primary">TAP TO HOP</button>
+      <button id="btn-play" class="btn btn-primary">🗺  PLAY</button>
       <div class="menu-buttons">
         <button id="btn-characters" class="btn btn-ghost">🎨 Character</button>
         <button id="btn-daily" class="btn btn-ghost">🎁 Daily</button>
@@ -686,6 +792,33 @@ html, body {
       </div>
     </div>
 
+    <!-- World map -->
+    <div id="worldmap" class="screen hidden modal">
+      <div class="modal-card wide worldmap-modal">
+        <h2>World Map</h2>
+        <p class="muted">Pick a stage. Clear one to unlock the next.</p>
+        <div id="worldmap-list" class="worldmap-list"></div>
+        <button id="worldmap-close" class="btn btn-ghost">Back to Menu</button>
+      </div>
+    </div>
+
+    <!-- Stage complete -->
+    <div id="stage-complete" class="screen hidden modal">
+      <div class="modal-card">
+        <h2 id="sc-title">Stage Cleared!</h2>
+        <p id="sc-name" class="muted">Meadow Crossing</p>
+        <div class="result-row">
+          <div><span>Score</span><strong id="sc-score">0</strong></div>
+          <div><span>Coins</span><strong id="sc-coins">0</strong></div>
+          <div><span>Best</span><strong id="sc-best">0</strong></div>
+        </div>
+        <div id="sc-badge" class="sc-badge">★ STAGE COMPLETE ★</div>
+        <button id="sc-next" class="btn btn-primary">Next Stage</button>
+        <button id="sc-map" class="btn btn-ghost">World Map</button>
+        <button id="sc-home" class="btn btn-ghost">Home</button>
+      </div>
+    </div>
+
     <!-- Settings -->
     <div id="settings" class="screen hidden modal">
       <div class="modal-card">
@@ -754,6 +887,9 @@ const Storage = (() => {
     totalHops: 0,
     settings: { sfx: true, music: true, haptics: true, musicVol: 0.5, sfxVol: 0.8 },
     quests: { today: null, progress: {} },
+    unlockedStages: [1],
+    stageBest: {},
+    currentStage: 1,
   };
 
   let state = load();
@@ -981,6 +1117,67 @@ const SKINS = {
 
 function skinDef(id) { return SKINS[id] || SKINS.frog; }
 
+// === Stages and biomes ===
+// 20 stages, each with a unique biome palette. Lane counts: stage N = 24 + N.
+// Per-stage difficulty (camera base + traffic speed) is computed from id.
+const BIOMES = {
+  meadow:    { grass: '#3aa050', grassAlt: '#358a45', road: '#2a3050', roadStripe: '#ffe066', water: '#2a73b5', rail: '#3a3a3a' },
+  forest:    { grass: '#1f5a2c', grassAlt: '#2a7a3b', road: '#3a2010', roadStripe: '#aaff66', water: '#1d4a6d', rail: '#3a3a3a' },
+  beach:     { grass: '#f0d68a', grassAlt: '#d8c074', road: '#a08560', roadStripe: '#ffffff', water: '#56c8e0', rail: '#3a3a3a' },
+  mountain:  { grass: '#7b8aa0', grassAlt: '#6a7a90', road: '#3a3850', roadStripe: '#dddddd', water: '#3a73b5', rail: '#5a5a5a' },
+  desert:    { grass: '#d4a35a', grassAlt: '#b88845', road: '#5a4030', roadStripe: '#ffe066', water: '#56a0d0', rail: '#3a3a3a' },
+  tundra:    { grass: '#d8e8f8', grassAlt: '#bccfe0', road: '#4a5a70', roadStripe: '#ffffff', water: '#7ab8d8', rail: '#3a3a3a' },
+  volcanic:  { grass: '#3a1a14', grassAlt: '#4a201a', road: '#1a0808', roadStripe: '#ff6620', water: '#c93810', rail: '#3a3a3a' },
+  jungle:    { grass: '#2a6a1a', grassAlt: '#3a8a25', road: '#3a2818', roadStripe: '#aaff44', water: '#2a8a4a', rail: '#3a3a3a' },
+  swamp:     { grass: '#4a5a3a', grassAlt: '#3a4a2a', road: '#3a3020', roadStripe: '#88aa44', water: '#4a6a3a', rail: '#3a3a3a' },
+  city:      { grass: '#5a5a5a', grassAlt: '#454545', road: '#1a1a1a', roadStripe: '#ffe066', water: '#3a73b5', rail: '#3a3a3a' },
+  underwater:{ grass: '#1a4a6a', grassAlt: '#2a5a7a', road: '#0a2a3a', roadStripe: '#88e8ff', water: '#1a6a9a', rail: '#3a3a3a' },
+  cloud:     { grass: '#e0e8ff', grassAlt: '#c8d4f8', road: '#7898ff', roadStripe: '#ffffff', water: '#a8c8ff', rail: '#5a5a5a' },
+  space:     { grass: '#1a1030', grassAlt: '#251840', road: '#0a0820', roadStripe: '#ff3bd9', water: '#0a3050', rail: '#2a2050' },
+  crystal:   { grass: '#a884ff', grassAlt: '#9070e0', road: '#3a2050', roadStripe: '#ffffff', water: '#88c8ff', rail: '#5a4080' },
+  candy:     { grass: '#ff9bcc', grassAlt: '#ff7bb8', road: '#a04068', roadStripe: '#ffffff', water: '#ff5fb8', rail: '#5a3050' },
+  toxic:     { grass: '#5aaa20', grassAlt: '#4a9a18', road: '#202820', roadStripe: '#aaff00', water: '#3a8a3a', rail: '#3a3a3a' },
+  cyberpunk: { grass: '#222850', grassAlt: '#2c3470', road: '#0c0c1a', roadStripe: '#ff3bd9', water: '#003a55', rail: '#2a3050' },
+  sunset:    { grass: '#ff8855', grassAlt: '#e07045', road: '#5a3020', roadStripe: '#ffd23b', water: '#ff5577', rail: '#5a3030' },
+  aurora:    { grass: '#1a4a3a', grassAlt: '#2a6a4a', road: '#0a2820', roadStripe: '#88f5cc', water: '#1a5a7a', rail: '#3a3a3a' },
+  mythic:    { grass: '#5a3070', grassAlt: '#4a2060', road: '#2a1040', roadStripe: '#ffd23b', water: '#7a4090', rail: '#5a3070' },
+};
+
+const STAGES = [
+  { id: 1,  name: 'Meadow Crossing', biome: 'meadow' },
+  { id: 2,  name: 'Forest Trail',    biome: 'forest' },
+  { id: 3,  name: 'Beach Hop',       biome: 'beach' },
+  { id: 4,  name: 'Mountain Pass',   biome: 'mountain' },
+  { id: 5,  name: 'Desert Run',      biome: 'desert' },
+  { id: 6,  name: 'Tundra Trek',     biome: 'tundra' },
+  { id: 7,  name: 'Volcano Vault',   biome: 'volcanic' },
+  { id: 8,  name: 'Jungle Jaunt',    biome: 'jungle' },
+  { id: 9,  name: 'Swamp Skip',      biome: 'swamp' },
+  { id: 10, name: 'City Limits',     biome: 'city' },
+  { id: 11, name: 'Deep Dive',       biome: 'underwater' },
+  { id: 12, name: 'Cloud Nine',      biome: 'cloud' },
+  { id: 13, name: 'Star Sprint',     biome: 'space' },
+  { id: 14, name: 'Crystal Cavern',  biome: 'crystal' },
+  { id: 15, name: 'Candy Caper',     biome: 'candy' },
+  { id: 16, name: 'Toxic Tide',      biome: 'toxic' },
+  { id: 17, name: 'Neon Drive',      biome: 'cyberpunk' },
+  { id: 18, name: 'Sunset Saga',     biome: 'sunset' },
+  { id: 19, name: 'Aurora Echo',     biome: 'aurora' },
+  { id: 20, name: 'Mythic Finale',   biome: 'mythic' },
+];
+
+function stageDef(id) { return STAGES.find(s => s.id === id) || STAGES[0]; }
+
+function stageDifficulty(id) {
+  const tier = Math.max(0, id - 1);
+  return {
+    cameraBase: 6 + tier * 1.5,           // 6 → 34.5 by stage 20
+    carSpeedMult: 1 + tier * 0.10,        // 1.0 → 2.9 by stage 20
+    floaterSpeedMult: 1 + tier * 0.07,    // 1.0 → 2.33 by stage 20
+    lanes: 24 + id,                        // stage 1=25 lanes, stage 20=44
+  };
+}
+
 // === Frog (player) ===
 class Frog {
   constructor(game) {
@@ -994,10 +1191,10 @@ class Frog {
     this.hopProgress = 1;       // 0..1
     this.hopFromX = this.x;
     this.hopFromY = this.y;
-    this.facing = 0;            // 0=up, 1=right, 2=down, 3=left
+    this.facing = 0;            // 0=back, 1=right, 2=forward, 3=left
     this.alive = true;
     this.ridingLog = null;
-    this.ridingOffset = 0;
+    this.logOffset = 0;         // pixel offset from grid-aligned x due to log drift
     this.skin = skinDef(Storage.get().activeSkin);
   }
 
@@ -1014,7 +1211,10 @@ class Frog {
     this.gridY = newGY;
     this.hopFromX = this.x;
     this.hopFromY = this.y;
-    this.targetX = newGX * TILE + TILE/2;
+    // Target is RELATIVE to the current displayed position. This makes a
+    // forward hop from a drifted log position go straight forward instead
+    // of snapping horizontally to the grid mid-air (the old "side hop" bug).
+    this.targetX = this.x + dx * TILE;
     this.targetY = newGY * TILE;
     this.hopProgress = 0;
     if (dy < 0) this.facing = 0;
@@ -1031,22 +1231,36 @@ class Frog {
     if (!this.alive) return;
     if (this.hopProgress < 1) {
       // While riding a log, drift BOTH endpoints with the log so the hop
-      // still completes at the same logical offset relative to the log.
-      // This fixes side-hops feeling stunted on water lanes.
+      // tracks the moving platform underneath it.
       if (this.ridingLog) {
         const drift = this.ridingLog.vx * dt;
         this.hopFromX += drift;
         this.targetX += drift;
+        this.logOffset += drift;
       }
       this.hopProgress = Math.min(1, this.hopProgress + dt * 10);
       const t = easeOutCubic(this.hopProgress);
       this.x = this.hopFromX + (this.targetX - this.hopFromX) * t;
       this.y = this.hopFromY + (this.targetY - this.hopFromY) * t;
     } else {
-      this.x = this.targetX;
       this.y = this.targetY;
       if (this.ridingLog) {
-        this.x += this.ridingLog.vx * dt;
+        const drift = this.ridingLog.vx * dt;
+        this.x = this.targetX + drift;
+        this.logOffset += drift;
+        this.targetX = this.x;
+        this.hopFromX = this.x;
+      } else {
+        // Not on a log → smoothly slide to grid-aligned column. Most hops
+        // already land grid-aligned, so this is a no-op unless we just
+        // stepped off a log onto land with a non-zero logOffset.
+        const gridAlignedX = this.gridX * TILE + TILE/2;
+        const diff = gridAlignedX - this.x;
+        if (Math.abs(diff) > 0.5) {
+          this.x += diff * Math.min(1, dt * 14);
+        } else {
+          this.x = gridAlignedX;
+        }
         this.targetX = this.x;
         this.hopFromX = this.x;
       }
@@ -1560,28 +1774,20 @@ function shade(hex, amount) {
 // Themes shift every BIOME_LEN lanes to keep visuals fresh.
 
 const LANE = { GRASS: 'grass', ROAD: 'road', WATER: 'water', RAIL: 'rail' };
-const BIOME_LEN = 25;
-const BIOMES = [
-  { id: 'meadow',    grass: '#3aa050', grassAlt: '#358a45', road: '#2a3050',
-    roadStripe: '#ffe066', water: '#2a73b5', rail: '#3a3a3a' },
-  { id: 'desert',    grass: '#d4a35a', grassAlt: '#b88845', road: '#5a4030',
-    roadStripe: '#ffe066', water: '#56a0d0', rail: '#3a3a3a' },
-  { id: 'cyber',     grass: '#222850', grassAlt: '#2c3470', road: '#0c0c1a',
-    roadStripe: '#ff3bd9', water: '#003a55', rail: '#2a3050' },
-  { id: 'lava',      grass: '#3a1a14', grassAlt: '#4a201a', road: '#1a0808',
-    roadStripe: '#ff6620', water: '#c93810', rail: '#3a3a3a' },
-];
 
 class World {
   constructor(game) {
     this.game = game;
+    this.stage = game.currentStage || 1;
+    this.stageDef = stageDef(this.stage);
+    this.difficulty = stageDifficulty(this.stage);
+    this.theme = BIOMES[this.stageDef.biome] || BIOMES.meadow;
+
     this.lanes = [];           // lanes[i] holds the lane with gridY = i
     this.minReachableY = 0;
     this.maxGeneratedY = -1;
-    this.theme = BIOMES[0];
-    this.themeIndex = 0;
     this.cameraY = 0;          // world Y at the back of the visible area
-    this.scrollSpeed = 6;      // starts gentle; ramps with depth
+    this.scrollSpeed = this.difficulty.cameraBase;
     this.scrollAccel = 0.4;
     this.scrollPaused = 0;
 
@@ -1600,15 +1806,21 @@ class World {
   }
 
   generateLanesUntil(untilGy) {
+    const finishGy = this.difficulty.lanes;
     while (this.maxGeneratedY < untilGy) {
       const gy = this.maxGeneratedY + 1;
-      this.lanes.push(this.makeLane(gy, false));
-      this.maxGeneratedY = gy;
-      const biomeIdx = Math.floor(gy / BIOME_LEN) % BIOMES.length;
-      if (biomeIdx !== this.themeIndex) {
-        this.themeIndex = biomeIdx;
-        this.theme = BIOMES[biomeIdx];
+      if (gy === finishGy) {
+        // The finish line — special grass lane, no obstacles
+        this.lanes.push({ type: LANE.GRASS, gridY: gy, entities: [],
+                          coins: [], obstacles: [], isFinish: true });
+      } else if (gy > finishGy) {
+        // Beyond the finish — safe grass (not reachable in normal play)
+        this.lanes.push({ type: LANE.GRASS, gridY: gy, entities: [],
+                          coins: [], obstacles: [], beyondFinish: true });
+      } else {
+        this.lanes.push(this.makeLane(gy, false));
       }
+      this.maxGeneratedY = gy;
     }
   }
 
@@ -1680,15 +1892,16 @@ class World {
   _spawnTraffic(gy) {
     const cars = [];
     const dir = Math.random() < 0.5 ? -1 : 1;
-    // Difficulty tier: 0 (gentle) for the first ~15 lanes, then ramps.
-    const tier = Math.min(5, gy / 15);
-    // Speeds: 50–95 at tier 0; ~150–280 at tier 5.
-    const baseSpeed = 50 + tier * 25 + Math.random() * (45 + tier * 18);
+    // Within-stage gentle ramp (0..3 over the stage), capped.
+    const within = Math.min(3, gy / 15);
+    // Base speeds and gaps are tuned for the gentle within-stage curve.
+    // Per-stage scaling comes from this.difficulty.carSpeedMult.
+    const baseSpeed = (50 + within * 18 + Math.random() * (40 + within * 14))
+                      * this.difficulty.carSpeedMult;
     const speed = baseSpeed * dir;
-    // Gaps wide enough to always give 1 tile of side-step room.
-    const minGap = Math.max(220, 340 - tier * 24);
-    const maxGap = Math.max(360, 480 - tier * 26);
-    const gap = minGap + Math.random() * (maxGap - minGap);
+    // Gaps stay generous; we don't compress them per stage so there's
+    // always at least 1 tile of side-step room — only speed ramps.
+    const gap = 260 + Math.random() * 160;
     const startOffset = Math.random() * gap;
     for (let x = -200 + startOffset; x < COLS * TILE + 200; x += gap) {
       const truck = Math.random() < 0.25;
@@ -1707,12 +1920,11 @@ class World {
   _spawnFloaters(gy) {
     const items = [];
     const dir = Math.random() < 0.5 ? -1 : 1;
-    const tier = Math.min(5, gy / 15);
-    // River drifts slow at first, gets quicker deeper.
-    const baseSpeed = 28 + tier * 12 + Math.random() * (32 + tier * 12);
+    const within = Math.min(3, gy / 15);
+    const baseSpeed = (28 + within * 10 + Math.random() * (28 + within * 10))
+                      * this.difficulty.floaterSpeedMult;
     const speed = baseSpeed * dir;
     const useLogs = Math.random() < 0.7;
-    // Slightly tighter gaps for lily pads since they're smaller.
     const gap = useLogs
       ? 180 + Math.random() * 80
       : 120 + Math.random() * 60;
@@ -1732,10 +1944,10 @@ class World {
   }
 
   update(dt) {
-    // Auto-scroll pressure: rises gently with progress.
-    // Lanes 0..80 ramp from 8 -> ~36 px/s; first ~10 lanes barely scroll.
-    const depth = Math.min(80, this.game.frog.gridY);
-    const target = 8 + (depth / 80) * 28;
+    // Camera target = per-stage base + a +2 px/s step every 10 lanes the
+    // player has cleared inside this stage.
+    const depthBoost = Math.floor(this.game.frog.gridY / 10) * 2;
+    const target = this.difficulty.cameraBase + depthBoost;
     this.scrollSpeed += (target - this.scrollSpeed) * Math.min(1, dt * 0.4);
     let scroll = this.scrollSpeed * dt;
     if (this.scrollPaused > 0) {
@@ -1817,6 +2029,39 @@ class World {
     const sy = laneTopY(lane.gridY, this.cameraY);
     const t = this.theme;
     const checker = (lane.gridY % 2 === 0);
+    if (lane.isFinish) {
+      // Grass base
+      ctx.fillStyle = t.grass;
+      ctx.fillRect(0, sy, COLS * TILE, TILE);
+      // Checkered finish pattern
+      const sq = 12;
+      const rows = Math.ceil(TILE / sq);
+      const cols = Math.ceil(COLS * TILE / sq);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          ctx.fillStyle = (r + c) % 2 ? '#0b1020' : '#f6f9ff';
+          ctx.fillRect(c * sq, sy + r * sq, sq, sq);
+        }
+      }
+      // FINISH banner
+      ctx.fillStyle = 'rgba(255,210,59,0.95)';
+      const bannerH = 26;
+      ctx.fillRect(0, sy + (TILE - bannerH) / 2, COLS * TILE, bannerH);
+      ctx.fillStyle = '#2b1a00';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('★  FINISH  ★', COLS * TILE / 2, sy + TILE / 2 + 1);
+      ctx.textBaseline = 'alphabetic';
+      // pickups (rare, but render them anyway)
+      for (const c of lane.coins) c.draw(ctx, this.cameraY);
+      return;
+    }
+    if (lane.beyondFinish) {
+      ctx.fillStyle = t.grass;
+      ctx.fillRect(0, sy, COLS * TILE, TILE);
+      return;
+    }
     if (lane.type === LANE.GRASS) {
       ctx.fillStyle = checker ? t.grass : t.grassAlt;
       ctx.fillRect(0, sy, COLS * TILE, TILE);
@@ -1885,14 +2130,16 @@ class World {
     }
     if (frog.hopProgress < 0.5) return; // grace mid-hop
 
+    const wasOnLog = !!frog.ridingLog;
+
     if (lane.type === LANE.ROAD) {
       for (const v of lane.entities) {
         if (Math.abs(v.x - frog.x) < (v.w/2 + 18) && Math.abs(v.y - frog.y) < (v.h/2 + 12)) {
           frog.die('car'); return;
         }
       }
+      frog.ridingLog = null;
     } else if (lane.type === LANE.WATER) {
-      // Must be on a floater
       let onFloater = null;
       for (const f of lane.entities) {
         if (Math.abs(f.x - frog.x) < (f.w/2) && Math.abs(f.y - frog.y) < (f.h/2 + 4)) {
@@ -1900,12 +2147,10 @@ class World {
         }
       }
       if (onFloater) {
-        if (frog.ridingLog !== onFloater) {
-          frog.ridingLog = onFloater;
-        }
+        if (frog.ridingLog !== onFloater) frog.ridingLog = onFloater;
       } else {
         frog.ridingLog = null;
-        if (frog.hopProgress >= 1) frog.die('drown');
+        if (frog.hopProgress >= 1) { frog.die('drown'); return; }
       }
     } else if (lane.type === LANE.RAIL) {
       if (lane.activeTrain) {
@@ -1917,16 +2162,21 @@ class World {
       frog.ridingLog = null;
     } else {
       frog.ridingLog = null;
-      // Tree/rock blocks aren't lethal — just impassable; we cancel the hop by snapping back
       for (const o of lane.obstacles) {
         if (Math.abs(o.x - frog.x) < 26 && Math.abs(o.y - frog.y) < 26) {
-          // push back to previous tile by reversing the last hop
           frog.gridX = Math.max(0, Math.min(COLS - 1, frog.gridX));
-          // simplest: kill if mid-traffic, otherwise nudge to nearest free tile
-          // For now, treat obstacle as fatal squish if landed on
           frog.die('obstacle'); return;
         }
       }
+    }
+
+    // Just dismounted a log? Snap gridX to wherever the frog visually is so
+    // the grid-aligned slide in Frog.update() resolves to the right column.
+    if (wasOnLog && !frog.ridingLog) {
+      const nearestCol = Math.max(0, Math.min(COLS - 1,
+        Math.round((frog.x - TILE/2) / TILE)));
+      frog.gridX = nearestCol;
+      frog.logOffset = 0;
     }
   }
 }
@@ -1976,18 +2226,24 @@ function pickColor() {
 // ===== js/ui.js =====
 // === UI: menus, modals, HUD updates ===
 const UI = (() => {
-  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard', 'settings'];
+  const screens = ['menu', 'pause', 'gameover', 'daily', 'characters', 'shop', 'leaderboard', 'settings', 'worldmap', 'stage-complete'];
   function show(id) { document.getElementById(id).classList.remove('hidden'); }
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
   function only(id) { screens.forEach(s => s === id ? show(s) : hide(s)); }
 
-  function setHUD({ score, combo, coins, lives, powerups }) {
+  function setHUD({ score, combo, coins, lives, powerups, stage, progress, total }) {
     if (score !== undefined) document.getElementById('hud-score').textContent = score;
     if (combo !== undefined) document.getElementById('hud-combo').textContent = 'x' + combo.toFixed(combo < 2 ? 0 : 1);
     if (coins !== undefined) document.getElementById('hud-coins').textContent = coins;
     if (lives !== undefined) {
       const hs = document.querySelectorAll('#hud-lives .heart');
       hs.forEach((h, i) => h.classList.toggle('lost', i >= lives));
+    }
+    if (stage !== undefined) document.getElementById('hud-stage-label').textContent = 'Stage ' + stage;
+    if (progress !== undefined && total !== undefined) {
+      const clamped = Math.max(0, Math.min(total, progress));
+      document.getElementById('hud-progress-text').textContent = `${clamped}/${total}`;
+      document.getElementById('hud-progress-fill').style.width = (clamped / total * 100) + '%';
     }
     if (powerups) {
       const bar = document.getElementById('powerup-bar');
@@ -2299,6 +2555,61 @@ const UI = (() => {
   }
   function hash(s) { let h = 0; for (let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
+  // === World map ===
+  function renderWorldMap() {
+    const list = document.getElementById('worldmap-list');
+    const s = Storage.get();
+    const unlocked = new Set(s.unlockedStages || [1]);
+    list.innerHTML = '';
+    STAGES.forEach(stage => {
+      const isUnlocked = unlocked.has(stage.id);
+      // A stage counts as cleared if the next stage is unlocked (or it's the
+      // last stage and has a recorded score).
+      const isCleared = stage.id < STAGES.length
+        ? unlocked.has(stage.id + 1)
+        : !!(s.stageBest && s.stageBest[stage.id] !== undefined);
+      const best = (s.stageBest && s.stageBest[stage.id]) || 0;
+      const diff = stageDifficulty(stage.id);
+      const biome = BIOMES[stage.biome] || BIOMES.meadow;
+      const tile = document.createElement('div');
+      tile.className = 'stage-tile' + (isUnlocked ? '' : ' locked') + (isCleared ? ' cleared' : '');
+      tile.innerHTML = `
+        <div class="stage-badge" style="background:linear-gradient(135deg, ${biome.grass}, ${biome.water});">
+          ${isUnlocked ? stage.id : '🔒'}
+        </div>
+        <div class="stage-info">
+          <div class="stage-name">${stage.name}${isCleared ? '  ✓' : ''}</div>
+          <div class="stage-meta">${diff.lanes} lanes${best ? ' · Best ' + best : ''}</div>
+        </div>
+        <div class="stage-action">${isUnlocked ? '▶' : ''}</div>
+      `;
+      if (isUnlocked) {
+        tile.addEventListener('click', () => {
+          Audio.button();
+          window._game.startRun(stage.id);
+        });
+      }
+      list.appendChild(tile);
+    });
+  }
+
+  // === Stage complete ===
+  function renderStageComplete(stage, score, coinsRun, isBest) {
+    document.getElementById('sc-title').textContent = isBest ? 'NEW BEST!' : 'Stage Cleared!';
+    document.getElementById('sc-name').textContent = `Stage ${stage.id} — ${stage.name}`;
+    document.getElementById('sc-score').textContent = score;
+    document.getElementById('sc-coins').textContent = coinsRun;
+    const s = Storage.get();
+    document.getElementById('sc-best').textContent = (s.stageBest && s.stageBest[stage.id]) || score;
+    const nextBtn = document.getElementById('sc-next');
+    if (stage.id < STAGES.length) {
+      nextBtn.textContent = `Next: Stage ${stage.id + 1}`;
+      nextBtn.style.display = '';
+    } else {
+      nextBtn.style.display = 'none';
+    }
+  }
+
   // === Settings ===
   function renderSettings() {
     const s = Storage.get().settings;
@@ -2318,12 +2629,13 @@ const UI = (() => {
     startCharPreviewAnim, stopCharPreviewAnim,
     todaysQuests, renderQuests,
     renderSettings,
+    renderWorldMap, renderStageComplete,
   };
 })();
 
 // ===== js/game.js =====
 // === Game: state machine, loop, input ===
-const GAME_STATE = { MENU: 'menu', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover' };
+const GAME_STATE = { MENU: 'menu', PLAYING: 'playing', PAUSED: 'paused', GAMEOVER: 'gameover', STAGECLEAR: 'stageclear' };
 
 class Game {
   constructor(canvas) {
@@ -2340,6 +2652,7 @@ class Game {
     this.powerups = {}; // { shield: { timeLeft }, magnet: { timeLeft }, slowmo: { timeLeft } }
     this.questProgress = {};
     this.lastTime = 0;
+    this.currentStage = Storage.get().currentStage || 1;
 
     this.frog = null;
     this.world = null;
@@ -2437,9 +2750,22 @@ class Game {
   }
 
   _bindUI() {
-    document.getElementById('btn-play').onclick = () => { Audio.unlock(); Audio.button(); this.startRun(); };
-    document.getElementById('btn-retry').onclick = () => { Audio.button(); this.startRun(); };
+    document.getElementById('btn-play').onclick = () => {
+      Audio.unlock(); Audio.button();
+      UI.renderWorldMap();
+      UI.only('worldmap');
+    };
+    document.getElementById('btn-retry').onclick = () => { Audio.button(); this.startRun(this.currentStage); };
     document.getElementById('btn-home').onclick = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); this.state = GAME_STATE.MENU; };
+    document.getElementById('worldmap-close').onclick = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
+    document.getElementById('sc-next').onclick = () => {
+      Audio.button();
+      const nextId = (this.world.stageDef.id + 1);
+      if (Storage.get().unlockedStages.includes(nextId)) this.startRun(nextId);
+      else { UI.renderWorldMap(); UI.only('worldmap'); }
+    };
+    document.getElementById('sc-map').onclick = () => { Audio.button(); UI.renderWorldMap(); UI.only('worldmap'); };
+    document.getElementById('sc-home').onclick = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); this.state = GAME_STATE.MENU; };
     document.getElementById('btn-pause').onclick = () => { Audio.button(); this.togglePause(); };
     document.getElementById('btn-resume').onclick = () => { Audio.button(); this.togglePause(); };
     document.getElementById('btn-quit').onclick = () => { Audio.button(); this.gameOver('quit'); };
@@ -2564,7 +2890,11 @@ class Game {
   }
 
   // === Lifecycle ===
-  startRun() {
+  startRun(stageId) {
+    if (stageId) {
+      this.currentStage = stageId;
+      Storage.patch({ currentStage: stageId });
+    }
     this.score = 0; this.coinsRun = 0; this.combo = 1; this.comboTimer = 0;
     const skin = skinDef(Storage.get().activeSkin);
     let baseLives = 3;
@@ -2575,10 +2905,15 @@ class Game {
     this.world = new World(this);
     this.frog = new Frog(this);
     this.state = GAME_STATE.PLAYING;
-    UI.only('menu'); document.getElementById('menu').classList.add('hidden');
-    UI.hide('gameover'); UI.hide('pause'); UI.hide('daily');
+    ['menu','gameover','pause','daily','characters','shop','leaderboard','settings','worldmap','stage-complete'].forEach(s => {
+      const el = document.getElementById(s);
+      if (el) el.classList.add('hidden');
+    });
     document.getElementById('hud').classList.remove('hidden');
-    UI.setHUD({ score: 0, combo: 1, coins: 0, lives: this.lives, powerups: [] });
+    UI.setHUD({
+      score: 0, combo: 1, coins: 0, lives: this.lives, powerups: [],
+      stage: this.currentStage, progress: 0, total: this.world.difficulty.lanes,
+    });
     Storage.patch({ totalRuns: Storage.get().totalRuns + 1 });
   }
 
@@ -2709,6 +3044,14 @@ class Game {
     this.frog.update(dt);
     this.world.checkCollisions(this.frog);
 
+    // Reached the finish line?
+    if (this.state === GAME_STATE.PLAYING &&
+        this.frog.gridY >= this.world.difficulty.lanes &&
+        this.frog.alive) {
+      this.completeStage();
+      return;
+    }
+
     // Combo decay
     if (this.comboTimer > 0) {
       this.comboTimer -= dt;
@@ -2756,7 +3099,32 @@ class Game {
       score: this.score, combo: this.combo,
       coins: this.coinsRun, lives: this.lives,
       powerups: list,
+      stage: this.currentStage,
+      progress: Math.max(0, this.frog.gridY),
+      total: this.world.difficulty.lanes,
     });
+  }
+
+  completeStage() {
+    this.state = GAME_STATE.STAGECLEAR;
+    const stage = this.world.stageDef;
+    const s = Storage.get();
+    const prevBest = s.stageBest[stage.id] || 0;
+    const isBest = this.score > prevBest;
+    const newBest = Math.max(prevBest, this.score);
+    const unlocked = new Set(s.unlockedStages || [1]);
+    if (stage.id < STAGES.length) unlocked.add(stage.id + 1);
+    Storage.patch({
+      stageBest: { ...s.stageBest, [stage.id]: newBest },
+      unlockedStages: [...unlocked].sort((a,b) => a-b),
+      bestScore: Math.max(s.bestScore, this.score),
+      coins: s.coins + this.coinsRun,
+    });
+    Storage.addXP(Math.max(20, Math.floor(this.score / 2)));
+    Audio.levelup();
+    UI.renderStageComplete(stage, this.score, this.coinsRun, isBest);
+    document.getElementById('hud').classList.add('hidden');
+    UI.only('stage-complete');
   }
 
   _render() {

@@ -20,6 +20,9 @@ const Storage = (() => {
     totalHops: 0,
     settings: { sfx: true, music: true, haptics: true, musicVol: 0.5, sfxVol: 0.8 },
     quests: { today: null, progress: {} },
+    unlockedStages: [1],
+    stageBest: {},
+    currentStage: 1,
   };
 
   let state = load();

@@ -5,28 +5,20 @@
 // Themes shift every BIOME_LEN lanes to keep visuals fresh.
 
 const LANE = { GRASS: 'grass', ROAD: 'road', WATER: 'water', RAIL: 'rail' };
-const BIOME_LEN = 25;
-const BIOMES = [
-  { id: 'meadow',    grass: '#3aa050', grassAlt: '#358a45', road: '#2a3050',
-    roadStripe: '#ffe066', water: '#2a73b5', rail: '#3a3a3a' },
-  { id: 'desert',    grass: '#d4a35a', grassAlt: '#b88845', road: '#5a4030',
-    roadStripe: '#ffe066', water: '#56a0d0', rail: '#3a3a3a' },
-  { id: 'cyber',     grass: '#222850', grassAlt: '#2c3470', road: '#0c0c1a',
-    roadStripe: '#ff3bd9', water: '#003a55', rail: '#2a3050' },
-  { id: 'lava',      grass: '#3a1a14', grassAlt: '#4a201a', road: '#1a0808',
-    roadStripe: '#ff6620', water: '#c93810', rail: '#3a3a3a' },
-];
 
 class World {
   constructor(game) {
     this.game = game;
+    this.stage = game.currentStage || 1;
+    this.stageDef = stageDef(this.stage);
+    this.difficulty = stageDifficulty(this.stage);
+    this.theme = BIOMES[this.stageDef.biome] || BIOMES.meadow;
+
     this.lanes = [];           // lanes[i] holds the lane with gridY = i
     this.minReachableY = 0;
     this.maxGeneratedY = -1;
-    this.theme = BIOMES[0];
-    this.themeIndex = 0;
     this.cameraY = 0;          // world Y at the back of the visible area
-    this.scrollSpeed = 6;      // starts gentle; ramps with depth
+    this.scrollSpeed = this.difficulty.cameraBase;
     this.scrollAccel = 0.4;
     this.scrollPaused = 0;
 
@@ -45,15 +37,21 @@ class World {
   }
 
   generateLanesUntil(untilGy) {
+    const finishGy = this.difficulty.lanes;
     while (this.maxGeneratedY < untilGy) {
       const gy = this.maxGeneratedY + 1;
-      this.lanes.push(this.makeLane(gy, false));
-      this.maxGeneratedY = gy;
-      const biomeIdx = Math.floor(gy / BIOME_LEN) % BIOMES.length;
-      if (biomeIdx !== this.themeIndex) {
-        this.themeIndex = biomeIdx;
-        this.theme = BIOMES[biomeIdx];
+      if (gy === finishGy) {
+        // The finish line — special grass lane, no obstacles
+        this.lanes.push({ type: LANE.GRASS, gridY: gy, entities: [],
+                          coins: [], obstacles: [], isFinish: true });
+      } else if (gy > finishGy) {
+        // Beyond the finish — safe grass (not reachable in normal play)
+        this.lanes.push({ type: LANE.GRASS, gridY: gy, entities: [],
+                          coins: [], obstacles: [], beyondFinish: true });
+      } else {
+        this.lanes.push(this.makeLane(gy, false));
       }
+      this.maxGeneratedY = gy;
     }
   }
 
@@ -125,15 +123,16 @@ class World {
   _spawnTraffic(gy) {
     const cars = [];
     const dir = Math.random() < 0.5 ? -1 : 1;
-    // Difficulty tier: 0 (gentle) for the first ~15 lanes, then ramps.
-    const tier = Math.min(5, gy / 15);
-    // Speeds: 50–95 at tier 0; ~150–280 at tier 5.
-    const baseSpeed = 50 + tier * 25 + Math.random() * (45 + tier * 18);
+    // Within-stage gentle ramp (0..3 over the stage), capped.
+    const within = Math.min(3, gy / 15);
+    // Base speeds and gaps are tuned for the gentle within-stage curve.
+    // Per-stage scaling comes from this.difficulty.carSpeedMult.
+    const baseSpeed = (50 + within * 18 + Math.random() * (40 + within * 14))
+                      * this.difficulty.carSpeedMult;
     const speed = baseSpeed * dir;
-    // Gaps wide enough to always give 1 tile of side-step room.
-    const minGap = Math.max(220, 340 - tier * 24);
-    const maxGap = Math.max(360, 480 - tier * 26);
-    const gap = minGap + Math.random() * (maxGap - minGap);
+    // Gaps stay generous; we don't compress them per stage so there's
+    // always at least 1 tile of side-step room — only speed ramps.
+    const gap = 260 + Math.random() * 160;
     const startOffset = Math.random() * gap;
     for (let x = -200 + startOffset; x < COLS * TILE + 200; x += gap) {
       const truck = Math.random() < 0.25;
@@ -152,12 +151,11 @@ class World {
   _spawnFloaters(gy) {
     const items = [];
     const dir = Math.random() < 0.5 ? -1 : 1;
-    const tier = Math.min(5, gy / 15);
-    // River drifts slow at first, gets quicker deeper.
-    const baseSpeed = 28 + tier * 12 + Math.random() * (32 + tier * 12);
+    const within = Math.min(3, gy / 15);
+    const baseSpeed = (28 + within * 10 + Math.random() * (28 + within * 10))
+                      * this.difficulty.floaterSpeedMult;
     const speed = baseSpeed * dir;
     const useLogs = Math.random() < 0.7;
-    // Slightly tighter gaps for lily pads since they're smaller.
     const gap = useLogs
       ? 180 + Math.random() * 80
       : 120 + Math.random() * 60;
@@ -177,10 +175,10 @@ class World {
   }
 
   update(dt) {
-    // Auto-scroll pressure: rises gently with progress.
-    // Lanes 0..80 ramp from 8 -> ~36 px/s; first ~10 lanes barely scroll.
-    const depth = Math.min(80, this.game.frog.gridY);
-    const target = 8 + (depth / 80) * 28;
+    // Camera target = per-stage base + a +2 px/s step every 10 lanes the
+    // player has cleared inside this stage.
+    const depthBoost = Math.floor(this.game.frog.gridY / 10) * 2;
+    const target = this.difficulty.cameraBase + depthBoost;
     this.scrollSpeed += (target - this.scrollSpeed) * Math.min(1, dt * 0.4);
     let scroll = this.scrollSpeed * dt;
     if (this.scrollPaused > 0) {
@@ -262,6 +260,39 @@ class World {
     const sy = laneTopY(lane.gridY, this.cameraY);
     const t = this.theme;
     const checker = (lane.gridY % 2 === 0);
+    if (lane.isFinish) {
+      // Grass base
+      ctx.fillStyle = t.grass;
+      ctx.fillRect(0, sy, COLS * TILE, TILE);
+      // Checkered finish pattern
+      const sq = 12;
+      const rows = Math.ceil(TILE / sq);
+      const cols = Math.ceil(COLS * TILE / sq);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          ctx.fillStyle = (r + c) % 2 ? '#0b1020' : '#f6f9ff';
+          ctx.fillRect(c * sq, sy + r * sq, sq, sq);
+        }
+      }
+      // FINISH banner
+      ctx.fillStyle = 'rgba(255,210,59,0.95)';
+      const bannerH = 26;
+      ctx.fillRect(0, sy + (TILE - bannerH) / 2, COLS * TILE, bannerH);
+      ctx.fillStyle = '#2b1a00';
+      ctx.font = 'bold 18px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('★  FINISH  ★', COLS * TILE / 2, sy + TILE / 2 + 1);
+      ctx.textBaseline = 'alphabetic';
+      // pickups (rare, but render them anyway)
+      for (const c of lane.coins) c.draw(ctx, this.cameraY);
+      return;
+    }
+    if (lane.beyondFinish) {
+      ctx.fillStyle = t.grass;
+      ctx.fillRect(0, sy, COLS * TILE, TILE);
+      return;
+    }
     if (lane.type === LANE.GRASS) {
       ctx.fillStyle = checker ? t.grass : t.grassAlt;
       ctx.fillRect(0, sy, COLS * TILE, TILE);
@@ -330,14 +361,16 @@ class World {
     }
     if (frog.hopProgress < 0.5) return; // grace mid-hop
 
+    const wasOnLog = !!frog.ridingLog;
+
     if (lane.type === LANE.ROAD) {
       for (const v of lane.entities) {
         if (Math.abs(v.x - frog.x) < (v.w/2 + 18) && Math.abs(v.y - frog.y) < (v.h/2 + 12)) {
           frog.die('car'); return;
         }
       }
+      frog.ridingLog = null;
     } else if (lane.type === LANE.WATER) {
-      // Must be on a floater
       let onFloater = null;
       for (const f of lane.entities) {
         if (Math.abs(f.x - frog.x) < (f.w/2) && Math.abs(f.y - frog.y) < (f.h/2 + 4)) {
@@ -345,12 +378,10 @@ class World {
         }
       }
       if (onFloater) {
-        if (frog.ridingLog !== onFloater) {
-          frog.ridingLog = onFloater;
-        }
+        if (frog.ridingLog !== onFloater) frog.ridingLog = onFloater;
       } else {
         frog.ridingLog = null;
-        if (frog.hopProgress >= 1) frog.die('drown');
+        if (frog.hopProgress >= 1) { frog.die('drown'); return; }
       }
     } else if (lane.type === LANE.RAIL) {
       if (lane.activeTrain) {
@@ -362,16 +393,21 @@ class World {
       frog.ridingLog = null;
     } else {
       frog.ridingLog = null;
-      // Tree/rock blocks aren't lethal — just impassable; we cancel the hop by snapping back
       for (const o of lane.obstacles) {
         if (Math.abs(o.x - frog.x) < 26 && Math.abs(o.y - frog.y) < 26) {
-          // push back to previous tile by reversing the last hop
           frog.gridX = Math.max(0, Math.min(COLS - 1, frog.gridX));
-          // simplest: kill if mid-traffic, otherwise nudge to nearest free tile
-          // For now, treat obstacle as fatal squish if landed on
           frog.die('obstacle'); return;
         }
       }
+    }
+
+    // Just dismounted a log? Snap gridX to wherever the frog visually is so
+    // the grid-aligned slide in Frog.update() resolves to the right column.
+    if (wasOnLog && !frog.ridingLog) {
+      const nearestCol = Math.max(0, Math.min(COLS - 1,
+        Math.round((frog.x - TILE/2) / TILE)));
+      frog.gridX = nearestCol;
+      frog.logOffset = 0;
     }
   }
 }

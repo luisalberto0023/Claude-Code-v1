@@ -86,8 +86,34 @@ html, body {
 .hud-value {
   font-size: 20px; font-weight: 800; letter-spacing: 0.5px;
 }
+.hud-stage {
+  display: flex; align-items: center; gap: 8px;
+  margin: 8px 4px 0;
+  background: rgba(11,16,32,0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
+  padding: 4px 10px;
+  font-size: 11px; letter-spacing: 1px; color: var(--txt-1);
+}
+#hud-stage-label { font-weight: 800; color: var(--txt-0); }
+.hud-progress {
+  flex: 1; height: 6px;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px; overflow: hidden;
+}
+#hud-progress-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, var(--neon-1), var(--neon-3));
+  transition: width 0.18s ease-out;
+}
+#hud-progress-text {
+  font-weight: 800; min-width: 40px; text-align: right;
+}
+
 .hud-row.left {
-  position: absolute; top: 70px; left: 12px;
+  position: absolute; top: 116px; left: 12px;
 }
 .hud-lives { display: flex; gap: 4px; }
 .heart {
@@ -98,7 +124,7 @@ html, body {
 .heart.lost { opacity: 0.18; transform: scale(0.8); }
 
 .icon-btn {
-  position: absolute; top: 70px; right: 14px;
+  position: absolute; top: 116px; right: 14px;
   width: 44px; height: 44px; border-radius: 12px;
   background: rgba(11,16,32,0.65);
   color: var(--txt-0); border: 1px solid rgba(255,255,255,0.08);
@@ -503,6 +529,81 @@ html, body {
   background: #06202b;
 }
 .set-spacer { width: 100%; }
+
+/* === World map === */
+.worldmap-modal {
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.worldmap-list {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 12px 0 16px;
+}
+.stage-tile {
+  display: grid;
+  grid-template-columns: 56px 1fr 32px;
+  align-items: center;
+  gap: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+  text-align: left;
+}
+.stage-tile:active { transform: scale(0.985); }
+.stage-tile:not(.locked):hover {
+  border-color: rgba(0,255,213,0.35);
+}
+.stage-tile.locked {
+  cursor: not-allowed;
+  opacity: 0.45;
+  filter: grayscale(0.6);
+}
+.stage-tile.cleared {
+  border-color: rgba(0,255,213,0.35);
+  box-shadow: 0 0 12px rgba(0,255,213,0.10);
+}
+.stage-badge {
+  width: 48px; height: 48px;
+  border-radius: 12px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 20px; font-weight: 900;
+  color: #06202b;
+  text-shadow: 0 1px 0 rgba(255,255,255,0.4);
+  box-shadow: inset 0 -3px 0 rgba(0,0,0,0.20);
+}
+.stage-tile.locked .stage-badge {
+  color: var(--txt-2);
+  text-shadow: none;
+  font-size: 22px;
+}
+.stage-info { min-width: 0; }
+.stage-name {
+  font-size: 15px; font-weight: 800; color: var(--txt-0);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.stage-meta {
+  font-size: 11px; color: var(--txt-2); letter-spacing: 0.5px;
+  margin-top: 2px;
+}
+.stage-action {
+  font-size: 22px; color: var(--neon-1); text-align: center;
+}
+
+/* === Stage complete badge === */
+.sc-badge {
+  background: linear-gradient(90deg, var(--neon-1), var(--neon-3));
+  color: #06202b;
+  font-weight: 900;
+  letter-spacing: 1.5px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin: 14px 0 6px;
+  box-shadow: 0 0 18px rgba(0,255,213,0.35);
+}
 
 /* === Floating score text === */
 .float-text {

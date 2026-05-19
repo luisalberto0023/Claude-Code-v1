@@ -30,6 +30,11 @@
           <span id="hud-coins" class="hud-value">0</span>
         </div>
       </div>
+      <div class="hud-stage">
+        <span id="hud-stage-label">Stage 1</span>
+        <div class="hud-progress"><div id="hud-progress-fill"></div></div>
+        <span id="hud-progress-text">0/25</span>
+      </div>
       <div class="hud-row left">
         <div id="hud-lives" class="hud-lives">
           <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
@@ -54,7 +59,7 @@
         <div class="stat"><span>Coins</span><strong id="menu-coins">0</strong></div>
         <div class="stat"><span>Level</span><strong id="menu-level">1</strong></div>
       </div>
-      <button id="btn-play" class="btn btn-primary">TAP TO HOP</button>
+      <button id="btn-play" class="btn btn-primary">🗺  PLAY</button>
       <div class="menu-buttons">
         <button id="btn-characters" class="btn btn-ghost">🎨 Character</button>
         <button id="btn-daily" class="btn btn-ghost">🎁 Daily</button>
@@ -157,6 +162,33 @@
           </div>
         </div>
         <button id="shop-close" class="btn btn-ghost">Close</button>
+      </div>
+    </div>
+
+    <!-- World map -->
+    <div id="worldmap" class="screen hidden modal">
+      <div class="modal-card wide worldmap-modal">
+        <h2>World Map</h2>
+        <p class="muted">Pick a stage. Clear one to unlock the next.</p>
+        <div id="worldmap-list" class="worldmap-list"></div>
+        <button id="worldmap-close" class="btn btn-ghost">Back to Menu</button>
+      </div>
+    </div>
+
+    <!-- Stage complete -->
+    <div id="stage-complete" class="screen hidden modal">
+      <div class="modal-card">
+        <h2 id="sc-title">Stage Cleared!</h2>
+        <p id="sc-name" class="muted">Meadow Crossing</p>
+        <div class="result-row">
+          <div><span>Score</span><strong id="sc-score">0</strong></div>
+          <div><span>Coins</span><strong id="sc-coins">0</strong></div>
+          <div><span>Best</span><strong id="sc-best">0</strong></div>
+        </div>
+        <div id="sc-badge" class="sc-badge">★ STAGE COMPLETE ★</div>
+        <button id="sc-next" class="btn btn-primary">Next Stage</button>
+        <button id="sc-map" class="btn btn-ghost">World Map</button>
+        <button id="sc-home" class="btn btn-ghost">Home</button>
       </div>
     </div>
 
