@@ -56,7 +56,7 @@
       </div>
       <button id="btn-play" class="btn btn-primary">TAP TO HOP</button>
       <div class="menu-buttons">
-        <button id="btn-characters" class="btn btn-ghost">🐸 Skins</button>
+        <button id="btn-characters" class="btn btn-ghost">🎨 Character</button>
         <button id="btn-daily" class="btn btn-ghost">🎁 Daily</button>
         <button id="btn-shop" class="btn btn-ghost">💎 Shop</button>
         <button id="btn-leaderboard" class="btn btn-ghost">🏆 Ranks</button>
@@ -106,11 +106,25 @@
 
     <!-- Characters -->
     <div id="characters" class="screen hidden modal">
-      <div class="modal-card wide">
-        <h2>Skins</h2>
-        <p class="muted">Each skin gives a unique buff. Unlock with coins or gems.</p>
+      <div class="modal-card wide character-modal">
+        <h2 id="char-title">Character</h2>
+        <p id="char-subtitle" class="muted">Customize your hopster, or pick a special skin</p>
+
+        <div class="char-preview">
+          <canvas id="char-preview-canvas" width="120" height="120"></canvas>
+        </div>
+
+        <h3 class="char-section-title">Species</h3>
+        <div id="char-species" class="char-species"></div>
+
+        <h3 class="char-section-title">Color</h3>
+        <div id="char-colors" class="char-colors"></div>
+        <button id="char-random" class="btn btn-ghost btn-small">🎲 Random</button>
+
+        <h3 class="char-section-title">Special Skins</h3>
         <div id="char-grid" class="char-grid"></div>
-        <button id="char-close" class="btn btn-ghost">Close</button>
+
+        <button id="char-close" class="btn btn-primary">Done</button>
       </div>
     </div>
 

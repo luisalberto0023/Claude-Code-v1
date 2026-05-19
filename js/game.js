@@ -25,7 +25,16 @@ class Game {
     this._bindFirstGesture();
     UI.refreshMenu();
     UI.only('menu');
-    this._showDailyIfDue();
+    if (!Storage.get().onboarded) {
+      // Force the character picker before anything else
+      setTimeout(() => {
+        UI.renderCharacter('onboarding');
+        UI.startCharPreviewAnim();
+        UI.only('characters');
+      }, 200);
+    } else {
+      this._showDailyIfDue();
+    }
     requestAnimationFrame(this._loop.bind(this));
   }
 
@@ -112,8 +121,26 @@ class Game {
     document.getElementById('btn-quit').onclick = () => { Audio.button(); this.gameOver('quit'); };
     document.getElementById('btn-revive').onclick = () => { Audio.button(); this.revive(); };
 
-    document.getElementById('btn-characters').onclick = () => { Audio.button(); UI.renderCharacters(); UI.only('characters'); };
-    document.getElementById('char-close').onclick   = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
+    document.getElementById('btn-characters').onclick = () => {
+      Audio.button();
+      UI.renderCharacter('normal');
+      UI.startCharPreviewAnim();
+      UI.only('characters');
+    };
+    document.getElementById('char-close').onclick = () => {
+      Audio.button();
+      UI.stopCharPreviewAnim();
+      const onboarding = document.getElementById('char-close').dataset.mode === 'onboarding';
+      if (onboarding) {
+        Storage.patch({ onboarded: true });
+        UI.only('menu'); UI.refreshMenu();
+        // Now show the daily reward modal if it's due
+        this._showDailyIfDue();
+      } else {
+        UI.only('menu'); UI.refreshMenu();
+      }
+    };
+    document.getElementById('char-random').onclick = () => { Audio.button(); UI.randomizeCharacter(); };
     document.getElementById('btn-daily').onclick    = () => { Audio.button(); UI.renderDaily(); UI.only('daily'); };
     document.getElementById('daily-close').onclick  = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
     document.getElementById('daily-claim').onclick  = () => {

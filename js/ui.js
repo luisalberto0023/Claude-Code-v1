@@ -112,31 +112,159 @@ const UI = (() => {
     return today;
   }
 
-  // === Characters / skins ===
-  function renderCharacters() {
-    const grid = document.getElementById('char-grid');
+  // === Character: species + color + special skins (unified) ===
+  const SPECIES = [
+    { id: 'frog',     emoji: '🐸', name: 'Frog' },
+    { id: 'rabbit',   emoji: '🐰', name: 'Rabbit' },
+    { id: 'kangaroo', emoji: '🦘', name: 'Kangaroo' },
+  ];
+  const COLOR_PALETTE = [
+    '#6dffb1', // mint
+    '#00ffd5', // teal
+    '#5cb8ff', // sky
+    '#a884ff', // violet
+    '#ff5fb8', // pink
+    '#ff6b6b', // red
+    '#ff9b3d', // orange
+    '#ffd23b', // gold
+    '#b88845', // brown
+    '#c8d2e8', // ash
+    '#3aa050', // forest
+    '#2a3050', // ink
+  ];
+
+  // Preview animation state
+  let charAnimRAF = null;
+  let charAnimStart = 0;
+
+  function _previewSpecies() {
     const s = Storage.get();
+    if (s.useCustom) {
+      return {
+        species: s.customSpecies || 'frog',
+        color: s.customColor || '#6dffb1',
+      };
+    }
+    return { species: 'frog', color: skinDef(s.activeSkin).color };
+  }
+
+  function _drawCharPreview() {
+    const canvas = document.getElementById('char-preview-canvas');
+    if (!canvas) return;
+    const c = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    c.clearRect(0, 0, w, h);
+    const { species, color } = _previewSpecies();
+    // Hop in place: 850ms cycle
+    const phase = ((performance.now() - charAnimStart) % 850) / 850;
+    const air = Math.sin(phase * Math.PI);
+    c.save();
+    c.translate(w / 2, h / 2 + 14);
+    // shadow
+    c.fillStyle = `rgba(0,0,0,${0.32 - air * 0.18})`;
+    c.beginPath();
+    c.ellipse(0, 28, 22 - air * 8, 7 - air * 3, 0, 0, Math.PI * 2);
+    c.fill();
+    // sprite with squash/stretch
+    c.translate(0, -air * 18);
+    c.scale(1 + air * 0.10, 1 - air * 0.08);
+    c.scale(1.6, 1.6); // upscale for the preview canvas
+    drawSpriteFor(c, species, color);
+    c.restore();
+  }
+
+  function startCharPreviewAnim() {
+    if (charAnimRAF) return;
+    charAnimStart = performance.now();
+    const tick = () => {
+      _drawCharPreview();
+      charAnimRAF = requestAnimationFrame(tick);
+    };
+    charAnimRAF = requestAnimationFrame(tick);
+  }
+  function stopCharPreviewAnim() {
+    if (charAnimRAF) cancelAnimationFrame(charAnimRAF);
+    charAnimRAF = null;
+  }
+
+  function renderCharacter(mode = 'normal') {
+    const s = Storage.get();
+
+    // Title + subtitle + Done label flip for onboarding
+    const titleEl = document.getElementById('char-title');
+    const subEl = document.getElementById('char-subtitle');
+    const doneEl = document.getElementById('char-close');
+    if (mode === 'onboarding') {
+      titleEl.textContent = 'Welcome to Hopster!';
+      subEl.textContent = 'Pick your character to start hopping';
+      doneEl.textContent = 'Start Hopping';
+      doneEl.dataset.mode = 'onboarding';
+    } else {
+      titleEl.textContent = 'Character';
+      subEl.textContent = 'Customize your hopster, or pick a special skin';
+      doneEl.textContent = 'Done';
+      doneEl.dataset.mode = 'normal';
+    }
+
+    // Species tiles
+    const spContainer = document.getElementById('char-species');
+    spContainer.innerHTML = '';
+    SPECIES.forEach(sp => {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'species-tile';
+      if (s.useCustom && s.customSpecies === sp.id) tile.classList.add('selected');
+      tile.innerHTML = `<div class="species-emoji">${sp.emoji}</div><div class="species-name">${sp.name}</div>`;
+      tile.addEventListener('click', () => {
+        Audio.button();
+        Storage.patch({ customSpecies: sp.id, useCustom: true });
+        renderCharacter(doneEl.dataset.mode);
+      });
+      spContainer.appendChild(tile);
+    });
+
+    // Color swatches
+    const colContainer = document.getElementById('char-colors');
+    colContainer.innerHTML = '';
+    COLOR_PALETTE.forEach(color => {
+      const sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'color-swatch';
+      sw.style.background = color;
+      if (s.useCustom && s.customColor === color) sw.classList.add('selected');
+      sw.addEventListener('click', () => {
+        Audio.button();
+        Storage.patch({ customColor: color, useCustom: true });
+        renderCharacter(doneEl.dataset.mode);
+      });
+      colContainer.appendChild(sw);
+    });
+
+    // Special skins (existing 8) — tap to equip its perk + override custom
+    const grid = document.getElementById('char-grid');
     grid.innerHTML = '';
     Object.entries(SKINS).forEach(([id, def]) => {
       const owned = s.unlockedSkins.includes(id);
+      const isActive = !s.useCustom && s.activeSkin === id;
       const cell = document.createElement('div');
-      cell.className = 'char-cell' + (owned ? '' : ' locked') + (s.activeSkin === id ? ' selected' : '');
+      cell.className = 'char-cell' + (owned ? '' : ' locked') + (isActive ? ' selected' : '');
       cell.innerHTML = `
         <div class="emoji">${def.emoji}</div>
         <div class="name">${def.name}</div>
         <div class="perk">${def.perk}</div>
-        <div class="price">${owned ? (s.activeSkin === id ? 'EQUIPPED' : 'OWNED') :
+        <div class="price">${owned ? (isActive ? 'EQUIPPED' : 'OWNED') :
           (def.gem ? def.price + '💎' : def.price + '🪙')}</div>`;
       cell.addEventListener('click', () => {
         Audio.button();
         if (owned) {
-          Storage.patch({ activeSkin: id });
+          Storage.patch({ activeSkin: id, useCustom: false });
         } else {
           const cost = def.price;
           if (def.gem ? s.gems >= cost : s.coins >= cost) {
             Storage.patch({
               unlockedSkins: [...s.unlockedSkins, id],
               activeSkin: id,
+              useCustom: false,
               coins: def.gem ? s.coins : s.coins - cost,
               gems:  def.gem ? s.gems - cost : s.gems,
             });
@@ -147,11 +275,19 @@ const UI = (() => {
               { duration: 240 });
           }
         }
-        renderCharacters();
+        renderCharacter(doneEl.dataset.mode);
         refreshMenu();
       });
       grid.appendChild(cell);
     });
+  }
+
+  function randomizeCharacter() {
+    const sp = SPECIES[Math.floor(Math.random() * SPECIES.length)].id;
+    const co = COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
+    Storage.patch({ customSpecies: sp, customColor: co, useCustom: true });
+    const mode = document.getElementById('char-close').dataset.mode || 'normal';
+    renderCharacter(mode);
   }
 
   // === Quests ===
@@ -202,7 +338,9 @@ const UI = (() => {
   return {
     show, hide, only, setHUD, refreshMenu, floatText,
     renderDaily, canClaimDaily, claimDaily,
-    renderCharacters, todaysQuests, renderQuests,
+    renderCharacter, randomizeCharacter,
+    startCharPreviewAnim, stopCharPreviewAnim,
+    todaysQuests, renderQuests,
     renderSettings,
   };
 })();

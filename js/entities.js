@@ -109,7 +109,10 @@ class Frog {
     const sy = screenY(this.y, cameraY);
     ctx.save();
     ctx.translate(this.x, sy);
-    const rot = [0, Math.PI/2, Math.PI, -Math.PI/2][this.facing];
+    // facing: 0=backward(down), 1=right, 2=forward(up), 3=left.
+    // Sprites are authored with head at local -y; rotate so that local-up
+    // maps to the screen direction the player just hopped.
+    const rot = [Math.PI, Math.PI/2, 0, -Math.PI/2][this.facing];
     ctx.rotate(rot);
     // Airborne factor: 0 on the ground, 1 mid-hop
     const air = this.hopProgress < 1 ? Math.sin(this.hopProgress * Math.PI) : 0;
@@ -125,9 +128,25 @@ class Frog {
     const sy2 = 1 - air * 0.08 + launchSquash * 0.06;
     ctx.translate(0, -air * 16);
     ctx.scale(sx, sy2);
-    drawFrogSprite(ctx, this.skin.color);
+    // Dispatch to the right species sprite + color
+    const s = Storage.get();
+    let species, color;
+    if (s.useCustom) {
+      species = s.customSpecies || 'frog';
+      color = s.customColor || '#6dffb1';
+    } else {
+      species = 'frog';
+      color = this.skin.color;
+    }
+    drawSpriteFor(ctx, species, color);
     ctx.restore();
   }
+}
+
+function drawSpriteFor(ctx, species, color) {
+  if (species === 'rabbit')      drawRabbitSprite(ctx, color);
+  else if (species === 'kangaroo') drawKangarooSprite(ctx, color);
+  else                              drawFrogSprite(ctx, color);
 }
 
 function drawFrogSprite(ctx, color) {
@@ -149,6 +168,116 @@ function drawFrogSprite(ctx, color) {
   // cheek shine
   ctx.fillStyle = 'rgba(255,255,255,0.18)';
   roundRect(ctx, -16, -6, 12, 6, 3); ctx.fill();
+}
+
+function drawRabbitSprite(ctx, color) {
+  const dark = shade(color, -0.18);
+  const light = shade(color, 0.20);
+  const innerEar = '#ffb8d0';
+  // cottontail behind
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(0, 18, 5, 0, Math.PI*2); ctx.fill();
+  // back legs poking out
+  ctx.fillStyle = dark;
+  roundRect(ctx, -16, 8, 10, 12, 5); ctx.fill();
+  roundRect(ctx, 6, 8, 10, 12, 5); ctx.fill();
+  // body (round, fluffy)
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, 4, 16, 14, 0, 0, Math.PI*2); ctx.fill();
+  // belly highlight
+  ctx.fillStyle = light;
+  ctx.beginPath(); ctx.ellipse(0, 10, 8, 5, 0, 0, Math.PI*2); ctx.fill();
+  // head
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, -8, 13, 12, 0, 0, Math.PI*2); ctx.fill();
+  // ears (tall, slight outward tilt)
+  ctx.beginPath(); ctx.ellipse(-7, -22, 4, 12, -0.18, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(7, -22, 4, 12,  0.18, 0, Math.PI*2); ctx.fill();
+  // inner ear (pink)
+  ctx.fillStyle = innerEar;
+  ctx.beginPath(); ctx.ellipse(-7, -22, 2, 8, -0.18, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(7, -22, 2, 8,  0.18, 0, Math.PI*2); ctx.fill();
+  // eyes
+  ctx.fillStyle = '#0b1020';
+  ctx.beginPath(); ctx.arc(-5, -9, 2.4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 5, -9, 2.4, 0, Math.PI*2); ctx.fill();
+  // eye shine
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(-4, -10, 0.8, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 6, -10, 0.8, 0, Math.PI*2); ctx.fill();
+  // nose (tiny pink triangle)
+  ctx.fillStyle = '#ff5fb8';
+  ctx.beginPath();
+  ctx.moveTo(0, -3); ctx.lineTo(-2.2, -1); ctx.lineTo(2.2, -1);
+  ctx.closePath(); ctx.fill();
+  // whisker hint
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(-2, 0); ctx.lineTo(-8, -1);
+  ctx.moveTo( 2, 0); ctx.lineTo( 8, -1);
+  ctx.stroke();
+}
+
+function drawKangarooSprite(ctx, color) {
+  const dark = shade(color, -0.16);
+  const light = shade(color, 0.20);
+  // tail curling behind
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.moveTo(-2, 14);
+  ctx.quadraticCurveTo(14, 18, 19, 11);
+  ctx.quadraticCurveTo(21, 7, 18, 5);
+  ctx.quadraticCurveTo(13, 11, -2, 9);
+  ctx.closePath();
+  ctx.fill();
+  // big back legs
+  roundRect(ctx, -14, 4, 9, 16, 4); ctx.fill();
+  roundRect(ctx, 5,  4, 9, 16, 4); ctx.fill();
+  // body (pear-shaped, sitting upright)
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, 2, 12, 16, 0, 0, Math.PI*2); ctx.fill();
+  // pouch / lighter belly
+  ctx.fillStyle = light;
+  ctx.beginPath(); ctx.ellipse(0, 8, 7, 6, 0, 0, Math.PI*2); ctx.fill();
+  // small front paws
+  ctx.fillStyle = dark;
+  roundRect(ctx, -7, 0, 4, 5, 2); ctx.fill();
+  roundRect(ctx, 3,  0, 4, 5, 2); ctx.fill();
+  // head
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, -13, 9, 10, 0, 0, Math.PI*2); ctx.fill();
+  // pointed snout
+  ctx.beginPath();
+  ctx.moveTo(0, -22); ctx.lineTo(4.5, -16); ctx.lineTo(-4.5, -16);
+  ctx.closePath(); ctx.fill();
+  // snout tip
+  ctx.fillStyle = '#0b1020';
+  ctx.beginPath(); ctx.arc(0, -21, 1.2, 0, Math.PI*2); ctx.fill();
+  // pointy ears
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-6, -18); ctx.lineTo(-10, -27); ctx.lineTo(-3, -22);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(6, -18); ctx.lineTo(10, -27); ctx.lineTo(3, -22);
+  ctx.closePath(); ctx.fill();
+  // inner ear
+  ctx.fillStyle = light;
+  ctx.beginPath();
+  ctx.moveTo(-5, -20); ctx.lineTo(-8, -24); ctx.lineTo(-4, -22);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(5, -20); ctx.lineTo(8, -24); ctx.lineTo(4, -22);
+  ctx.closePath(); ctx.fill();
+  // eyes
+  ctx.fillStyle = '#0b1020';
+  ctx.beginPath(); ctx.arc(-3, -13, 1.8, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 3, -13, 1.8, 0, Math.PI*2); ctx.fill();
+  // eye shine
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(-2.4, -13.6, 0.7, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 3.4, -13.6, 0.7, 0, Math.PI*2); ctx.fill();
 }
 
 // === Vehicle: car / truck / train ===

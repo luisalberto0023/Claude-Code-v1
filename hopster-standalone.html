@@ -302,7 +302,87 @@ html, body {
 .btn:disabled:active,
 .btn[disabled]:active { transform: none; }
 
-/* === Characters === */
+/* === Character screen === */
+.character-modal {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.character-modal::-webkit-scrollbar { width: 4px; }
+.character-modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+.char-preview {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 10px;
+}
+#char-preview-canvas {
+  background:
+    radial-gradient(60% 60% at 50% 60%, rgba(0,255,213,0.10), transparent 70%),
+    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.18));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 60px;
+  width: 120px; height: 120px;
+}
+
+.char-section-title {
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  color: var(--txt-2);
+  margin: 14px 0 6px;
+  text-align: left;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.char-species {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.species-tile {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 10px 4px;
+  cursor: pointer;
+  color: var(--txt-0);
+  font-family: inherit;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+}
+.species-tile:active { transform: scale(0.96); }
+.species-tile.selected {
+  border-color: var(--neon-1);
+  box-shadow: 0 0 16px rgba(0,255,213,0.30);
+  background: rgba(0,255,213,0.06);
+}
+.species-emoji { font-size: 30px; line-height: 1; }
+.species-name { font-size: 12px; font-weight: 700; margin-top: 4px; }
+
+.char-colors {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
+  margin-bottom: 6px;
+}
+.color-swatch {
+  width: 100%; aspect-ratio: 1; padding: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+}
+.color-swatch:active { transform: scale(0.92); }
+.color-swatch.selected {
+  border-color: #fff;
+  box-shadow: 0 0 14px rgba(255,255,255,0.55), 0 0 22px rgba(0,255,213,0.35);
+  transform: scale(1.08);
+}
+
+.btn.btn-small {
+  padding: 8px 16px;
+  font-size: 12px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+/* keep existing Characters / skins styles below */
 .char-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
   margin: 14px 0;
@@ -502,7 +582,7 @@ html, body {
       </div>
       <button id="btn-play" class="btn btn-primary">TAP TO HOP</button>
       <div class="menu-buttons">
-        <button id="btn-characters" class="btn btn-ghost">🐸 Skins</button>
+        <button id="btn-characters" class="btn btn-ghost">🎨 Character</button>
         <button id="btn-daily" class="btn btn-ghost">🎁 Daily</button>
         <button id="btn-shop" class="btn btn-ghost">💎 Shop</button>
         <button id="btn-leaderboard" class="btn btn-ghost">🏆 Ranks</button>
@@ -552,11 +632,25 @@ html, body {
 
     <!-- Characters -->
     <div id="characters" class="screen hidden modal">
-      <div class="modal-card wide">
-        <h2>Skins</h2>
-        <p class="muted">Each skin gives a unique buff. Unlock with coins or gems.</p>
+      <div class="modal-card wide character-modal">
+        <h2 id="char-title">Character</h2>
+        <p id="char-subtitle" class="muted">Customize your hopster, or pick a special skin</p>
+
+        <div class="char-preview">
+          <canvas id="char-preview-canvas" width="120" height="120"></canvas>
+        </div>
+
+        <h3 class="char-section-title">Species</h3>
+        <div id="char-species" class="char-species"></div>
+
+        <h3 class="char-section-title">Color</h3>
+        <div id="char-colors" class="char-colors"></div>
+        <button id="char-random" class="btn btn-ghost btn-small">🎲 Random</button>
+
+        <h3 class="char-section-title">Special Skins</h3>
         <div id="char-grid" class="char-grid"></div>
-        <button id="char-close" class="btn btn-ghost">Close</button>
+
+        <button id="char-close" class="btn btn-primary">Done</button>
       </div>
     </div>
 
@@ -650,6 +744,10 @@ const Storage = (() => {
     xp: 0,
     unlockedSkins: ['frog'],
     activeSkin: 'frog',
+    customSpecies: 'frog',
+    customColor: '#6dffb1',
+    useCustom: true,
+    onboarded: false,
     dailyStreak: 0,
     lastDaily: null,
     totalRuns: 0,
@@ -969,7 +1067,10 @@ class Frog {
     const sy = screenY(this.y, cameraY);
     ctx.save();
     ctx.translate(this.x, sy);
-    const rot = [0, Math.PI/2, Math.PI, -Math.PI/2][this.facing];
+    // facing: 0=backward(down), 1=right, 2=forward(up), 3=left.
+    // Sprites are authored with head at local -y; rotate so that local-up
+    // maps to the screen direction the player just hopped.
+    const rot = [Math.PI, Math.PI/2, 0, -Math.PI/2][this.facing];
     ctx.rotate(rot);
     // Airborne factor: 0 on the ground, 1 mid-hop
     const air = this.hopProgress < 1 ? Math.sin(this.hopProgress * Math.PI) : 0;
@@ -985,9 +1086,25 @@ class Frog {
     const sy2 = 1 - air * 0.08 + launchSquash * 0.06;
     ctx.translate(0, -air * 16);
     ctx.scale(sx, sy2);
-    drawFrogSprite(ctx, this.skin.color);
+    // Dispatch to the right species sprite + color
+    const s = Storage.get();
+    let species, color;
+    if (s.useCustom) {
+      species = s.customSpecies || 'frog';
+      color = s.customColor || '#6dffb1';
+    } else {
+      species = 'frog';
+      color = this.skin.color;
+    }
+    drawSpriteFor(ctx, species, color);
     ctx.restore();
   }
+}
+
+function drawSpriteFor(ctx, species, color) {
+  if (species === 'rabbit')      drawRabbitSprite(ctx, color);
+  else if (species === 'kangaroo') drawKangarooSprite(ctx, color);
+  else                              drawFrogSprite(ctx, color);
 }
 
 function drawFrogSprite(ctx, color) {
@@ -1009,6 +1126,116 @@ function drawFrogSprite(ctx, color) {
   // cheek shine
   ctx.fillStyle = 'rgba(255,255,255,0.18)';
   roundRect(ctx, -16, -6, 12, 6, 3); ctx.fill();
+}
+
+function drawRabbitSprite(ctx, color) {
+  const dark = shade(color, -0.18);
+  const light = shade(color, 0.20);
+  const innerEar = '#ffb8d0';
+  // cottontail behind
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(0, 18, 5, 0, Math.PI*2); ctx.fill();
+  // back legs poking out
+  ctx.fillStyle = dark;
+  roundRect(ctx, -16, 8, 10, 12, 5); ctx.fill();
+  roundRect(ctx, 6, 8, 10, 12, 5); ctx.fill();
+  // body (round, fluffy)
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, 4, 16, 14, 0, 0, Math.PI*2); ctx.fill();
+  // belly highlight
+  ctx.fillStyle = light;
+  ctx.beginPath(); ctx.ellipse(0, 10, 8, 5, 0, 0, Math.PI*2); ctx.fill();
+  // head
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, -8, 13, 12, 0, 0, Math.PI*2); ctx.fill();
+  // ears (tall, slight outward tilt)
+  ctx.beginPath(); ctx.ellipse(-7, -22, 4, 12, -0.18, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(7, -22, 4, 12,  0.18, 0, Math.PI*2); ctx.fill();
+  // inner ear (pink)
+  ctx.fillStyle = innerEar;
+  ctx.beginPath(); ctx.ellipse(-7, -22, 2, 8, -0.18, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(7, -22, 2, 8,  0.18, 0, Math.PI*2); ctx.fill();
+  // eyes
+  ctx.fillStyle = '#0b1020';
+  ctx.beginPath(); ctx.arc(-5, -9, 2.4, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 5, -9, 2.4, 0, Math.PI*2); ctx.fill();
+  // eye shine
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(-4, -10, 0.8, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 6, -10, 0.8, 0, Math.PI*2); ctx.fill();
+  // nose (tiny pink triangle)
+  ctx.fillStyle = '#ff5fb8';
+  ctx.beginPath();
+  ctx.moveTo(0, -3); ctx.lineTo(-2.2, -1); ctx.lineTo(2.2, -1);
+  ctx.closePath(); ctx.fill();
+  // whisker hint
+  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  ctx.moveTo(-2, 0); ctx.lineTo(-8, -1);
+  ctx.moveTo( 2, 0); ctx.lineTo( 8, -1);
+  ctx.stroke();
+}
+
+function drawKangarooSprite(ctx, color) {
+  const dark = shade(color, -0.16);
+  const light = shade(color, 0.20);
+  // tail curling behind
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.moveTo(-2, 14);
+  ctx.quadraticCurveTo(14, 18, 19, 11);
+  ctx.quadraticCurveTo(21, 7, 18, 5);
+  ctx.quadraticCurveTo(13, 11, -2, 9);
+  ctx.closePath();
+  ctx.fill();
+  // big back legs
+  roundRect(ctx, -14, 4, 9, 16, 4); ctx.fill();
+  roundRect(ctx, 5,  4, 9, 16, 4); ctx.fill();
+  // body (pear-shaped, sitting upright)
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, 2, 12, 16, 0, 0, Math.PI*2); ctx.fill();
+  // pouch / lighter belly
+  ctx.fillStyle = light;
+  ctx.beginPath(); ctx.ellipse(0, 8, 7, 6, 0, 0, Math.PI*2); ctx.fill();
+  // small front paws
+  ctx.fillStyle = dark;
+  roundRect(ctx, -7, 0, 4, 5, 2); ctx.fill();
+  roundRect(ctx, 3,  0, 4, 5, 2); ctx.fill();
+  // head
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, -13, 9, 10, 0, 0, Math.PI*2); ctx.fill();
+  // pointed snout
+  ctx.beginPath();
+  ctx.moveTo(0, -22); ctx.lineTo(4.5, -16); ctx.lineTo(-4.5, -16);
+  ctx.closePath(); ctx.fill();
+  // snout tip
+  ctx.fillStyle = '#0b1020';
+  ctx.beginPath(); ctx.arc(0, -21, 1.2, 0, Math.PI*2); ctx.fill();
+  // pointy ears
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(-6, -18); ctx.lineTo(-10, -27); ctx.lineTo(-3, -22);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(6, -18); ctx.lineTo(10, -27); ctx.lineTo(3, -22);
+  ctx.closePath(); ctx.fill();
+  // inner ear
+  ctx.fillStyle = light;
+  ctx.beginPath();
+  ctx.moveTo(-5, -20); ctx.lineTo(-8, -24); ctx.lineTo(-4, -22);
+  ctx.closePath(); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(5, -20); ctx.lineTo(8, -24); ctx.lineTo(4, -22);
+  ctx.closePath(); ctx.fill();
+  // eyes
+  ctx.fillStyle = '#0b1020';
+  ctx.beginPath(); ctx.arc(-3, -13, 1.8, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 3, -13, 1.8, 0, Math.PI*2); ctx.fill();
+  // eye shine
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath(); ctx.arc(-2.4, -13.6, 0.7, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath(); ctx.arc( 3.4, -13.6, 0.7, 0, Math.PI*2); ctx.fill();
 }
 
 // === Vehicle: car / truck / train ===
@@ -1861,31 +2088,159 @@ const UI = (() => {
     return today;
   }
 
-  // === Characters / skins ===
-  function renderCharacters() {
-    const grid = document.getElementById('char-grid');
+  // === Character: species + color + special skins (unified) ===
+  const SPECIES = [
+    { id: 'frog',     emoji: '🐸', name: 'Frog' },
+    { id: 'rabbit',   emoji: '🐰', name: 'Rabbit' },
+    { id: 'kangaroo', emoji: '🦘', name: 'Kangaroo' },
+  ];
+  const COLOR_PALETTE = [
+    '#6dffb1', // mint
+    '#00ffd5', // teal
+    '#5cb8ff', // sky
+    '#a884ff', // violet
+    '#ff5fb8', // pink
+    '#ff6b6b', // red
+    '#ff9b3d', // orange
+    '#ffd23b', // gold
+    '#b88845', // brown
+    '#c8d2e8', // ash
+    '#3aa050', // forest
+    '#2a3050', // ink
+  ];
+
+  // Preview animation state
+  let charAnimRAF = null;
+  let charAnimStart = 0;
+
+  function _previewSpecies() {
     const s = Storage.get();
+    if (s.useCustom) {
+      return {
+        species: s.customSpecies || 'frog',
+        color: s.customColor || '#6dffb1',
+      };
+    }
+    return { species: 'frog', color: skinDef(s.activeSkin).color };
+  }
+
+  function _drawCharPreview() {
+    const canvas = document.getElementById('char-preview-canvas');
+    if (!canvas) return;
+    const c = canvas.getContext('2d');
+    const w = canvas.width, h = canvas.height;
+    c.clearRect(0, 0, w, h);
+    const { species, color } = _previewSpecies();
+    // Hop in place: 850ms cycle
+    const phase = ((performance.now() - charAnimStart) % 850) / 850;
+    const air = Math.sin(phase * Math.PI);
+    c.save();
+    c.translate(w / 2, h / 2 + 14);
+    // shadow
+    c.fillStyle = `rgba(0,0,0,${0.32 - air * 0.18})`;
+    c.beginPath();
+    c.ellipse(0, 28, 22 - air * 8, 7 - air * 3, 0, 0, Math.PI * 2);
+    c.fill();
+    // sprite with squash/stretch
+    c.translate(0, -air * 18);
+    c.scale(1 + air * 0.10, 1 - air * 0.08);
+    c.scale(1.6, 1.6); // upscale for the preview canvas
+    drawSpriteFor(c, species, color);
+    c.restore();
+  }
+
+  function startCharPreviewAnim() {
+    if (charAnimRAF) return;
+    charAnimStart = performance.now();
+    const tick = () => {
+      _drawCharPreview();
+      charAnimRAF = requestAnimationFrame(tick);
+    };
+    charAnimRAF = requestAnimationFrame(tick);
+  }
+  function stopCharPreviewAnim() {
+    if (charAnimRAF) cancelAnimationFrame(charAnimRAF);
+    charAnimRAF = null;
+  }
+
+  function renderCharacter(mode = 'normal') {
+    const s = Storage.get();
+
+    // Title + subtitle + Done label flip for onboarding
+    const titleEl = document.getElementById('char-title');
+    const subEl = document.getElementById('char-subtitle');
+    const doneEl = document.getElementById('char-close');
+    if (mode === 'onboarding') {
+      titleEl.textContent = 'Welcome to Hopster!';
+      subEl.textContent = 'Pick your character to start hopping';
+      doneEl.textContent = 'Start Hopping';
+      doneEl.dataset.mode = 'onboarding';
+    } else {
+      titleEl.textContent = 'Character';
+      subEl.textContent = 'Customize your hopster, or pick a special skin';
+      doneEl.textContent = 'Done';
+      doneEl.dataset.mode = 'normal';
+    }
+
+    // Species tiles
+    const spContainer = document.getElementById('char-species');
+    spContainer.innerHTML = '';
+    SPECIES.forEach(sp => {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'species-tile';
+      if (s.useCustom && s.customSpecies === sp.id) tile.classList.add('selected');
+      tile.innerHTML = `<div class="species-emoji">${sp.emoji}</div><div class="species-name">${sp.name}</div>`;
+      tile.addEventListener('click', () => {
+        Audio.button();
+        Storage.patch({ customSpecies: sp.id, useCustom: true });
+        renderCharacter(doneEl.dataset.mode);
+      });
+      spContainer.appendChild(tile);
+    });
+
+    // Color swatches
+    const colContainer = document.getElementById('char-colors');
+    colContainer.innerHTML = '';
+    COLOR_PALETTE.forEach(color => {
+      const sw = document.createElement('button');
+      sw.type = 'button';
+      sw.className = 'color-swatch';
+      sw.style.background = color;
+      if (s.useCustom && s.customColor === color) sw.classList.add('selected');
+      sw.addEventListener('click', () => {
+        Audio.button();
+        Storage.patch({ customColor: color, useCustom: true });
+        renderCharacter(doneEl.dataset.mode);
+      });
+      colContainer.appendChild(sw);
+    });
+
+    // Special skins (existing 8) — tap to equip its perk + override custom
+    const grid = document.getElementById('char-grid');
     grid.innerHTML = '';
     Object.entries(SKINS).forEach(([id, def]) => {
       const owned = s.unlockedSkins.includes(id);
+      const isActive = !s.useCustom && s.activeSkin === id;
       const cell = document.createElement('div');
-      cell.className = 'char-cell' + (owned ? '' : ' locked') + (s.activeSkin === id ? ' selected' : '');
+      cell.className = 'char-cell' + (owned ? '' : ' locked') + (isActive ? ' selected' : '');
       cell.innerHTML = `
         <div class="emoji">${def.emoji}</div>
         <div class="name">${def.name}</div>
         <div class="perk">${def.perk}</div>
-        <div class="price">${owned ? (s.activeSkin === id ? 'EQUIPPED' : 'OWNED') :
+        <div class="price">${owned ? (isActive ? 'EQUIPPED' : 'OWNED') :
           (def.gem ? def.price + '💎' : def.price + '🪙')}</div>`;
       cell.addEventListener('click', () => {
         Audio.button();
         if (owned) {
-          Storage.patch({ activeSkin: id });
+          Storage.patch({ activeSkin: id, useCustom: false });
         } else {
           const cost = def.price;
           if (def.gem ? s.gems >= cost : s.coins >= cost) {
             Storage.patch({
               unlockedSkins: [...s.unlockedSkins, id],
               activeSkin: id,
+              useCustom: false,
               coins: def.gem ? s.coins : s.coins - cost,
               gems:  def.gem ? s.gems - cost : s.gems,
             });
@@ -1896,11 +2251,19 @@ const UI = (() => {
               { duration: 240 });
           }
         }
-        renderCharacters();
+        renderCharacter(doneEl.dataset.mode);
         refreshMenu();
       });
       grid.appendChild(cell);
     });
+  }
+
+  function randomizeCharacter() {
+    const sp = SPECIES[Math.floor(Math.random() * SPECIES.length)].id;
+    const co = COLOR_PALETTE[Math.floor(Math.random() * COLOR_PALETTE.length)];
+    Storage.patch({ customSpecies: sp, customColor: co, useCustom: true });
+    const mode = document.getElementById('char-close').dataset.mode || 'normal';
+    renderCharacter(mode);
   }
 
   // === Quests ===
@@ -1951,7 +2314,9 @@ const UI = (() => {
   return {
     show, hide, only, setHUD, refreshMenu, floatText,
     renderDaily, canClaimDaily, claimDaily,
-    renderCharacters, todaysQuests, renderQuests,
+    renderCharacter, randomizeCharacter,
+    startCharPreviewAnim, stopCharPreviewAnim,
+    todaysQuests, renderQuests,
     renderSettings,
   };
 })();
@@ -1984,7 +2349,16 @@ class Game {
     this._bindFirstGesture();
     UI.refreshMenu();
     UI.only('menu');
-    this._showDailyIfDue();
+    if (!Storage.get().onboarded) {
+      // Force the character picker before anything else
+      setTimeout(() => {
+        UI.renderCharacter('onboarding');
+        UI.startCharPreviewAnim();
+        UI.only('characters');
+      }, 200);
+    } else {
+      this._showDailyIfDue();
+    }
     requestAnimationFrame(this._loop.bind(this));
   }
 
@@ -2071,8 +2445,26 @@ class Game {
     document.getElementById('btn-quit').onclick = () => { Audio.button(); this.gameOver('quit'); };
     document.getElementById('btn-revive').onclick = () => { Audio.button(); this.revive(); };
 
-    document.getElementById('btn-characters').onclick = () => { Audio.button(); UI.renderCharacters(); UI.only('characters'); };
-    document.getElementById('char-close').onclick   = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
+    document.getElementById('btn-characters').onclick = () => {
+      Audio.button();
+      UI.renderCharacter('normal');
+      UI.startCharPreviewAnim();
+      UI.only('characters');
+    };
+    document.getElementById('char-close').onclick = () => {
+      Audio.button();
+      UI.stopCharPreviewAnim();
+      const onboarding = document.getElementById('char-close').dataset.mode === 'onboarding';
+      if (onboarding) {
+        Storage.patch({ onboarded: true });
+        UI.only('menu'); UI.refreshMenu();
+        // Now show the daily reward modal if it's due
+        this._showDailyIfDue();
+      } else {
+        UI.only('menu'); UI.refreshMenu();
+      }
+    };
+    document.getElementById('char-random').onclick = () => { Audio.button(); UI.randomizeCharacter(); };
     document.getElementById('btn-daily').onclick    = () => { Audio.button(); UI.renderDaily(); UI.only('daily'); };
     document.getElementById('daily-close').onclick  = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };
     document.getElementById('daily-claim').onclick  = () => {

@@ -291,7 +291,87 @@ html, body {
 .btn:disabled:active,
 .btn[disabled]:active { transform: none; }
 
-/* === Characters === */
+/* === Character screen === */
+.character-modal {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.character-modal::-webkit-scrollbar { width: 4px; }
+.character-modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+.char-preview {
+  display: flex;
+  justify-content: center;
+  margin: 6px 0 10px;
+}
+#char-preview-canvas {
+  background:
+    radial-gradient(60% 60% at 50% 60%, rgba(0,255,213,0.10), transparent 70%),
+    linear-gradient(180deg, rgba(255,255,255,0.05), rgba(0,0,0,0.18));
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 60px;
+  width: 120px; height: 120px;
+}
+
+.char-section-title {
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  color: var(--txt-2);
+  margin: 14px 0 6px;
+  text-align: left;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.char-species {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+}
+.species-tile {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 10px 4px;
+  cursor: pointer;
+  color: var(--txt-0);
+  font-family: inherit;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+}
+.species-tile:active { transform: scale(0.96); }
+.species-tile.selected {
+  border-color: var(--neon-1);
+  box-shadow: 0 0 16px rgba(0,255,213,0.30);
+  background: rgba(0,255,213,0.06);
+}
+.species-emoji { font-size: 30px; line-height: 1; }
+.species-name { font-size: 12px; font-weight: 700; margin-top: 4px; }
+
+.char-colors {
+  display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
+  margin-bottom: 6px;
+}
+.color-swatch {
+  width: 100%; aspect-ratio: 1; padding: 0;
+  border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.08);
+  cursor: pointer;
+  transition: transform .12s, border-color .15s, box-shadow .15s;
+}
+.color-swatch:active { transform: scale(0.92); }
+.color-swatch.selected {
+  border-color: #fff;
+  box-shadow: 0 0 14px rgba(255,255,255,0.55), 0 0 22px rgba(0,255,213,0.35);
+  transform: scale(1.08);
+}
+
+.btn.btn-small {
+  padding: 8px 16px;
+  font-size: 12px;
+  min-width: 0;
+  margin-top: 4px;
+}
+
+/* keep existing Characters / skins styles below */
 .char-grid {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;
   margin: 14px 0;
