@@ -112,7 +112,7 @@ nav{position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:cente
 .products-intro{padding:56px 48px 40px;border-bottom:1px solid var(--rule);display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end}
 .products-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.04em;line-height:1.05}
 .products-sub{font-size:13.5px;font-weight:300;color:var(--gray-lt);line-height:1.75}
-.product-row{display:grid;grid-template-columns:60px 1fr 200px 200px 160px;align-items:center;gap:0;border-bottom:1px solid var(--rule);transition:background .15s}
+.product-row{display:grid;grid-template-columns:60px 1fr 200px 200px 190px;align-items:center;gap:0;border-bottom:1px solid var(--rule);transition:background .15s}
 .product-row:hover{background:var(--gray-2)}
 .product-row.featured{background:var(--gray-2)}
 .product-row.featured:hover{background:var(--gray-3)}
@@ -133,7 +133,7 @@ nav{position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:cente
 .pr-price-main{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:2rem;color:var(--white);letter-spacing:-.05em;line-height:1}
 .product-row.featured .pr-price-main{color:var(--lime)}
 .pr-price-note{font-size:10px;font-weight:300;color:rgba(255,255,255,.25);margin-top:5px}
-.pr-action{padding:28px 24px;display:flex;align-items:center;justify-content:center}
+.pr-action{padding:20px 16px;display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:8px}
 .btn-row{display:block;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;padding:12px 20px;text-decoration:none;border:1px solid var(--rule);color:var(--gray-lt);transition:border-color .15s,color .15s;white-space:nowrap}
 .btn-row:hover{border-color:var(--white);color:var(--white)}
 .btn-row.primary{background:var(--lime);color:var(--black);border-color:var(--lime)}
@@ -268,6 +268,7 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
     <li><a href="#frameworks">Frameworks</a></li>
     <li><a href="#about">About</a></li>
     <li><a href="#faq">FAQ</a></li>
+    <li><a href="demo.html">Demo</a></li>
     <li><a href="#products" class="nav-cta">Get Templates</a></li>
   </ul>
   <button class="hamburger" id="hamburger" aria-label="Toggle menu"><span></span><span></span><span></span></button>
@@ -277,6 +278,7 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
   <a href="#frameworks" onclick="closeMobile()">Frameworks</a>
   <a href="#about" onclick="closeMobile()">About</a>
   <a href="#faq" onclick="closeMobile()">FAQ</a>
+  <a href="demo.html" onclick="closeMobile()">Demo</a>
   <a href="#products" class="m-cta" onclick="closeMobile()">Get Templates →</a>
 </div>
 
@@ -292,7 +294,7 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
       <p class="hero-sub">Professional-grade NIST CSF 2.0 and PCI-DSS v4.0 workbooks — built by a team of IT Risk and Compliance experts with 10+ years of experience across banking, defense contracting, and financial services.</p>
       <div class="hero-actions">
         <a href="#products" class="btn-lime">View Templates & Pricing →</a>
-        <a href="#frameworks" class="btn-wire">See What's Included</a>
+        <a href="demo.html" class="btn-wire">Explore Interactive Demo →</a>
       </div>
     </div>
   </div>
@@ -345,21 +347,21 @@ footer{background:var(--black);padding:28px 48px;display:flex;align-items:center
     <div class="pr-info"><div class="pr-tag">Available Now</div><div class="pr-name">NIST CSF 2.0 Gap Assessment Workbook</div><p class="pr-desc">Complete workbook — all 6 CSF functions, 100+ subcategories, Executive Summary, maturity scoring, and Remediation Roadmap. Built to NIST CSF 2.0 (Feb 2024).</p></div>
     <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>8 sheets + Executive Dashboard</li><li>GV, ID, PR, DE, RS, RC tabs</li><li>Maturity scoring 0–5 scale</li><li>Remediation Roadmap</li></ul></div>
     <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$99</div><div class="pr-price-note">Instant download</div></div>
-    <div class="pr-action"><a href="https://payhip.com/b/9ucFo" class="btn-row primary" target="_blank">Buy NIST Pack →</a></div>
+    <div class="pr-action"><a href="https://payhip.com/b/9ucFo" class="btn-row primary" target="_blank">Buy NIST Pack →</a><a href="demo.html#nist" class="btn-row">Explore Demo →</a></div>
   </div>
   <div class="product-row">
     <div class="pr-num">02</div>
     <div class="pr-info"><div class="pr-tag">Available Now</div><div class="pr-name">PCI DSS v4.0 SAQ Prep Workbook</div><p class="pr-desc">SAQ type selector, SAQ-A/B/D checklists, 70+ sub-requirements with testing procedures, Evidence Tracker, and Remediation Roadmap. Mandatory since March 2024.</p></div>
     <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>SAQ Type Selector (8 questions)</li><li>SAQ-A, B, D checklists</li><li>Evidence Tracker (18 items)</li><li>Priority scoring roadmap</li></ul></div>
     <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$149</div><div class="pr-price-note">Instant download</div></div>
-    <div class="pr-action"><a href="https://payhip.com/b/xCJhD" class="btn-row primary" target="_blank">Buy PCI Pack →</a></div>
+    <div class="pr-action"><a href="https://payhip.com/b/xCJhD" class="btn-row primary" target="_blank">Buy PCI Pack →</a><a href="demo.html#pci" class="btn-row">Explore Demo →</a></div>
   </div>
   <div class="product-row featured">
     <div class="pr-num">03</div>
     <div class="pr-info"><div class="pr-tag">⭐ Best Value — Full Vault</div><div class="pr-name">RiskForge Full Compliance Vault</div><p class="pr-desc">Everything in both packs, plus NIST 800-53, CRI Profile 2.0, CCM, and COBIT as they release — at no extra cost. All future updates included.</p></div>
     <div class="pr-includes"><div class="pr-inc-label">Includes</div><ul class="pr-inc-list"><li>NIST CSF 2.0 + PCI DSS v4.0</li><li>NIST 800-53 <span class="soon">(soon)</span></li><li>CRI · CCM · COBIT <span class="soon">(soon)</span></li><li>All future updates + support</li></ul></div>
     <div class="pr-price"><div class="pr-price-label">One-Time Price</div><div class="pr-price-main">$349</div><div class="pr-price-note">All updates included</div></div>
-    <div class="pr-action"><a href="https://payhip.com/b/cx1lY" class="btn-row primary" target="_blank">Get Full Vault →</a></div>
+    <div class="pr-action"><a href="https://payhip.com/b/cx1lY" class="btn-row primary" target="_blank">Get Full Vault →</a><a href="demo.html#vault" class="btn-row">Explore Demo →</a></div>
   </div>
 </div>
 

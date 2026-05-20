@@ -829,6 +829,10 @@ function switchSheet(btn, sheetId, containerId) {
   btn.closest('.sheet-tabs').querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
   btn.classList.add('active');
 }
+(function() {
+  const h = window.location.hash.slice(1);
+  if (h === 'pci' || h === 'nist' || h === 'vault') showSection(h);
+})();
 </script>
 </body>
 </html>
