@@ -6,6 +6,12 @@
 
 const LANE = { GRASS: 'grass', ROAD: 'road', WATER: 'water', RAIL: 'rail' };
 
+// Camera catch-up tuning.
+// CAMERA_LEAD: world-space gap that puts the frog exactly at the screen
+// midpoint. CAMERA_CATCHUP: seconds for the camera to close the gap.
+const CAMERA_LEAD = SCREEN_H / 2 - TILE / 2;
+const CAMERA_CATCHUP = 0.3;
+
 class World {
   constructor(game) {
     this.game = game;
@@ -175,17 +181,34 @@ class World {
   }
 
   update(dt) {
-    // Camera target = per-stage base + a +2 px/s step every 10 lanes the
-    // player has cleared inside this stage.
+    // --- Camera advance ---------------------------------------------------
+    // Base pressure: each stage scrolls at its own pace, plus a +2 px/s step
+    // every 10 lanes cleared. This is the "don't dawdle" floor.
     const depthBoost = Math.floor(this.game.frog.gridY / 10) * 2;
-    const target = this.difficulty.cameraBase + depthBoost;
-    this.scrollSpeed += (target - this.scrollSpeed) * Math.min(1, dt * 0.4);
-    let scroll = this.scrollSpeed * dt;
+    const baseSpeed = this.difficulty.cameraBase + depthBoost;
+    let baseScroll = baseSpeed * dt;
     if (this.scrollPaused > 0) {
-      scroll *= 0.25;
+      baseScroll *= 0.25;
       this.scrollPaused = Math.max(0, this.scrollPaused - dt);
     }
-    this.cameraY += scroll;
+    let newCameraY = this.cameraY + baseScroll;
+
+    // Catch-up: keep the frog from out-running the camera. If the frog has
+    // climbed above the screen midpoint, the camera smoothly accelerates so
+    // the frog is pulled back toward the midpoint and never hops blind off
+    // the top. This is a position-based pull, so it works identically on a
+    // slow stage 1 and a fast stage 20 — and it only ever speeds the camera
+    // up (it never drops below the stage's base pressure). Because the pull
+    // converges to the ideal position rather than coasting on momentum, the
+    // camera also can't overshoot and shove the frog into the bottom hawk.
+    const idealCameraY = this.game.frog.y - CAMERA_LEAD;
+    if (idealCameraY > newCameraY) {
+      const k = 1 - Math.pow(0.0009, dt / CAMERA_CATCHUP);
+      newCameraY += (idealCameraY - newCameraY) * k;
+    }
+    // Effective speed, kept for any consumer that reads scrollSpeed.
+    this.scrollSpeed = (newCameraY - this.cameraY) / Math.max(dt, 1e-4);
+    this.cameraY = newCameraY;
 
     // Bottom kill: if the frog falls behind the camera, the hawk gets it
     if (this.game.frog.y < this.cameraY - 2 * TILE) {
@@ -197,7 +220,10 @@ class World {
     // Update entities on visible lanes
     const lo = Math.max(0, Math.floor(this.cameraY / TILE) - 2);
     const hi = Math.ceil((this.cameraY + this.game.height) / TILE) + 4;
-    this.generateLanesUntil(hi + 4);
+    // Generate ahead of the camera AND ahead of the frog, so sprinting
+    // past the visible area never lands the frog on an ungenerated lane.
+    const aheadOfFrog = this.game.frog.gridY + 8;
+    this.generateLanesUntil(Math.max(hi + 4, aheadOfFrog));
     for (let gy = lo; gy <= hi; gy++) {
       const lane = this.laneAt(gy);
       if (!lane) continue;
