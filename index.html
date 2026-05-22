@@ -112,27 +112,30 @@
     <!-- Characters -->
     <div id="characters" class="screen hidden modal">
       <div class="modal-card wide character-modal">
+        <button id="char-x" class="modal-x" aria-label="Close">✕</button>
         <h2 id="char-title">Character</h2>
         <p id="char-subtitle" class="muted">Customize your hopster, or pick a special skin</p>
 
-        <div class="char-balance">
-          <span class="char-bal-item">🪙 <strong id="char-coin-count">0</strong></span>
-          <span class="char-bal-item">💎 <strong id="char-gem-count">0</strong></span>
+        <div class="char-scroll">
+          <div class="char-balance">
+            <span class="char-bal-item">🪙 <strong id="char-coin-count">0</strong></span>
+            <span class="char-bal-item">💎 <strong id="char-gem-count">0</strong></span>
+          </div>
+
+          <div class="char-preview">
+            <canvas id="char-preview-canvas" width="120" height="120"></canvas>
+          </div>
+
+          <h3 class="char-section-title">Species</h3>
+          <div id="char-species" class="char-species"></div>
+
+          <h3 class="char-section-title">Color</h3>
+          <div id="char-colors" class="char-colors"></div>
+          <button id="char-random" class="btn btn-ghost btn-small">🎲 Random</button>
+
+          <h3 class="char-section-title">Special Skins</h3>
+          <div id="char-grid" class="char-grid"></div>
         </div>
-
-        <div class="char-preview">
-          <canvas id="char-preview-canvas" width="120" height="120"></canvas>
-        </div>
-
-        <h3 class="char-section-title">Species</h3>
-        <div id="char-species" class="char-species"></div>
-
-        <h3 class="char-section-title">Color</h3>
-        <div id="char-colors" class="char-colors"></div>
-        <button id="char-random" class="btn btn-ghost btn-small">🎲 Random</button>
-
-        <h3 class="char-section-title">Special Skins</h3>
-        <div id="char-grid" class="char-grid"></div>
 
         <button id="char-close" class="btn btn-primary">Done</button>
       </div>

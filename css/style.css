@@ -331,12 +331,20 @@ html, body {
 
 /* === Character screen === */
 .character-modal {
-  max-height: calc(100vh - 32px);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+.char-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
-.character-modal::-webkit-scrollbar { width: 4px; }
-.character-modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.char-scroll::-webkit-scrollbar { width: 4px; }
+.char-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.character-modal #char-close { margin-top: 12px; flex-shrink: 0; }
 
 .char-balance {
   display: flex; justify-content: center; gap: 12px;

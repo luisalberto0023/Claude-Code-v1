@@ -154,6 +154,12 @@ class Game {
         UI.only('menu'); UI.refreshMenu();
       }
     };
+    // Corner X — only shown in normal mode (hidden during mandatory onboarding)
+    document.getElementById('char-x').onclick = () => {
+      Audio.button();
+      UI.stopCharPreviewAnim();
+      UI.only('menu'); UI.refreshMenu();
+    };
     document.getElementById('char-random').onclick = () => { Audio.button(); UI.randomizeCharacter(); };
     document.getElementById('btn-daily').onclick    = () => { Audio.button(); UI.renderDaily(); UI.only('daily'); };
     document.getElementById('daily-close').onclick  = () => { Audio.button(); UI.only('menu'); UI.refreshMenu(); };

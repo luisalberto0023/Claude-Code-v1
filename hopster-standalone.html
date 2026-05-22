@@ -342,12 +342,20 @@ html, body {
 
 /* === Character screen === */
 .character-modal {
-  max-height: calc(100vh - 32px);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+.char-scroll {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
 }
-.character-modal::-webkit-scrollbar { width: 4px; }
-.character-modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.char-scroll::-webkit-scrollbar { width: 4px; }
+.char-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.character-modal #char-close { margin-top: 12px; flex-shrink: 0; }
 
 .char-balance {
   display: flex; justify-content: center; gap: 12px;
@@ -789,27 +797,30 @@ html, body {
     <!-- Characters -->
     <div id="characters" class="screen hidden modal">
       <div class="modal-card wide character-modal">
+        <button id="char-x" class="modal-x" aria-label="Close">✕</button>
         <h2 id="char-title">Character</h2>
         <p id="char-subtitle" class="muted">Customize your hopster, or pick a special skin</p>
 
-        <div class="char-balance">
-          <span class="char-bal-item">🪙 <strong id="char-coin-count">0</strong></span>
-          <span class="char-bal-item">💎 <strong id="char-gem-count">0</strong></span>
+        <div class="char-scroll">
+          <div class="char-balance">
+            <span class="char-bal-item">🪙 <strong id="char-coin-count">0</strong></span>
+            <span class="char-bal-item">💎 <strong id="char-gem-count">0</strong></span>
+          </div>
+
+          <div class="char-preview">
+            <canvas id="char-preview-canvas" width="120" height="120"></canvas>
+          </div>
+
+          <h3 class="char-section-title">Species</h3>
+          <div id="char-species" class="char-species"></div>
+
+          <h3 class="char-section-title">Color</h3>
+          <div id="char-colors" class="char-colors"></div>
+          <button id="char-random" class="btn btn-ghost btn-small">🎲 Random</button>
+
+          <h3 class="char-section-title">Special Skins</h3>
+          <div id="char-grid" class="char-grid"></div>
         </div>
-
-        <div class="char-preview">
-          <canvas id="char-preview-canvas" width="120" height="120"></canvas>
-        </div>
-
-        <h3 class="char-section-title">Species</h3>
-        <div id="char-species" class="char-species"></div>
-
-        <h3 class="char-section-title">Color</h3>
-        <div id="char-colors" class="char-colors"></div>
-        <button id="char-random" class="btn btn-ghost btn-small">🎲 Random</button>
-
-        <h3 class="char-section-title">Special Skins</h3>
-        <div id="char-grid" class="char-grid"></div>
 
         <button id="char-close" class="btn btn-primary">Done</button>
       </div>
@@ -2520,20 +2531,24 @@ const UI = (() => {
     document.getElementById('char-coin-count').textContent = s.coins;
     document.getElementById('char-gem-count').textContent = s.gems;
 
-    // Title + subtitle + Done label flip for onboarding
+    // Title + subtitle + Done label flip for onboarding.
+    // The corner X is hidden during onboarding (mandatory pick).
     const titleEl = document.getElementById('char-title');
     const subEl = document.getElementById('char-subtitle');
     const doneEl = document.getElementById('char-close');
+    const xEl = document.getElementById('char-x');
     if (mode === 'onboarding') {
       titleEl.textContent = 'Welcome to Hopster!';
       subEl.textContent = 'Pick your character to start hopping';
       doneEl.textContent = 'Start Hopping';
       doneEl.dataset.mode = 'onboarding';
+      xEl.style.display = 'none';
     } else {
       titleEl.textContent = 'Character';
       subEl.textContent = 'Customize your hopster, or pick a special skin';
       doneEl.textContent = 'Done';
       doneEl.dataset.mode = 'normal';
+      xEl.style.display = '';
     }
 
     // Species tiles
@@ -2887,6 +2902,12 @@ class Game {
       } else {
         UI.only('menu'); UI.refreshMenu();
       }
+    };
+    // Corner X — only shown in normal mode (hidden during mandatory onboarding)
+    document.getElementById('char-x').onclick = () => {
+      Audio.button();
+      UI.stopCharPreviewAnim();
+      UI.only('menu'); UI.refreshMenu();
     };
     document.getElementById('char-random').onclick = () => { Audio.button(); UI.randomizeCharacter(); };
     document.getElementById('btn-daily').onclick    = () => { Audio.button(); UI.renderDaily(); UI.only('daily'); };

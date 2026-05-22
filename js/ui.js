@@ -213,20 +213,24 @@ const UI = (() => {
     document.getElementById('char-coin-count').textContent = s.coins;
     document.getElementById('char-gem-count').textContent = s.gems;
 
-    // Title + subtitle + Done label flip for onboarding
+    // Title + subtitle + Done label flip for onboarding.
+    // The corner X is hidden during onboarding (mandatory pick).
     const titleEl = document.getElementById('char-title');
     const subEl = document.getElementById('char-subtitle');
     const doneEl = document.getElementById('char-close');
+    const xEl = document.getElementById('char-x');
     if (mode === 'onboarding') {
       titleEl.textContent = 'Welcome to Hopster!';
       subEl.textContent = 'Pick your character to start hopping';
       doneEl.textContent = 'Start Hopping';
       doneEl.dataset.mode = 'onboarding';
+      xEl.style.display = 'none';
     } else {
       titleEl.textContent = 'Character';
       subEl.textContent = 'Customize your hopster, or pick a special skin';
       doneEl.textContent = 'Done';
       doneEl.dataset.mode = 'normal';
+      xEl.style.display = '';
     }
 
     // Species tiles
