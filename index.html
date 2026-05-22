@@ -30,17 +30,17 @@
           <span id="hud-coins" class="hud-value">0</span>
         </div>
       </div>
+      <div class="hud-row second">
+        <div id="hud-lives" class="hud-lives">
+          <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
+        </div>
+        <button id="btn-pause" class="icon-btn" aria-label="Pause">II</button>
+      </div>
       <div class="hud-stage">
         <span id="hud-stage-label">Stage 1</span>
         <div class="hud-progress"><div id="hud-progress-fill"></div></div>
         <span id="hud-progress-text">0/25</span>
       </div>
-      <div class="hud-row left">
-        <div id="hud-lives" class="hud-lives">
-          <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
-        </div>
-      </div>
-      <button id="btn-pause" class="icon-btn" aria-label="Pause">II</button>
       <div id="powerup-bar"></div>
     </div>
 
@@ -114,6 +114,11 @@
       <div class="modal-card wide character-modal">
         <h2 id="char-title">Character</h2>
         <p id="char-subtitle" class="muted">Customize your hopster, or pick a special skin</p>
+
+        <div class="char-balance">
+          <span class="char-bal-item">🪙 <strong id="char-coin-count">0</strong></span>
+          <span class="char-bal-item">💎 <strong id="char-gem-count">0</strong></span>
+        </div>
 
         <div class="char-preview">
           <canvas id="char-preview-canvas" width="120" height="120"></canvas>

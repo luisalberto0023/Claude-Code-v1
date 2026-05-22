@@ -264,6 +264,7 @@ class Game {
     let baseLives = 3;
     if (skin.perk.includes('+1 starting life')) baseLives++;
     this.lives = baseLives;
+    this.maxLives = baseLives;
     this.powerups = {};
     this.questProgress = {};
     this.world = new World(this);
@@ -275,7 +276,8 @@ class Game {
     });
     document.getElementById('hud').classList.remove('hidden');
     UI.setHUD({
-      score: 0, combo: 1, coins: 0, lives: this.lives, powerups: [],
+      score: 0, combo: 1, coins: 0, lives: this.lives, maxLives: this.maxLives,
+      powerups: [],
       stage: this.currentStage, progress: 0, total: this.world.difficulty.lanes,
     });
     Storage.patch({ totalRuns: Storage.get().totalRuns + 1 });
@@ -461,7 +463,7 @@ class Game {
 
     UI.setHUD({
       score: this.score, combo: this.combo,
-      coins: this.coinsRun, lives: this.lives,
+      coins: this.coinsRun, lives: this.lives, maxLives: this.maxLives,
       powerups: list,
       stage: this.currentStage,
       progress: Math.max(0, this.frog.gridY),

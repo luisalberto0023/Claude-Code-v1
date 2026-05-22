@@ -97,6 +97,12 @@ html, body {
 .hud-value {
   font-size: 20px; font-weight: 800; letter-spacing: 0.5px;
 }
+.hud-row.second {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
 .hud-stage {
   display: flex; align-items: center; gap: 8px;
   margin: 8px 4px 0;
@@ -123,21 +129,27 @@ html, body {
   font-weight: 800; min-width: 40px; text-align: right;
 }
 
-.hud-row.left {
-  position: absolute; top: 116px; left: 12px;
+.hud-lives {
+  display: flex; gap: 5px;
+  background: rgba(11,16,32,0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 6px 12px;
 }
-.hud-lives { display: flex; gap: 4px; }
 .heart {
-  color: var(--bad); font-size: 22px;
+  color: var(--bad); font-size: 20px; line-height: 1;
   filter: drop-shadow(0 0 6px rgba(255,85,119,0.6));
   transition: opacity .25s, transform .25s;
 }
-.heart.lost { opacity: 0.18; transform: scale(0.8); }
+.heart.lost { opacity: 0.16; transform: scale(0.8); }
 
 .icon-btn {
-  position: absolute; top: 116px; right: 14px;
   width: 44px; height: 44px; border-radius: 12px;
   background: rgba(11,16,32,0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: var(--txt-0); border: 1px solid rgba(255,255,255,0.08);
   font-weight: 800; letter-spacing: 2px; font-size: 14px;
   pointer-events: auto; cursor: pointer;
@@ -336,6 +348,19 @@ html, body {
 }
 .character-modal::-webkit-scrollbar { width: 4px; }
 .character-modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+.char-balance {
+  display: flex; justify-content: center; gap: 12px;
+  margin: 0 0 6px;
+}
+.char-bal-item {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  padding: 5px 16px;
+  font-size: 14px; font-weight: 700;
+}
+.char-bal-item strong { color: var(--neon-3); }
 
 .char-preview {
   display: flex;
@@ -657,17 +682,17 @@ html, body {
           <span id="hud-coins" class="hud-value">0</span>
         </div>
       </div>
+      <div class="hud-row second">
+        <div id="hud-lives" class="hud-lives">
+          <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
+        </div>
+        <button id="btn-pause" class="icon-btn" aria-label="Pause">II</button>
+      </div>
       <div class="hud-stage">
         <span id="hud-stage-label">Stage 1</span>
         <div class="hud-progress"><div id="hud-progress-fill"></div></div>
         <span id="hud-progress-text">0/25</span>
       </div>
-      <div class="hud-row left">
-        <div id="hud-lives" class="hud-lives">
-          <span class="heart">♥</span><span class="heart">♥</span><span class="heart">♥</span>
-        </div>
-      </div>
-      <button id="btn-pause" class="icon-btn" aria-label="Pause">II</button>
       <div id="powerup-bar"></div>
     </div>
 
@@ -741,6 +766,11 @@ html, body {
       <div class="modal-card wide character-modal">
         <h2 id="char-title">Character</h2>
         <p id="char-subtitle" class="muted">Customize your hopster, or pick a special skin</p>
+
+        <div class="char-balance">
+          <span class="char-bal-item">🪙 <strong id="char-coin-count">0</strong></span>
+          <span class="char-bal-item">💎 <strong id="char-gem-count">0</strong></span>
+        </div>
 
         <div class="char-preview">
           <canvas id="char-preview-canvas" width="120" height="120"></canvas>
@@ -2257,13 +2287,26 @@ const UI = (() => {
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
   function only(id) { screens.forEach(s => s === id ? show(s) : hide(s)); }
 
-  function setHUD({ score, combo, coins, lives, powerups, stage, progress, total }) {
+  function setHUD({ score, combo, coins, lives, maxLives, powerups, stage, progress, total }) {
     if (score !== undefined) document.getElementById('hud-score').textContent = score;
     if (combo !== undefined) document.getElementById('hud-combo').textContent = 'x' + combo.toFixed(combo < 2 ? 0 : 1);
     if (coins !== undefined) document.getElementById('hud-coins').textContent = coins;
     if (lives !== undefined) {
-      const hs = document.querySelectorAll('#hud-lives .heart');
-      hs.forEach((h, i) => h.classList.toggle('lost', i >= lives));
+      const container = document.getElementById('hud-lives');
+      let hearts = container.querySelectorAll('.heart');
+      // Rebuild the heart row if the max-life count changed (e.g. Toad skin).
+      const max = maxLives || hearts.length || 3;
+      if (hearts.length !== max) {
+        container.innerHTML = '';
+        for (let i = 0; i < max; i++) {
+          const h = document.createElement('span');
+          h.className = 'heart';
+          h.textContent = '♥';
+          container.appendChild(h);
+        }
+        hearts = container.querySelectorAll('.heart');
+      }
+      hearts.forEach((h, i) => h.classList.toggle('lost', i >= lives));
     }
     if (stage !== undefined) document.getElementById('hud-stage-label').textContent = 'Stage ' + stage;
     if (progress !== undefined && total !== undefined) {
@@ -2447,6 +2490,10 @@ const UI = (() => {
 
   function renderCharacter(mode = 'normal') {
     const s = Storage.get();
+
+    // Current balance so the player can see what they can afford
+    document.getElementById('char-coin-count').textContent = s.coins;
+    document.getElementById('char-gem-count').textContent = s.gems;
 
     // Title + subtitle + Done label flip for onboarding
     const titleEl = document.getElementById('char-title');
@@ -2926,6 +2973,7 @@ class Game {
     let baseLives = 3;
     if (skin.perk.includes('+1 starting life')) baseLives++;
     this.lives = baseLives;
+    this.maxLives = baseLives;
     this.powerups = {};
     this.questProgress = {};
     this.world = new World(this);
@@ -2937,7 +2985,8 @@ class Game {
     });
     document.getElementById('hud').classList.remove('hidden');
     UI.setHUD({
-      score: 0, combo: 1, coins: 0, lives: this.lives, powerups: [],
+      score: 0, combo: 1, coins: 0, lives: this.lives, maxLives: this.maxLives,
+      powerups: [],
       stage: this.currentStage, progress: 0, total: this.world.difficulty.lanes,
     });
     Storage.patch({ totalRuns: Storage.get().totalRuns + 1 });
@@ -3123,7 +3172,7 @@ class Game {
 
     UI.setHUD({
       score: this.score, combo: this.combo,
-      coins: this.coinsRun, lives: this.lives,
+      coins: this.coinsRun, lives: this.lives, maxLives: this.maxLives,
       powerups: list,
       stage: this.currentStage,
       progress: Math.max(0, this.frog.gridY),

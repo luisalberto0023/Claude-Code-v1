@@ -5,13 +5,26 @@ const UI = (() => {
   function hide(id) { document.getElementById(id).classList.add('hidden'); }
   function only(id) { screens.forEach(s => s === id ? show(s) : hide(s)); }
 
-  function setHUD({ score, combo, coins, lives, powerups, stage, progress, total }) {
+  function setHUD({ score, combo, coins, lives, maxLives, powerups, stage, progress, total }) {
     if (score !== undefined) document.getElementById('hud-score').textContent = score;
     if (combo !== undefined) document.getElementById('hud-combo').textContent = 'x' + combo.toFixed(combo < 2 ? 0 : 1);
     if (coins !== undefined) document.getElementById('hud-coins').textContent = coins;
     if (lives !== undefined) {
-      const hs = document.querySelectorAll('#hud-lives .heart');
-      hs.forEach((h, i) => h.classList.toggle('lost', i >= lives));
+      const container = document.getElementById('hud-lives');
+      let hearts = container.querySelectorAll('.heart');
+      // Rebuild the heart row if the max-life count changed (e.g. Toad skin).
+      const max = maxLives || hearts.length || 3;
+      if (hearts.length !== max) {
+        container.innerHTML = '';
+        for (let i = 0; i < max; i++) {
+          const h = document.createElement('span');
+          h.className = 'heart';
+          h.textContent = '♥';
+          container.appendChild(h);
+        }
+        hearts = container.querySelectorAll('.heart');
+      }
+      hearts.forEach((h, i) => h.classList.toggle('lost', i >= lives));
     }
     if (stage !== undefined) document.getElementById('hud-stage-label').textContent = 'Stage ' + stage;
     if (progress !== undefined && total !== undefined) {
@@ -195,6 +208,10 @@ const UI = (() => {
 
   function renderCharacter(mode = 'normal') {
     const s = Storage.get();
+
+    // Current balance so the player can see what they can afford
+    document.getElementById('char-coin-count').textContent = s.coins;
+    document.getElementById('char-gem-count').textContent = s.gems;
 
     // Title + subtitle + Done label flip for onboarding
     const titleEl = document.getElementById('char-title');

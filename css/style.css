@@ -86,6 +86,12 @@ html, body {
 .hud-value {
   font-size: 20px; font-weight: 800; letter-spacing: 0.5px;
 }
+.hud-row.second {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
 .hud-stage {
   display: flex; align-items: center; gap: 8px;
   margin: 8px 4px 0;
@@ -112,21 +118,27 @@ html, body {
   font-weight: 800; min-width: 40px; text-align: right;
 }
 
-.hud-row.left {
-  position: absolute; top: 116px; left: 12px;
+.hud-lives {
+  display: flex; gap: 5px;
+  background: rgba(11,16,32,0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 6px 12px;
 }
-.hud-lives { display: flex; gap: 4px; }
 .heart {
-  color: var(--bad); font-size: 22px;
+  color: var(--bad); font-size: 20px; line-height: 1;
   filter: drop-shadow(0 0 6px rgba(255,85,119,0.6));
   transition: opacity .25s, transform .25s;
 }
-.heart.lost { opacity: 0.18; transform: scale(0.8); }
+.heart.lost { opacity: 0.16; transform: scale(0.8); }
 
 .icon-btn {
-  position: absolute; top: 116px; right: 14px;
   width: 44px; height: 44px; border-radius: 12px;
   background: rgba(11,16,32,0.65);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
   color: var(--txt-0); border: 1px solid rgba(255,255,255,0.08);
   font-weight: 800; letter-spacing: 2px; font-size: 14px;
   pointer-events: auto; cursor: pointer;
@@ -325,6 +337,19 @@ html, body {
 }
 .character-modal::-webkit-scrollbar { width: 4px; }
 .character-modal::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+.char-balance {
+  display: flex; justify-content: center; gap: 12px;
+  margin: 0 0 6px;
+}
+.char-bal-item {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 999px;
+  padding: 5px 16px;
+  font-size: 14px; font-weight: 700;
+}
+.char-bal-item strong { color: var(--neon-3); }
 
 .char-preview {
   display: flex;
