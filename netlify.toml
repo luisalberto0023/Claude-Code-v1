@@ -1,18 +1,21 @@
-[[redirects]]
-  from = "http://riskforge.tech/*"
-  to = "https://riskforge.tech/:splat"
-  status = 301
-  force = true
+# Netlify configuration for RiskForge
 
+# Clean URLs: /demo → /demo.html
 [[redirects]]
-  from = "http://www.riskforge.tech/*"
-  to = "https://riskforge.tech/:splat"
-  status = 301
-  force = true
+  from = "/demo"
+  to = "/demo.html"
+  status = 200
 
+# Security + cache headers
 [[headers]]
   for = "/*"
   [headers.values]
-    X-Frame-Options = "DENY"
-    X-XSS-Protection = "1; mode=block"
-    Content-Security-Policy = "default-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://fonts.gstatic.com https://payhip.com; img-src 'self' data:;"
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+
+[[headers]]
+  for = "/*.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"

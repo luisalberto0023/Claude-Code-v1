@@ -1,838 +1,1566 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RiskForge — Interactive Product Demo | NIST CSF 2.0 · PCI DSS v4.0</title>
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=IBM+Plex+Mono:wght@400;700&display=swap" rel="stylesheet">
+<meta charset="UTF-8" />
+<title>RiskForge — Interactive Product Demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-html{scroll-behavior:smooth}
-:root{
-  --black:#000000;--white:#FFFFFF;
-  --lime:#C8F000;--lime-dk:#A8CC00;--gray-1:#111111;--gray-2:#1C1C1C;
-  --gray-3:#2A2A2A;--gray-lt:#888888;--rule:#222222;
-  --green:#22c55e;--yellow:#d4a017;--red:#FF5555;
+/* =========================================================
+   TOKENS — match main site
+   ========================================================= */
+:root {
+  --paper:   #FFFFFF;
+  --paper-2: #F6F6F4;
+  --paper-3: #EFEDE6;
+  --ink:     #0A0A0A;
+  --ink-2:   #1A1A1A;
+  --ink-3:   #3A3A3A;
+  --muted:   #6B6B6B;
+  --muted-2: #9A9A95;
+  --rule:    #E5E5E2;
+  --rule-2:  #D6D6D2;
+  --accent:  #C8F02D;
+  --accent-deep: #B8E01A;
+  --status-ok:    #2C7A3D;
+  --status-warn:  #B86E1A;
+  --status-bad:   #A52A2A;
+
+  --s-section: 96px;
+  --s-block:   48px;
+  --s-card:    28px;
+  --s-el-lg:   24px;
+  --s-el:      16px;
+
+  --f-sans: 'Manrope', system-ui, sans-serif;
+  --f-mono: 'JetBrains Mono', monospace;
 }
-body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--black);color:var(--white);overflow-x:hidden;-webkit-font-smoothing:antialiased}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--f-sans); -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: none; }
+ul { list-style: none; padding: 0; margin: 0; }
+h1, h2, h3, h4, p { margin: 0; }
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 56px; }
 
-/* NAV */
-nav{position:sticky;top:0;z-index:200;height:56px;display:flex;align-items:center;justify-content:space-between;padding:0 48px;background:var(--black);border-bottom:1px solid var(--rule)}
-.logo{display:flex;align-items:center;gap:12px;cursor:pointer;text-decoration:none}
-.logo-mark{width:30px;height:30px;background:var(--lime);display:grid;place-items:center;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:12px;color:var(--black);flex-shrink:0}
-.logo-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:16px;color:var(--white);letter-spacing:-.03em}
-.nav-tabs{display:flex;align-items:center;border:1px solid var(--rule)}
-.nav-tab{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);padding:9px 20px;border:none;background:transparent;cursor:pointer;letter-spacing:.08em;text-transform:uppercase;border-right:1px solid var(--rule);transition:color .15s,background .15s}
-.nav-tab:last-child{border-right:none}
-.nav-tab:hover{color:var(--white)}
-.nav-tab.active{background:var(--lime);color:var(--black);font-weight:700}
-.nav-cta{font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:10px 22px;background:var(--lime);color:var(--black);border:none;cursor:pointer;transition:background .15s;text-decoration:none;display:inline-flex;align-items:center}
-.nav-cta:hover{background:var(--lime-dk)}
+.eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); display: inline-flex; align-items: center; gap: 10px; }
+.eyebrow::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; flex-shrink: 0; }
+.eyebrow.light { color: rgba(255,255,255,0.55); }
 
-/* SECTIONS */
-.section{display:none}
-.section.active{display:block}
+/* =========================================================
+   BUTTONS — identical to main site
+   ========================================================= */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-family: var(--f-sans); font-size: 13px; font-weight: 600; padding: 12px 20px; height: 42px; line-height: 1; border: 1px solid transparent; cursor: pointer; transition: 120ms ease; letter-spacing: -0.005em; white-space: nowrap; }
+.btn-primary   { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn-primary:hover   { background: var(--ink-2); }
+.btn-secondary { background: transparent; color: var(--ink); border-color: var(--ink); }
+.btn-secondary:hover { background: var(--ink); color: var(--paper); }
+.btn-accent    { background: var(--accent); color: var(--ink); border-color: var(--accent); font-weight: 700; }
+.btn-accent:hover    { background: var(--accent-deep); border-color: var(--accent-deep); }
+.btn-ghost     { background: transparent; color: var(--ink); border-color: transparent; padding-left: 4px; padding-right: 4px; }
+.btn .arrow { font-family: var(--f-mono); font-weight: 400; }
+.btn-primary .arrow { color: var(--accent); }
+.on-dark .btn-secondary { color: var(--paper); border-color: var(--paper); }
+.on-dark .btn-secondary:hover { background: var(--paper); color: var(--ink); }
 
-/* HERO */
-.hero{background:var(--black);min-height:calc(100vh - 56px);display:flex;flex-direction:column;justify-content:space-between;padding:48px 48px 64px;position:relative;overflow:hidden;border-bottom:1px solid var(--rule)}
-.hero-bg-text{position:absolute;top:50%;left:-2%;transform:translateY(-54%);font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(14rem,22vw,22rem);color:transparent;-webkit-text-stroke:1px rgba(255,255,255,0.04);letter-spacing:-.04em;line-height:.9;pointer-events:none;user-select:none;white-space:nowrap}
-.hero-top{display:flex;align-items:center;justify-content:space-between;position:relative;z-index:2}
-.hero-tag{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase;border:1px solid rgba(200,240,0,.25);padding:6px 14px}
-.hero-ver{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.12em;text-transform:uppercase}
-.hero-body{position:relative;z-index:2;padding-top:28px}
-.hero h1{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.8rem,3.5vw,3.4rem);color:var(--white);max-width:900px;margin-bottom:40px;letter-spacing:-.04em;line-height:1.05}
-.hero h1 .accent{color:var(--lime)}
-.hero h1 .thin{font-weight:300;color:rgba(255,255,255,.35)}
-.hero-bottom{display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end;position:relative;z-index:2}
-.hero-sub{font-size:15px;font-weight:300;color:var(--gray-lt);line-height:1.8;max-width:460px}
-.hero-actions{display:flex;flex-direction:column;align-items:flex-end;gap:12px}
-.btn-lime{display:inline-flex;align-items:center;gap:10px;background:var(--lime);color:var(--black);font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:11px;padding:14px 28px;border:none;cursor:pointer;letter-spacing:.08em;text-transform:uppercase;transition:background .15s,transform .15s}
-.btn-lime:hover{background:var(--lime-dk);transform:translateY(-1px)}
-.btn-wire{display:inline-flex;align-items:center;gap:10px;background:transparent;color:var(--white);font-family:'IBM Plex Mono',monospace;font-size:11px;padding:14px 28px;border:1px solid var(--rule);cursor:pointer;letter-spacing:.08em;text-transform:uppercase;transition:border-color .15s}
-.btn-wire:hover{border-color:rgba(255,255,255,.35)}
+/* =========================================================
+   NAV
+   ========================================================= */
+.nav { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--rule); }
+.nav-inner { max-width: 1280px; margin: 0 auto; padding: 16px 56px; display: flex; align-items: center; justify-content: space-between; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: -0.02em; }
+.logo .mark { width: 26px; height: 26px; background: var(--ink); color: var(--accent); display: flex; align-items: center; justify-content: center; font-family: var(--f-mono); font-weight: 700; font-size: 11px; }
+.nav-cta { display: flex; align-items: center; gap: 12px; }
 
-/* PRODUCTS LIST */
-.products-section{background:var(--gray-1);border-bottom:1px solid var(--rule)}
-.products-intro{padding:56px 48px 40px;border-bottom:1px solid var(--rule);display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:end}
-.products-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.5rem,2.5vw,2.4rem);color:var(--white);letter-spacing:-.04em;line-height:1.05}
-.products-sub{font-size:13.5px;font-weight:300;color:var(--gray-lt);line-height:1.75}
-.product-row{display:grid;grid-template-columns:60px 1fr 220px 160px;align-items:center;border-bottom:1px solid var(--rule);transition:background .15s;cursor:pointer}
-.product-row:hover{background:var(--gray-2)}
-.product-row.featured{background:var(--gray-2)}
-.product-row.featured:hover{background:var(--gray-3)}
-.pr-num{padding:28px 0 28px 28px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.1em;border-right:1px solid var(--rule);align-self:stretch;display:flex;align-items:center}
-.pr-info{padding:28px 32px;border-right:1px solid var(--rule)}
-.pr-tag{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.14em;text-transform:uppercase;margin-bottom:8px}
-.pr-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1.05rem;color:var(--white);letter-spacing:-.03em;margin-bottom:6px}
-.pr-desc{font-size:12px;font-weight:300;color:var(--gray-lt);line-height:1.6;max-width:400px}
-.pr-includes{padding:28px 24px;border-right:1px solid var(--rule);align-self:stretch;display:flex;flex-direction:column;justify-content:center}
-.pr-inc-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:rgba(255,255,255,.2);letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px}
-.pr-inc-list{list-style:none;display:flex;flex-direction:column;gap:6px}
-.pr-inc-list li{font-size:11.5px;font-weight:300;color:var(--gray-lt);padding-left:14px;position:relative;line-height:1.4}
-.pr-inc-list li::before{content:'↳';position:absolute;left:0;color:var(--lime);font-size:9px;top:1px}
-.pr-action{padding:28px 24px;display:flex;align-items:center;justify-content:center}
-.btn-row{display:block;text-align:center;font-family:'IBM Plex Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;padding:12px 20px;border:1px solid var(--rule);color:var(--gray-lt);cursor:pointer;background:transparent;transition:border-color .15s,color .15s;white-space:nowrap}
-.btn-row:hover{border-color:var(--white);color:var(--white)}
-.btn-row.primary{background:var(--lime);color:var(--black);border-color:var(--lime)}
-.btn-row.primary:hover{background:var(--lime-dk);border-color:var(--lime-dk)}
+/* Demo nav tabs */
+.demo-tabs { background: var(--paper-2); border-bottom: 1px solid var(--rule); }
+.demo-tabs-inner { max-width: 1280px; margin: 0 auto; padding: 0 56px; display: flex; gap: 0; align-items: center; justify-content: space-between; }
+.demo-tabs .tabs { display: flex; gap: 0; }
+.demo-tabs .tab {
+  font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--muted); padding: 18px 24px; cursor: pointer; border-bottom: 2px solid transparent;
+  transition: 120ms ease; background: transparent; border-top: none; border-left: none; border-right: none;
+  font-weight: 500;
+}
+.demo-tabs .tab:hover { color: var(--ink); }
+.demo-tabs .tab.active { color: var(--ink); border-bottom-color: var(--accent); font-weight: 700; }
+.demo-tabs .tab .num { color: var(--muted-2); margin-right: 8px; font-weight: 500; }
+.demo-tabs .tab.active .num { color: var(--accent-deep); }
+.demo-tabs .ext { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
 
-/* BAND HEADER */
-.band-header{display:flex;align-items:center;gap:20px;padding:20px 48px;border-bottom:1px solid var(--rule)}
-.band-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);letter-spacing:.18em;text-transform:uppercase}
-.band-rule-line{flex:1;height:1px;background:var(--rule)}
-.band-title-text{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.14em;text-transform:uppercase}
+/* =========================================================
+   VIEW PANELS
+   ========================================================= */
+.view { display: none; }
+.view.active { display: block; }
 
-/* SECTION HEADER */
-.section-header-band{padding:56px 48px;border-bottom:1px solid var(--rule);background:var(--black)}
-.section-eyebrow{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.2em;text-transform:uppercase;margin-bottom:16px}
-.section-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.6rem,2.8vw,2.8rem);color:var(--white);letter-spacing:-.04em;line-height:1.05;margin-bottom:16px}
-.section-h2 .accent{color:var(--lime)}
-.section-desc{font-size:14px;font-weight:300;color:var(--gray-lt);line-height:1.8;max-width:520px}
-.back-btn{display:inline-flex;align-items:center;gap:8px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.12em;text-transform:uppercase;color:var(--gray-lt);background:transparent;border:1px solid var(--rule);padding:8px 16px;cursor:pointer;margin-bottom:36px;transition:color .15s,border-color .15s}
-.back-btn:hover{color:var(--white);border-color:rgba(255,255,255,.3)}
+/* =========================================================
+   DEMO HERO — small, contextual
+   ========================================================= */
+.demo-hero { padding: 72px 0 var(--s-section); border-bottom: 1px solid var(--rule); }
+.demo-hero-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: var(--s-block); align-items: end; }
+.demo-hero h1 { font-weight: 800; font-size: 64px; letter-spacing: -0.045em; line-height: 0.98; margin: 20px 0 var(--s-el-lg); }
+.demo-hero h1 em { font-style: normal; background: linear-gradient(to bottom, transparent 0%, transparent 14%, var(--accent) 14%, var(--accent) 86%, transparent 86%, transparent 100%); padding: 0 8px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.demo-hero .lead { font-size: 17px; line-height: 1.55; color: var(--ink-3); max-width: 540px; margin-bottom: 32px; }
+.demo-hero .ctas { display: flex; gap: 10px; flex-wrap: wrap; }
+.demo-hero .meta { border-left: 1px solid var(--rule); padding-left: var(--s-block); display: flex; flex-direction: column; gap: 16px; }
+.demo-hero .meta-row { display: flex; justify-content: space-between; align-items: baseline; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
+.demo-hero .meta-row:last-child { border-bottom: none; padding-bottom: 0; }
+.demo-hero .meta .l { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+.demo-hero .meta .v { font-weight: 700; font-size: 18px; letter-spacing: -0.015em; }
+.demo-hero .meta .v em { font-style: normal; color: var(--muted); font-weight: 500; }
 
-/* WORKBOOK DEMO */
-.demo-band{background:var(--gray-1);border-bottom:1px solid var(--rule)}
-.demo-inner{padding:48px}
-.demo-container{background:var(--black);border:1px solid var(--rule);overflow:hidden}
-.demo-topbar{background:var(--gray-2);border-bottom:1px solid var(--rule);padding:12px 20px;display:flex;align-items:center;gap:12px}
-.topbar-dots{display:flex;gap:6px}
-.topbar-dot{width:11px;height:11px;border-radius:50%}
-.dot-r{background:#ff5f57}.dot-y{background:#febc2e}.dot-g{background:#28c840}
-.topbar-title{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--gray-lt);letter-spacing:.06em;margin-left:8px}
-.sheet-tabs{display:flex;background:var(--gray-2);border-bottom:1px solid var(--rule);overflow-x:auto;scrollbar-width:none}
-.sheet-tabs::-webkit-scrollbar{display:none}
-.sheet-tab{padding:10px 18px;font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;white-space:nowrap;color:var(--gray-lt);background:transparent;border:none;border-right:1px solid var(--rule);transition:color .15s,background .15s}
-.sheet-tab:hover{color:var(--white);background:var(--gray-3)}
-.sheet-tab.active{background:var(--black);color:var(--lime);border-bottom:2px solid var(--lime)}
-.sheet-content{padding:28px;overflow-x:auto;min-height:360px}
+/* =========================================================
+   OVERVIEW — landing
+   ========================================================= */
+.ov-hero { padding: 96px 0 var(--s-section); border-bottom: 1px solid var(--rule); }
+.ov-hero .top-eyebrow { display: flex; gap: 16px; align-items: center; }
+.ov-hero .top-eyebrow .pill { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.22em; padding: 4px 10px; background: var(--ink); color: var(--accent); font-weight: 700; text-transform: uppercase; }
+.ov-hero h1 { font-weight: 800; font-size: 88px; letter-spacing: -0.05em; line-height: 0.94; margin: 24px 0 var(--s-el-lg); max-width: 1000px; }
+.ov-hero h1 em { font-style: normal; background: linear-gradient(to bottom, transparent 0%, transparent 14%, var(--accent) 14%, var(--accent) 86%, transparent 86%, transparent 100%); padding: 0 10px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.ov-hero .lead { font-size: 18px; line-height: 1.55; color: var(--ink-3); max-width: 640px; margin-bottom: 32px; }
+.ov-hero .ctas { display: flex; gap: 12px; flex-wrap: wrap; }
 
-/* TABLES */
-.wb-table{width:100%;border-collapse:collapse;font-size:13px}
-.wb-table th{background:var(--gray-1);color:var(--gray-lt);padding:10px 14px;text-align:left;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.12em;text-transform:uppercase;font-weight:400;border-bottom:1px solid var(--rule)}
-.wb-table td{padding:11px 14px;border-bottom:1px solid var(--rule);vertical-align:top;line-height:1.5;font-size:12.5px;font-weight:300;color:var(--gray-lt)}
-.wb-table tr:last-child td{border-bottom:none}
-.wb-table tr:hover td{background:rgba(255,255,255,.012)}
-.req-id{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--lime);font-weight:400;white-space:nowrap}
-.section-row td{background:rgba(200,240,0,.04);color:var(--lime);font-family:'IBM Plex Mono',monospace;font-size:8.5px;letter-spacing:.1em;text-transform:uppercase;padding:8px 14px;border-bottom:1px solid var(--rule)}
+.ov-cards { padding: var(--s-section) 0; border-bottom: 1px solid var(--rule); }
+.ov-section-head { display: grid; grid-template-columns: 1.2fr 1fr; gap: var(--s-block); align-items: end; margin-bottom: var(--s-block); }
+.ov-section-head h2 { font-weight: 800; font-size: 52px; letter-spacing: -0.04em; line-height: 1; margin-top: 16px; }
+.ov-section-head h2 em { font-style: normal; color: var(--muted); }
+.ov-section-head .sub { font-size: 15px; line-height: 1.6; color: var(--ink-3); max-width: 380px; }
 
-/* STATUS BADGES */
-.status-badge{display:inline-flex;align-items:center;padding:3px 9px;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.08em;text-transform:uppercase;white-space:nowrap;border:1px solid}
-.status-in-place,.status-collected{background:rgba(34,197,94,.08);color:#22c55e;border-color:rgba(34,197,94,.25)}
-.status-not-tested,.status-pending{background:rgba(212,160,23,.08);color:#d4a017;border-color:rgba(212,160,23,.25)}
-.status-not-in-place,.status-missing{background:rgba(255,85,85,.08);color:#FF5555;border-color:rgba(255,85,85,.25)}
-.status-na{background:rgba(136,136,136,.08);color:var(--gray-lt);border-color:rgba(136,136,136,.25)}
+.ov-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.ov-card { border: 1px solid var(--rule); padding: var(--s-card); display: flex; flex-direction: column; gap: var(--s-el-lg); min-height: 360px; cursor: pointer; transition: 120ms ease; position: relative; background: var(--paper); }
+.ov-card:hover { background: var(--paper-2); }
+.ov-card.feature { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.ov-card.feature:hover { background: var(--ink-2); }
+.ov-card .tag { display: flex; justify-content: space-between; align-items: center; }
+.ov-card .tag .id { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.22em; color: var(--muted); }
+.ov-card.feature .tag .id { color: var(--accent); }
+.ov-card .tag .status { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.18em; padding: 4px 8px; text-transform: uppercase; font-weight: 700; background: var(--paper-2); color: var(--ink); }
+.ov-card.feature .tag .status { background: var(--accent); color: var(--ink); }
+.ov-card h3 { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.2; }
+.ov-card .desc { font-size: 14px; line-height: 1.6; color: var(--ink-3); flex: 1; }
+.ov-card.feature .desc { color: rgba(255,255,255,0.75); }
+.ov-card .includes { display: flex; flex-direction: column; gap: 8px; padding-top: 18px; border-top: 1px solid var(--rule); }
+.ov-card.feature .includes { border-color: rgba(255,255,255,0.12); }
+.ov-card .includes div { font-size: 13px; line-height: 1.4; display: flex; gap: 10px; }
+.ov-card .includes div::before { content: '+'; font-family: var(--f-mono); color: var(--muted); }
+.ov-card.feature .includes div { color: rgba(255,255,255,0.85); }
+.ov-card.feature .includes div::before { color: var(--accent); }
+.ov-card .explore { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--ink); padding-top: 18px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center; font-weight: 700; }
+.ov-card.feature .explore { color: var(--accent); border-color: rgba(255,255,255,0.12); }
 
-/* SCORE DASHBOARD */
-.score-band{background:var(--black);border-bottom:1px solid var(--rule);padding:48px}
-.score-label-top{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.2em;text-transform:uppercase;margin-bottom:24px}
-.score-grid{display:grid;grid-template-columns:repeat(6,1fr);border:1px solid var(--rule)}
-.score-card{padding:24px 20px;border-right:1px solid var(--rule)}
-.score-card:last-child{border-right:none}
-.score-card-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.1em;text-transform:uppercase;margin-bottom:12px}
-.score-card-val{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:2rem;color:var(--white);line-height:1;margin-bottom:4px;letter-spacing:-.04em}
-.score-card-level{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.08em;margin-bottom:14px}
-.score-bar-bg{height:2px;background:var(--rule)}
-.score-bar-fill{height:100%;background:var(--lime);transition:width .8s ease}
-.findings-grid{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--rule);margin-top:24px}
-.finding-cell{padding:20px 24px;border-right:1px solid var(--rule)}
-.finding-cell:last-child{border-right:none}
-.finding-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px}
-.finding-val{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:.95rem;color:var(--white);margin-bottom:4px;letter-spacing:-.02em}
-.finding-note{font-size:11.5px;font-weight:300;color:var(--gray-lt);line-height:1.5}
+/* =========================================================
+   WORKBOOK MOCK — the centerpiece
+   ========================================================= */
+.workbook-section { padding: var(--s-section) 0; background: var(--paper-2); border-bottom: 1px solid var(--rule); }
+.workbook-section .head { margin-bottom: var(--s-block); display: flex; justify-content: space-between; align-items: end; gap: var(--s-block); }
+.workbook-section .head h2 { font-weight: 800; font-size: 36px; letter-spacing: -0.035em; line-height: 1.05; margin-top: 12px; max-width: 560px; }
+.workbook-section .head h2 em { font-style: normal; color: var(--muted); }
+.workbook-section .head .sub { font-size: 14px; color: var(--ink-3); max-width: 360px; line-height: 1.6; }
 
-/* MATURITY BAR */
-.maturity-bar{display:flex;align-items:center;gap:10px}
-.maturity-track{flex:1;height:3px;background:var(--rule)}
-.maturity-fill-bar{height:100%;background:var(--lime)}
-.maturity-num{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--white);white-space:nowrap}
+.workbook { background: var(--paper); border: 1px solid var(--rule-2); box-shadow: 0 1px 0 rgba(0,0,0,0.04); }
+.wb-title-bar { background: var(--ink); color: var(--paper); padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; }
+.wb-title-bar .file { font-family: var(--f-mono); font-size: 12px; color: rgba(255,255,255,0.85); display: flex; align-items: center; gap: 10px; }
+.wb-title-bar .file::before { content: ''; display: inline-block; width: 12px; height: 14px; background: var(--accent); }
+.wb-title-bar .controls { display: flex; gap: 6px; }
+.wb-title-bar .controls span { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,0.25); }
+.wb-toolbar { background: var(--paper-2); border-bottom: 1px solid var(--rule-2); padding: 10px 18px; display: flex; gap: 18px; align-items: center; }
+.wb-toolbar .crumb { font-family: var(--f-mono); font-size: 11px; color: var(--muted); letter-spacing: 0.06em; }
+.wb-toolbar .crumb b { color: var(--ink); font-weight: 600; }
+.wb-toolbar .legend { display: flex; gap: 14px; margin-left: auto; font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.wb-toolbar .legend span { display: flex; align-items: center; gap: 6px; }
+.wb-toolbar .legend span::before { content: ''; width: 8px; height: 8px; }
+.wb-toolbar .legend .ok::before { background: var(--status-ok); }
+.wb-toolbar .legend .nt::before { background: var(--muted); }
+.wb-toolbar .legend .bad::before { background: var(--status-bad); }
+.wb-toolbar .legend .na::before { background: var(--rule-2); }
 
-/* FEATURES */
-.features-band{background:var(--black);border-bottom:1px solid var(--rule)}
-.features-grid{display:grid;grid-template-columns:repeat(4,1fr);border-top:1px solid var(--rule)}
-.feature-cell{padding:36px 32px;border-right:1px solid var(--rule);transition:background .15s}
-.feature-cell:last-child{border-right:none}
-.feature-cell:hover{background:var(--gray-1)}
-.feature-icon{font-size:1.4rem;margin-bottom:16px}
-.feature-title{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:.95rem;color:var(--white);margin-bottom:10px;letter-spacing:-.03em}
-.feature-desc{font-size:12px;font-weight:300;color:var(--gray-lt);line-height:1.7}
+/* Sheet tabs (bottom of workbook) */
+.wb-sheet-tabs { background: var(--paper-2); border-top: 1px solid var(--rule-2); padding: 0 12px; display: flex; gap: 0; align-items: stretch; }
+.wb-sheet-tabs .stab { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.05em; color: var(--muted); padding: 10px 14px; background: transparent; border: none; cursor: pointer; border-right: 1px solid var(--rule-2); display: flex; align-items: center; gap: 6px; transition: 120ms ease; }
+.wb-sheet-tabs .stab:hover { color: var(--ink); background: var(--paper); }
+.wb-sheet-tabs .stab.active { background: var(--paper); color: var(--ink); font-weight: 700; border-top: 2px solid var(--accent); padding-top: 8px; }
+.wb-sheet-tabs .stab .dot { width: 6px; height: 6px; background: var(--muted-2); }
+.wb-sheet-tabs .stab.active .dot { background: var(--accent); }
 
-/* CTA BAND */
-.cta-band{background:var(--lime);padding:56px 48px;display:grid;grid-template-columns:1fr 1fr;gap:48px;align-items:center;border-bottom:1px solid var(--rule)}
-.cta-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.4rem,2.5vw,2.4rem);color:var(--black);letter-spacing:-.04em;line-height:1.05}
-.cta-h2 em{font-style:normal;text-decoration:underline;text-decoration-thickness:3px}
-.cta-sub{font-size:13px;font-weight:400;color:rgba(0,0,0,.55);line-height:1.8;margin-top:12px}
-.cta-actions{display:flex;flex-direction:column;gap:10px}
-.btn-black{display:block;text-align:center;background:var(--black);color:var(--lime);font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:11px;padding:16px 28px;text-decoration:none;letter-spacing:.1em;text-transform:uppercase;border:none;cursor:pointer;transition:background .15s}
-.btn-black:hover{background:#111}
-.btn-outline-black{display:block;text-align:center;background:transparent;color:var(--black);font-family:'IBM Plex Mono',monospace;font-size:11px;padding:14px 28px;border:2px solid var(--black);text-decoration:none;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:background .15s,color .15s}
-.btn-outline-black:hover{background:var(--black);color:var(--lime)}
-.cta-note{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:rgba(0,0,0,.35);text-align:center;margin-top:4px}
+/* Cell grid */
+.wb-sheet { display: none; }
+.wb-sheet.active { display: block; }
 
-/* VAULT — VALUE COMPARISON */
-.value-band{background:var(--gray-1);border-bottom:1px solid var(--rule);padding:48px}
-.value-grid{display:grid;grid-template-columns:1fr auto 1fr;gap:0;align-items:stretch;border:1px solid var(--rule)}
-.value-col{padding:36px 40px}
-.value-col.individual{border-right:1px solid var(--rule)}
-.value-col.vault{background:rgba(200,240,0,.04);border-left:2px solid var(--lime)}
-.value-vs{display:flex;align-items:center;justify-content:center;padding:0 32px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:rgba(255,255,255,.15);letter-spacing:.2em;text-transform:uppercase;border-right:1px solid var(--rule)}
-.value-label{font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.18em;text-transform:uppercase;margin-bottom:20px}
-.value-items{display:flex;flex-direction:column;gap:12px;margin-bottom:24px}
-.value-item{display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid var(--rule)}
-.value-item:last-child{border-bottom:none}
-.value-item-name{font-size:13px;font-weight:300;color:var(--gray-lt)}
-.value-item-price{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;color:var(--white);letter-spacing:-.03em}
-.value-total{display:flex;justify-content:space-between;align-items:center;padding-top:16px;border-top:2px solid var(--rule)}
-.value-total-label{font-size:13px;font-weight:500;color:var(--white)}
-.value-total-price{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.4rem;letter-spacing:-.04em}
-.value-total-price.crossed{color:var(--gray-lt);text-decoration:line-through;font-size:1.1rem}
-.value-total-price.lime{color:var(--lime);font-size:1.8rem}
-.value-note{font-family:'IBM Plex Mono',monospace;font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:rgba(255,255,255,.2);margin-top:12px}
-.value-bonus{margin-top:20px;padding:14px 16px;border:1px solid rgba(200,240,0,.2);background:rgba(200,240,0,.04)}
-.value-bonus-label{font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--lime);letter-spacing:.15em;text-transform:uppercase;margin-bottom:8px}
-.value-bonus-list{list-style:none;display:flex;flex-direction:column;gap:6px}
-.value-bonus-list li{font-size:11.5px;font-weight:300;color:var(--gray-lt);padding-left:14px;position:relative;line-height:1.4}
-.value-bonus-list li::before{content:'↳';position:absolute;left:0;color:var(--lime);font-size:9px;top:1px}
+.wb-grid { display: grid; font-family: var(--f-mono); font-size: 12px; background: var(--paper); }
+.wb-grid .col-header, .wb-grid .row-header { background: var(--paper-2); color: var(--muted); font-weight: 500; text-align: center; padding: 6px 8px; border-right: 1px solid var(--rule-2); border-bottom: 1px solid var(--rule-2); font-size: 10.5px; }
+.wb-grid .cell { padding: 10px 12px; border-right: 1px solid var(--rule-2); border-bottom: 1px solid var(--rule-2); color: var(--ink-2); line-height: 1.4; min-height: 36px; display: flex; align-items: center; }
+.wb-grid .cell.sans { font-family: var(--f-sans); font-size: 13px; }
+.wb-grid .cell.bold { font-weight: 700; color: var(--ink); }
+.wb-grid .cell.muted { color: var(--muted); }
+.wb-grid .cell.right { justify-content: flex-end; }
+.wb-grid .cell.center { justify-content: center; }
+.wb-grid .row-section { grid-column: 1 / -1; background: var(--ink); color: var(--accent); font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; padding: 10px 14px; border-bottom: 1px solid var(--rule-2); font-weight: 700; }
+.wb-grid .header-row { background: var(--paper-2); font-weight: 700; color: var(--ink); text-transform: uppercase; letter-spacing: 0.06em; font-size: 10.5px; }
 
-/* VAULT — FRAMEWORKS GRID */
-.fw-band{background:var(--black);border-bottom:1px solid var(--rule)}
-.fw-intro{padding:48px 48px 32px;border-bottom:1px solid var(--rule)}
-.fw-h2{font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:clamp(1.4rem,2.2vw,2rem);color:var(--white);letter-spacing:-.04em;line-height:1.05;margin-bottom:10px}
-.fw-sub{font-size:13px;font-weight:300;color:var(--gray-lt);line-height:1.7;max-width:520px}
-.fw-grid{display:grid;grid-template-columns:repeat(6,1fr);border-top:1px solid var(--rule)}
-.fw-cell{padding:28px 20px;border-right:1px solid var(--rule);transition:background .15s}
-.fw-cell:last-child{border-right:none}
-.fw-cell:hover{background:var(--gray-1)}
-.fw-cell.live{border-top:2px solid var(--lime)}
-.fw-chip{display:inline-block;font-family:'IBM Plex Mono',monospace;font-size:8px;font-weight:700;letter-spacing:.1em;padding:2px 8px;margin-bottom:12px;text-transform:uppercase}
-.chip-nist{background:rgba(67,56,202,.2);color:#818CF8}
-.chip-pci{background:rgba(146,64,14,.2);color:#D97706}
-.chip-800{background:rgba(22,101,52,.2);color:#4ADE80}
-.chip-cri{background:rgba(157,23,77,.2);color:#F472B6}
-.chip-ccm{background:rgba(29,78,216,.2);color:#60A5FA}
-.chip-cobit{background:rgba(194,65,12,.2);color:#FB923C}
-.fw-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:.85rem;color:var(--white);margin-bottom:6px;line-height:1.25;letter-spacing:-.03em}
-.fw-desc{font-size:11px;font-weight:300;color:var(--gray-lt);line-height:1.65}
-.fw-status{display:inline-flex;align-items:center;gap:6px;margin-top:12px;font-family:'IBM Plex Mono',monospace;font-size:8px;letter-spacing:.12em;text-transform:uppercase}
-.dot{width:5px;height:5px;border-radius:50%}
-.dot-lime{background:var(--lime);box-shadow:0 0 5px var(--lime)}
-.dot-gray{background:var(--gray-lt)}
-.status-lime{color:var(--lime)}
-.status-gray{color:var(--gray-lt)}
+/* Status badges inside cells */
+.badge { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.12em; padding: 3px 8px; text-transform: uppercase; font-weight: 700; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.badge::before { content: ''; width: 6px; height: 6px; }
+.badge.ok { color: var(--status-ok); background: rgba(44,122,61,0.08); }
+.badge.ok::before { background: var(--status-ok); }
+.badge.nt { color: var(--muted); background: var(--paper-2); }
+.badge.nt::before { background: var(--muted); }
+.badge.bad { color: var(--status-bad); background: rgba(165,42,42,0.08); }
+.badge.bad::before { background: var(--status-bad); }
+.badge.na { color: var(--muted-2); background: var(--paper-2); }
+.badge.na::before { background: var(--muted-2); }
+.badge.warn { color: var(--status-warn); background: rgba(184,110,26,0.08); }
+.badge.warn::before { background: var(--status-warn); }
 
-/* FOOTER */
-footer{background:var(--black);padding:28px 48px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid var(--rule);flex-wrap:wrap;gap:16px}
-.footer-left{display:flex;align-items:center;gap:12px}
-.footer-mark{width:26px;height:26px;background:var(--lime);display:grid;place-items:center;font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:10px;color:var(--black)}
-.footer-name{font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:13px;color:rgba(255,255,255,.3);letter-spacing:-.02em}
-.footer-copy{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2)}
-.footer-links{display:flex;gap:20px}
-.footer-links a{font-family:'IBM Plex Mono',monospace;font-size:9.5px;letter-spacing:.08em;color:rgba(255,255,255,.2);text-decoration:none;transition:color .15s}
-.footer-links a:hover{color:rgba(255,255,255,.6)}
+/* Priority badges */
+.prio { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.16em; padding: 4px 9px; text-transform: uppercase; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
+.prio::before { content: ''; width: 8px; height: 8px; }
+.prio.critical { background: var(--ink); color: var(--accent); }
+.prio.critical::before { background: var(--accent); }
+.prio.high { background: var(--paper-2); color: var(--ink); border: 1px solid var(--ink); }
+.prio.high::before { background: var(--ink); }
+.prio.low { background: transparent; color: var(--muted); border: 1px solid var(--rule-2); }
+.prio.low::before { background: var(--muted); }
 
-@media(max-width:1000px){
-  nav{padding:0 20px}.nav-tabs{display:none}
-  .hero{padding:32px 24px 48px}.hero-bg-text{display:none}
-  .hero-bottom{grid-template-columns:1fr;gap:24px}.hero-actions{align-items:flex-start}
-  .products-intro{grid-template-columns:1fr;padding:32px 24px 24px}
-  .product-row{grid-template-columns:1fr}.pr-num{display:none}
-  .pr-info,.pr-includes{border-right:none;border-bottom:1px solid var(--rule);padding:20px 24px}
-  .pr-action{padding:20px 24px;justify-content:flex-start}
-  .section-header-band{padding:36px 24px}
-  .demo-inner{padding:24px}
-  .score-band{padding:32px 24px}
-  .score-grid{grid-template-columns:repeat(3,1fr)}
-  .score-card:nth-child(3){border-right:none}
-  .score-card:nth-child(n+4){border-top:1px solid var(--rule)}
-  .findings-grid{grid-template-columns:1fr}.finding-cell{border-right:none;border-bottom:1px solid var(--rule)}
-  .features-grid{grid-template-columns:1fr 1fr}
-  .feature-cell:nth-child(2n){border-right:none}
-  .feature-cell:nth-child(n+3){border-top:1px solid var(--rule)}
-  .cta-band{grid-template-columns:1fr;padding:40px 24px}
-  .value-band{padding:32px 24px}
-  .value-grid{grid-template-columns:1fr}.value-vs{display:none}.value-col.individual{border-right:none;border-bottom:1px solid var(--rule)}.value-col.vault{border-left:none;border-top:2px solid var(--lime)}
-  .fw-grid{grid-template-columns:1fr 1fr}.fw-cell:nth-child(2n){border-right:none}.fw-cell:nth-child(3),.fw-cell:nth-child(4){border-top:1px solid var(--rule)}
-  footer{padding:24px 20px}
-  .band-header{padding:16px 24px}
+/* =========================================================
+   COVER SHEET (PCI)
+   ========================================================= */
+.cover-sheet { padding: 40px 48px; background: var(--paper); }
+.cover-sheet .doc-eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.22em; color: var(--accent-deep); text-transform: uppercase; font-weight: 700; }
+.cover-sheet h2 { font-weight: 800; font-size: 36px; letter-spacing: -0.035em; margin: 8px 0 6px; line-height: 1; }
+.cover-sheet .doc-sub { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); padding-bottom: 24px; border-bottom: 1px solid var(--ink); margin-bottom: 28px; }
+.cover-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; }
+.cover-fields { display: flex; flex-direction: column; }
+.cover-fields .row { display: grid; grid-template-columns: 200px 1fr; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.cover-fields .row .l { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.cover-fields .row .v { font-size: 14px; font-weight: 600; color: var(--ink); }
+.cover-fields .row .v.accent { color: var(--ink); background: var(--accent); padding: 0 8px; align-self: flex-start; font-weight: 700; }
+.cover-legend { padding: 24px; background: var(--paper-2); border-left: 3px solid var(--accent); }
+.cover-legend h3 { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; font-weight: 700; }
+.cover-legend .lg-row { display: grid; grid-template-columns: 110px 1fr; padding: 10px 0; border-bottom: 1px solid var(--rule); align-items: center; }
+.cover-legend .lg-row:last-child { border-bottom: none; }
+.cover-legend .lg-row .lbl { font-family: var(--f-mono); font-size: 11px; font-weight: 700; }
+.cover-legend .lg-row .desc { font-size: 12.5px; color: var(--ink-3); }
+
+/* =========================================================
+   NIST EXECUTIVE DASHBOARD
+   ========================================================= */
+.nist-dashboard { background: var(--paper); border: 1px solid var(--rule-2); padding: 36px 40px; margin-bottom: var(--s-block); }
+.nist-dashboard .dash-head { display: flex; justify-content: space-between; align-items: end; padding-bottom: 20px; border-bottom: 1px solid var(--ink); margin-bottom: 28px; }
+.nist-dashboard .dash-head h3 { font-weight: 800; font-size: 22px; letter-spacing: -0.02em; }
+.nist-dashboard .dash-head .source { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); }
+.dash-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0; border: 1px solid var(--rule); margin-bottom: 24px; }
+.dash-cell { padding: 22px 20px; border-right: 1px solid var(--rule); display: flex; flex-direction: column; gap: 8px; position: relative; }
+.dash-cell:last-child { border-right: none; }
+.dash-cell.critical { background: var(--ink); color: var(--paper); }
+.dash-cell .code { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; color: var(--muted); }
+.dash-cell.critical .code { color: var(--accent); }
+.dash-cell .name { font-size: 13.5px; font-weight: 700; letter-spacing: -0.01em; }
+.dash-cell .score-row { display: flex; align-items: baseline; gap: 6px; margin-top: 4px; }
+.dash-cell .score { font-weight: 800; font-size: 36px; letter-spacing: -0.04em; line-height: 1; }
+.dash-cell .denom { font-family: var(--f-mono); font-size: 12px; color: var(--muted); }
+.dash-cell.critical .denom { color: rgba(255,255,255,0.5); }
+.dash-cell .bar { height: 4px; background: var(--rule); margin-top: 6px; position: relative; }
+.dash-cell .bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--ink); }
+.dash-cell.critical .bar { background: rgba(255,255,255,0.15); }
+.dash-cell.critical .bar-fill { background: var(--accent); }
+.dash-cell .status-label { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+.dash-cell.critical .status-label { color: rgba(255,255,255,0.7); }
+
+.dash-callouts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.callout { padding: 20px 24px; border: 1px solid var(--rule-2); display: flex; flex-direction: column; gap: 8px; }
+.callout.risk { border-left: 3px solid var(--status-bad); }
+.callout.win  { border-left: 3px solid var(--accent-deep); }
+.callout .ctitle { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.callout .cname { font-weight: 700; font-size: 17px; letter-spacing: -0.015em; }
+.callout .cdesc { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
+
+/* =========================================================
+   FEATURES — replace emoji with mono numerics
+   ========================================================= */
+.features { padding: var(--s-section) 0; border-bottom: 1px solid var(--rule); }
+.features .head { display: grid; grid-template-columns: 1.2fr 1fr; gap: var(--s-block); align-items: end; margin-bottom: var(--s-block); }
+.features .head h2 { font-weight: 800; font-size: 44px; letter-spacing: -0.04em; line-height: 1; margin-top: 12px; }
+.features .head h2 em { font-style: normal; color: var(--muted); }
+.features .head .sub { font-size: 15px; line-height: 1.6; color: var(--ink-3); max-width: 360px; }
+.features-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.feature-card { border: 1px solid var(--rule); padding: var(--s-card); display: flex; flex-direction: column; gap: 14px; min-height: 240px; background: var(--paper); }
+.feature-card .id { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.22em; color: var(--muted); }
+.feature-card h3 { font-size: 18px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.25; }
+.feature-card p { font-size: 13.5px; line-height: 1.55; color: var(--ink-3); }
+
+/* =========================================================
+   COST COMPARISON (Vault)
+   ========================================================= */
+.compare { padding: var(--s-section) 0; border-bottom: 1px solid var(--rule); }
+.compare .head { margin-bottom: var(--s-block); }
+.compare .head h2 { font-weight: 800; font-size: 44px; letter-spacing: -0.04em; line-height: 1; margin-top: 12px; }
+.compare .head h2 em { font-style: normal; color: var(--muted); }
+.compare-grid { display: grid; grid-template-columns: 1fr 80px 1fr; gap: 0; align-items: stretch; border: 1px solid var(--rule); }
+.compare-col { padding: 36px 32px; background: var(--paper); display: flex; flex-direction: column; gap: 16px; }
+.compare-col.feature { background: var(--ink); color: var(--paper); }
+.compare-col .ctitle { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+.compare-col.feature .ctitle { color: var(--accent); }
+.compare-col h3 { font-weight: 800; font-size: 26px; letter-spacing: -0.025em; }
+.compare-col .rows { display: flex; flex-direction: column; margin-top: 8px; }
+.compare-col .crow { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--rule); font-size: 14px; }
+.compare-col .crow .l { color: var(--ink-2); }
+.compare-col .crow .v { font-weight: 600; }
+.compare-col.feature .crow { border-color: rgba(255,255,255,0.12); }
+.compare-col.feature .crow .l { color: rgba(255,255,255,0.85); }
+.compare-col.feature .crow .v { color: var(--accent); }
+.compare-col .total { padding-top: 18px; margin-top: 8px; border-top: 1px solid var(--ink); display: flex; justify-content: space-between; align-items: baseline; }
+.compare-col.feature .total { border-color: var(--accent); }
+.compare-col .total .l { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
+.compare-col.feature .total .l { color: rgba(255,255,255,0.6); }
+.compare-col .total .v { font-weight: 800; font-size: 36px; letter-spacing: -0.035em; }
+.compare-col .note { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+.compare-col.feature .note { color: var(--accent); }
+
+.compare-divider { display: flex; align-items: center; justify-content: center; background: var(--paper-2); font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.22em; color: var(--muted); text-transform: uppercase; font-weight: 700; }
+
+/* Framework roadmap (Vault) */
+.roadmap { padding: var(--s-section) 0; background: var(--paper-2); border-bottom: 1px solid var(--rule); }
+.fw-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--rule); border: 1px solid var(--rule); }
+.fw-card { background: var(--paper); padding: 28px; display: flex; flex-direction: column; gap: 14px; min-height: 220px; position: relative; }
+.fw-card.live::before { content: 'LIVE · INCLUDED'; position: absolute; top: 14px; right: 14px; font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.18em; padding: 4px 8px; background: var(--ink); color: var(--accent); font-weight: 700; }
+.fw-card.soon::before { content: 'COMING SOON'; position: absolute; top: 14px; right: 14px; font-family: var(--f-mono); font-size: 9px; letter-spacing: 0.18em; padding: 4px 8px; background: var(--paper-2); color: var(--muted); border: 1px solid var(--rule); font-weight: 600; }
+.fw-card .code { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; color: var(--muted); }
+.fw-card h3 { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; max-width: 240px; }
+.fw-card p { font-size: 13.5px; line-height: 1.55; color: var(--ink-3); flex: 1; }
+
+/* =========================================================
+   FINAL CTA
+   ========================================================= */
+.final { padding: var(--s-section) 0; background: var(--paper); }
+.final-inner { background: var(--ink); color: var(--paper); padding: 72px var(--s-block); position: relative; overflow: hidden; }
+.final-inner::before { content: ''; position: absolute; right: -40px; top: -40px; width: 280px; height: 280px; background: var(--accent); opacity: 0.08; border-radius: 50%; }
+.final-grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: var(--s-block); align-items: center; position: relative; }
+.final h2 { font-weight: 800; font-size: 52px; letter-spacing: -0.04em; line-height: 1.05; margin: 16px 0 var(--s-el-lg); }
+.final h2 em { font-style: normal; background: linear-gradient(to bottom, transparent 0%, transparent 14%, var(--accent) 14%, var(--accent) 86%, transparent 86%, transparent 100%); color: var(--ink); padding: 0 8px; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+.final p { font-size: 16px; line-height: 1.6; color: rgba(255,255,255,0.75); max-width: 480px; margin-bottom: 32px; }
+.final .ctas { display: flex; gap: 12px; flex-wrap: wrap; }
+.final .secure { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255,255,255,0.55); margin-top: 18px; display: flex; gap: 24px; }
+.final .secure span::before { content: '●'; color: var(--accent); margin-right: 8px; }
+.final .checklist { border-left: 1px solid rgba(255,255,255,0.15); padding-left: var(--s-block); display: flex; flex-direction: column; gap: 14px; }
+.final .checklist .ci { display: grid; grid-template-columns: 28px 1fr; gap: 14px; }
+.final .checklist .id { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; color: var(--accent); padding-top: 2px; }
+.final .checklist .t { font-size: 14px; line-height: 1.5; color: rgba(255,255,255,0.88); }
+.final .checklist .t b { display: block; font-weight: 700; color: var(--paper); margin-bottom: 2px; }
+
+/* =========================================================
+   FOOTER
+   ========================================================= */
+.footer { background: var(--paper); padding: 56px 0 28px; border-top: 1px solid var(--rule); }
+.footer-grid { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: var(--s-block); margin-bottom: 40px; }
+.footer-brand p { font-size: 13.5px; line-height: 1.6; color: var(--muted); max-width: 320px; margin-top: 16px; }
+.footer-col h4 { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); margin-bottom: 16px; }
+.footer-col ul { display: flex; flex-direction: column; gap: 10px; }
+.footer-col li { font-size: 13.5px; color: var(--ink-2); cursor: pointer; }
+.footer-col li:hover { color: var(--ink); }
+.footer-bottom { padding-top: 24px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.footer-bottom .links { display: flex; gap: 24px; }
+
+/* =========================================================
+   RESPONSIVE
+   ========================================================= */
+@media (max-width: 960px) {
+  :root { --s-section: 72px; --s-block: 36px; }
+  .wrap { padding: 0 32px; }
+  .demo-tabs-inner { padding: 0 32px; overflow-x: auto; }
+  .demo-tabs .tab { padding: 16px 16px; font-size: 10.5px; }
+  .demo-hero-grid, .ov-section-head, .features .head, .final-grid { grid-template-columns: 1fr; gap: 32px; }
+  .demo-hero .meta { border-left: none; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 24px; }
+  .final .checklist { border-left: none; padding-left: 0; border-top: 1px solid rgba(255,255,255,0.15); padding-top: 24px; }
+  .ov-grid { grid-template-columns: 1fr; }
+  .features-grid { grid-template-columns: repeat(2, 1fr); }
+  .fw-grid { grid-template-columns: 1fr; }
+  .compare-grid { grid-template-columns: 1fr; }
+  .compare-divider { padding: 14px; }
+  .dash-grid { grid-template-columns: repeat(2, 1fr); }
+  .dash-callouts { grid-template-columns: 1fr; }
+  .ov-hero h1 { font-size: 56px; }
+  .footer-grid { grid-template-columns: 1fr 1fr; gap: 32px; }
+}
+@media (max-width: 640px) {
+  :root { --s-section: 56px; --s-block: 24px; --s-card: 22px; }
+  .wrap { padding: 0 20px; }
+  .nav-inner { padding: 12px 20px; }
+  .demo-tabs-inner { padding: 0 20px; }
+  .demo-tabs .ext { display: none; }
+  .ov-hero { padding: 56px 0 var(--s-section); }
+  .ov-hero h1 { font-size: 40px; letter-spacing: -0.035em; line-height: 1.1; }
+  .ov-hero h1 em { padding: 0 6px; }
+  .ov-hero .ctas { flex-direction: column; align-items: stretch; }
+  .ov-hero .ctas .btn { width: 100%; }
+  .demo-hero h1 { font-size: 36px; line-height: 1.1; }
+  .demo-hero .ctas { flex-direction: column; align-items: stretch; }
+  .demo-hero .ctas .btn { width: 100%; }
+  .features-grid { grid-template-columns: 1fr; }
+  .dash-grid { grid-template-columns: 1fr; }
+  .dash-cell { border-right: none; border-bottom: 1px solid var(--rule); }
+  .compare-col { padding: 28px 24px; }
+  .compare-col h3 { font-size: 22px; }
+  .compare-col .total .v { font-size: 28px; }
+  .final-inner { padding: 48px 24px; }
+  .final h2 { font-size: 32px; }
+  .final .ctas { flex-direction: column; align-items: stretch; }
+  .final .ctas .btn { width: 100%; }
+  .final .secure { flex-direction: column; gap: 8px; }
+  .ov-section-head h2, .features .head h2, .compare .head h2 { font-size: 30px; }
+  .cover-sheet { padding: 28px 20px; }
+  .cover-grid { grid-template-columns: 1fr; gap: 24px; }
+  .cover-fields .row { grid-template-columns: 1fr; gap: 4px; }
+  .nist-dashboard { padding: 24px 20px; }
+  .workbook-section .head { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .footer-grid { grid-template-columns: 1fr; gap: 28px; }
+
+  /* Workbook becomes scrollable horizontally on phones */
+  .wb-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .wb-grid { min-width: 720px; }
 }
 </style>
 </head>
 <body>
 
-<nav>
-  <div class="logo" onclick="showSection('home')">
-    <div class="logo-mark">RF</div>
-    <span class="logo-name">RiskForge</span>
+<!-- ============================================
+     NAV
+     ============================================ -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="logo" href="index.html">
+      <span class="mark">RF</span> RiskForge
+    </a>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="index.html">Main Site ↗</a>
+      <a class="btn btn-primary" href="index.html#pricing">Get Templates <span class="arrow">→</span></a>
+    </div>
   </div>
-  <div class="nav-tabs">
-    <button class="nav-tab active" onclick="showSection('home')">Overview</button>
-    <button class="nav-tab" onclick="showSection('pci')">PCI DSS v4</button>
-    <button class="nav-tab" onclick="showSection('nist')">NIST CSF 2.0</button>
-    <button class="nav-tab" onclick="showSection('vault')">Full Vault</button>
-  </div>
-  <a href="https://riskforge.tech" target="_blank" class="nav-cta">riskforge.tech ↗</a>
 </nav>
 
-
-<!-- HOME -->
-<div id="home" class="section active">
-  <div class="hero">
-    <div class="hero-bg-text">DEMO</div>
-    <div class="hero-top">
-      <div class="hero-tag">Interactive Product Demo</div>
-      <div class="hero-ver">PCI DSS v4.0 · NIST CSF 2.0</div>
+<!-- ============================================
+     DEMO SUB-NAV (TABS)
+     ============================================ -->
+<div class="demo-tabs">
+  <div class="demo-tabs-inner">
+    <div class="tabs">
+      <button class="tab active" data-view="overview"><span class="num">01</span>Overview</button>
+      <button class="tab" data-view="pci"><span class="num">02</span>PCI DSS v4.0</button>
+      <button class="tab" data-view="nist"><span class="num">03</span>NIST CSF 2.0</button>
+      <button class="tab" data-view="vault"><span class="num">04</span>Full Vault</button>
     </div>
-    <div class="hero-body">
-      <h1>Stop scrambling<br><span class="thin">before your</span> <span class="accent">audit.</span></h1>
-      <div class="hero-bottom">
-        <p class="hero-sub">Professional-grade compliance workbooks built by a team of IT Risk and Compliance experts with 10+ years across banking, defense, and financial services. Explore both products interactively below.</p>
-        <div class="hero-actions">
-          <button class="btn-lime" onclick="showSection('pci')">Explore PCI DSS Workbook →</button>
-          <button class="btn-wire" onclick="showSection('nist')">Explore NIST CSF Workbook →</button>
-        </div>
-      </div>
-    </div>
+    <div class="ext">DEMO · INTERACTIVE PREVIEW</div>
   </div>
-
-  <div class="products-section">
-    <div class="products-intro">
-      <div class="products-h2">Two workbooks.<br>Every control covered.</div>
-      <div class="products-sub">Click either product to explore an interactive preview — see every sheet, every requirement, and exactly how it works before you buy.</div>
-    </div>
-
-    <div class="product-row" onclick="showSection('pci')">
-      <div class="pr-num">01</div>
-      <div class="pr-info">
-        <div class="pr-tag">PCI DSS v4.0 · Available Now</div>
-        <div class="pr-name">SAQ Preparation Workbook</div>
-        <div class="pr-desc">SAQ type selector, full requirements checklists for SAQ-A through D, evidence tracker, and prioritized remediation roadmap. Mandatory since March 2024.</div>
-      </div>
-      <div class="pr-includes">
-        <div class="pr-inc-label">Includes</div>
-        <ul class="pr-inc-list">
-          <li>SAQ Type Selector (8 questions)</li>
-          <li>SAQ-A, B, B-IP, C, D checklists</li>
-          <li>Evidence Tracker (18 items)</li>
-          <li>Priority scoring roadmap</li>
-        </ul>
-      </div>
-      <div class="pr-action"><button class="btn-row primary">Explore Demo →</button></div>
-    </div>
-
-    <div class="product-row" onclick="showSection('nist')">
-      <div class="pr-num">02</div>
-      <div class="pr-info">
-        <div class="pr-tag">NIST CSF 2.0 · Available Now</div>
-        <div class="pr-name">Gap Assessment Workbook</div>
-        <div class="pr-desc">All 6 CSF functions including the new Govern function. 100+ subcategories with 0–5 maturity scoring, auto-calculated Executive Dashboard, and Remediation Roadmap.</div>
-      </div>
-      <div class="pr-includes">
-        <div class="pr-inc-label">Includes</div>
-        <ul class="pr-inc-list">
-          <li>Executive Summary Dashboard</li>
-          <li>GV, ID, PR, DE, RS, RC tabs</li>
-          <li>Maturity scoring 0–5 scale</li>
-          <li>Remediation Roadmap</li>
-        </ul>
-      </div>
-      <div class="pr-action"><button class="btn-row primary">Explore Demo →</button></div>
-    </div>
-
-    <div class="product-row featured" onclick="showSection('vault')">
-      <div class="pr-num">03</div>
-      <div class="pr-info">
-        <div class="pr-tag">⭐ Best Value — Full Compliance Vault</div>
-        <div class="pr-name">Both Workbooks + All Future Frameworks</div>
-        <div class="pr-desc">Everything in both packs, plus NIST 800-53, CRI Profile 2.0, CCM, and COBIT as they release — at no extra cost. One price, forever.</div>
-      </div>
-      <div class="pr-includes">
-        <div class="pr-inc-label">Includes</div>
-        <ul class="pr-inc-list">
-          <li>NIST CSF 2.0 + PCI DSS v4.0</li>
-          <li>NIST 800-53 (coming soon)</li>
-          <li>CRI · CCM · COBIT (coming soon)</li>
-          <li>All future updates, free forever</li>
-        </ul>
-      </div>
-      <div class="pr-action"><button class="btn-row primary">View Value →</button></div>
-    </div>
-  </div>
-
-  <footer>
-    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
-    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
-    <div class="footer-links">
-      <a href="https://riskforge.tech" target="_blank">Main Site</a>
-      <a href="https://payhip.com/b/cx1lY" target="_blank">Full Vault — $349</a>
-    </div>
-  </footer>
 </div>
 
+<!-- ============================================
+     VIEW 01 · OVERVIEW
+     ============================================ -->
+<div class="view active" id="view-overview">
+  <section class="ov-hero">
+    <div class="wrap">
+      <div class="top-eyebrow">
+        <span class="pill">DEMO</span>
+        <span class="eyebrow">Interactive Preview · PCI DSS v4.0 · NIST CSF 2.0</span>
+      </div>
+      <h1>Stop scrambling <em>before</em> your audit.</h1>
+      <p class="lead">Professional-grade compliance workbooks built by IT Risk and Compliance practitioners with 10+ years across banking, defense, and financial services. Explore both products interactively below — every sheet, every requirement, every cell.</p>
+      <div class="ctas">
+        <a class="btn btn-primary" data-view="pci">Explore PCI DSS Workbook <span class="arrow">→</span></a>
+        <a class="btn btn-secondary" data-view="nist">Explore NIST CSF Workbook</a>
+      </div>
+    </div>
+  </section>
 
-<!-- PCI DSS v4.0 -->
-<div id="pci" class="section">
-
-  <div class="section-header-band">
-    <button class="back-btn" onclick="showSection('home')">← Back to Overview</button>
-    <div class="section-eyebrow">PCI DSS v4.0 · SAQ Preparation Workbook</div>
-    <h2 class="section-h2">From chaos to compliant —<br>before your QSA arrives.</h2>
-    <p class="section-desc">Walk through every SAQ type with structured checklists, evidence logging, and a remediation roadmap that tells you exactly what to fix first.</p>
-  </div>
-
-  <div class="demo-band">
-    <div class="demo-inner">
-      <div class="demo-container">
-        <div class="demo-topbar">
-          <div class="topbar-dots"><div class="topbar-dot dot-r"></div><div class="topbar-dot dot-y"></div><div class="topbar-dot dot-g"></div></div>
-          <span class="topbar-title">PCI_DSS_v4_SAQ_Prep_Workbook.xlsx — RiskForge</span>
+  <section class="ov-cards">
+    <div class="wrap">
+      <div class="ov-section-head">
+        <div>
+          <div class="eyebrow">01 · Two workbooks</div>
+          <h2>Two workbooks. <em>Every control covered.</em></h2>
         </div>
-        <div class="sheet-tabs">
-          <button class="sheet-tab active" onclick="switchSheet(this,'pci-cover','pci-sheets')">📋 Cover</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'pci-selector','pci-sheets')">🎯 SAQ Selector</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'pci-saqa','pci-sheets')">⚙️ SAQ-A</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'pci-evidence','pci-sheets')">📁 Evidence Tracker</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'pci-roadmap','pci-sheets')">🗺️ Roadmap</button>
-        </div>
-        <div id="pci-sheets">
+        <p class="sub">Click either product to walk through an interactive preview — see every sheet, every requirement, and exactly how it works before you buy.</p>
+      </div>
 
-          <div id="pci-cover" class="sheet-content">
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px;">
-              <div>
-                <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:1.3rem;font-weight:800;margin-bottom:6px;color:var(--white);letter-spacing:-.04em;">PCI DSS v4.0</div>
-                <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--lime);letter-spacing:.15em;text-transform:uppercase;margin-bottom:20px;">SAQ Preparation Workbook</div>
-                <div style="font-size:11.5px;font-weight:300;color:var(--gray-lt);margin-bottom:28px;line-height:1.7;">SAQ Type Selector · Requirements Checklist · Evidence Tracker · Remediation Roadmap</div>
-                <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
-                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">Merchant / Entity Name</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--white);">Acme Corp</td></tr>
-                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">Assessment Date</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--white);">May 2026</td></tr>
-                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">SAQ Type Selected</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--lime);font-family:'IBM Plex Mono',monospace;font-size:11px;">SAQ-A</td></tr>
-                  <tr><td style="padding:10px 0;color:var(--gray-lt);border-bottom:1px solid var(--rule);font-weight:300;">Merchant Level</td><td style="padding:10px 12px;border-bottom:1px solid var(--rule);color:var(--white);">Level 3</td></tr>
-                  <tr><td style="padding:10px 0;color:var(--gray-lt);font-weight:300;">Document Version</td><td style="padding:10px 12px;color:var(--white);">1.0</td></tr>
-                </table>
+      <div class="ov-grid">
+        <article class="ov-card" data-view="pci">
+          <div class="tag"><span class="id">01 · PCI DSS v4.0</span><span class="status">Available Now</span></div>
+          <h3>SAQ Preparation Workbook</h3>
+          <p class="desc">SAQ type selector, full requirements checklists for SAQ-A through D, evidence tracker, and prioritized remediation roadmap. Mandatory since March 2024.</p>
+          <div class="includes">
+            <div>SAQ Type Selector (8 questions)</div>
+            <div>SAQ-A, B, B-IP, C, D checklists</div>
+            <div>Evidence Tracker (18 items)</div>
+            <div>Priority scoring roadmap</div>
+          </div>
+          <div class="explore">Explore Demo <span>→</span></div>
+        </article>
+
+        <article class="ov-card" data-view="nist">
+          <div class="tag"><span class="id">02 · NIST CSF 2.0</span><span class="status">Available Now</span></div>
+          <h3>Gap Assessment Workbook</h3>
+          <p class="desc">All 6 CSF functions including the new Govern function. 100+ subcategories with 0–5 maturity scoring, auto-calculated Executive Dashboard, and Remediation Roadmap.</p>
+          <div class="includes">
+            <div>Executive Summary Dashboard</div>
+            <div>GV, ID, PR, DE, RS, RC tabs</div>
+            <div>Maturity scoring 0–5 scale</div>
+            <div>Remediation Roadmap</div>
+          </div>
+          <div class="explore">Explore Demo <span>→</span></div>
+        </article>
+
+        <article class="ov-card feature" data-view="vault">
+          <div class="tag"><span class="id">03 · FULL VAULT</span><span class="status">Best Value</span></div>
+          <h3>Both Workbooks + All Future Frameworks</h3>
+          <p class="desc">Everything in both packs, plus NIST 800-53, CRI Profile 2.0, CCM, and COBIT as they release — at no extra cost. One price, forever.</p>
+          <div class="includes">
+            <div>NIST CSF 2.0 + PCI DSS v4.0</div>
+            <div>NIST 800-53 (coming soon)</div>
+            <div>CRI · CCM · COBIT (coming soon)</div>
+            <div>All future updates, free forever</div>
+          </div>
+          <div class="explore">View Value <span>→</span></div>
+        </article>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============================================
+     VIEW 02 · PCI DEMO
+     ============================================ -->
+<div class="view" id="view-pci">
+  <section class="demo-hero">
+    <div class="wrap">
+      <div class="demo-hero-grid">
+        <div>
+          <div class="eyebrow">02 · PCI DSS v4.0 · SAQ Preparation Workbook</div>
+          <h1>From chaos to <em>compliant</em> before your QSA arrives.</h1>
+          <p class="lead">Walk through every SAQ type with structured checklists, evidence logging, and a remediation roadmap that tells you exactly what to fix first.</p>
+          <div class="ctas">
+            <a class="btn btn-primary" href="https://payhip.com/b/xCJhD">Buy PCI Pack — $149 <span class="arrow">→</span></a>
+            <a class="btn btn-secondary" data-view="overview">Back to Overview</a>
+          </div>
+        </div>
+        <div class="meta">
+          <div class="meta-row"><span class="l">Version</span><span class="v">v4.0</span></div>
+          <div class="meta-row"><span class="l">Mandatory since</span><span class="v">Mar <em>2024</em></span></div>
+          <div class="meta-row"><span class="l">Sheets</span><span class="v">5</span></div>
+          <div class="meta-row"><span class="l">SAQ types</span><span class="v">A · B · B-IP · C · D</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- WORKBOOK MOCK -->
+  <section class="workbook-section">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <div class="eyebrow">Interactive preview</div>
+          <h2>Inside the <em>PCI DSS v4.0</em> workbook.</h2>
+        </div>
+        <p class="sub">Click the sheet tabs at the bottom to switch between the Cover, SAQ Selector, requirement checklists, Evidence Tracker, and Remediation Roadmap.</p>
+      </div>
+
+      <div class="workbook" id="pci-wb">
+        <div class="wb-title-bar">
+          <div class="file">PCI_DSS_v4_SAQ_Prep_Workbook.xlsx — RiskForge</div>
+          <div class="controls"><span></span><span></span><span></span></div>
+        </div>
+        <div class="wb-toolbar">
+          <div class="crumb">Active: <b id="pci-crumb">Cover</b></div>
+          <div class="legend">
+            <span class="ok">In Place</span>
+            <span class="nt">Not Tested</span>
+            <span class="bad">Not in Place</span>
+            <span class="na">N/A</span>
+          </div>
+        </div>
+
+        <!-- Cover -->
+        <div class="wb-sheet active" data-sheet="cover">
+          <div class="cover-sheet">
+            <div class="doc-eyebrow">PCI DSS v4.0</div>
+            <h2>SAQ Preparation Workbook</h2>
+            <div class="doc-sub">SAQ Type Selector · Requirements Checklist · Evidence Tracker · Remediation Roadmap</div>
+            <div class="cover-grid">
+              <div class="cover-fields">
+                <div class="row"><span class="l">Merchant / Entity</span><span class="v">Acme Corp</span></div>
+                <div class="row"><span class="l">Assessment Date</span><span class="v">May 2026</span></div>
+                <div class="row"><span class="l">SAQ Type Selected</span><span class="v accent">SAQ-A</span></div>
+                <div class="row"><span class="l">Merchant Level</span><span class="v">Level 3</span></div>
+                <div class="row"><span class="l">Document Version</span><span class="v">1.0</span></div>
               </div>
-              <div>
-                <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.18em;text-transform:uppercase;margin-bottom:16px;">Compliance Status Legend</div>
-                <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:28px;">
-                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-in-place">In Place</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Control fully implemented & operating</span></div>
-                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-not-tested">Not Tested</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Exists but not yet validated</span></div>
-                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-not-in-place">Not in Place</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Missing or failing — action required</span></div>
-                  <div style="display:flex;align-items:center;gap:12px;"><span class="status-badge status-na">Not Applicable</span><span style="font-size:12px;font-weight:300;color:var(--gray-lt);">Requirement does not apply</span></div>
-                </div>
-                <div style="border-left:2px solid var(--lime);padding-left:16px;">
-                  <div style="font-family:'IBM Plex Mono',monospace;font-size:8px;color:var(--gray-lt);letter-spacing:.15em;text-transform:uppercase;margin-bottom:10px;">Workbook Structure</div>
-                  <div style="font-size:11.5px;font-weight:300;color:var(--gray-lt);line-height:2.1;">🎯 SAQ Type Selector<br>⚙️ SAQ-A through SAQ-D<br>📁 Evidence Tracker<br>🗺️ Remediation Roadmap</div>
-                </div>
+              <div class="cover-legend">
+                <h3>Compliance Status Legend</h3>
+                <div class="lg-row"><span class="lbl"><span class="badge ok">In Place</span></span><span class="desc">Control fully implemented and operating</span></div>
+                <div class="lg-row"><span class="lbl"><span class="badge nt">Not Tested</span></span><span class="desc">Exists but not yet validated</span></div>
+                <div class="lg-row"><span class="lbl"><span class="badge bad">Not in Place</span></span><span class="desc">Missing or failing — action required</span></div>
+                <div class="lg-row"><span class="lbl"><span class="badge na">N/A</span></span><span class="desc">Requirement does not apply</span></div>
               </div>
             </div>
           </div>
+        </div>
 
-          <div id="pci-selector" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">SAQ Type Selector</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:24px;">Answer each question to determine which SAQ applies to your organization.</div>
-            <table class="wb-table">
-              <thead><tr><th>#</th><th>Question</th><th style="min-width:110px;">Answer</th><th>Result</th></tr></thead>
-              <tbody>
-                <tr><td class="req-id">Q1</td><td>Does your organization store, process, or transmit cardholder data?</td><td><span class="status-badge status-in-place">Yes</span></td><td style="font-size:11px;color:var(--gray-lt);">Continue →</td></tr>
-                <tr><td class="req-id">Q2</td><td>Do you use a fully outsourced payment page (e.g. PayPal, Stripe) with no card data touching your servers?</td><td><span class="status-badge status-in-place">Yes</span></td><td style="font-size:11px;color:var(--lime);font-family:'IBM Plex Mono',monospace;font-weight:700;">→ SAQ-A</td></tr>
-                <tr><td class="req-id">Q3</td><td>Do you use only standalone, dial-out terminals not connected to internet?</td><td><span class="status-badge status-na">N/A</span></td><td style="font-size:11px;color:var(--gray-lt);">→ SAQ-B</td></tr>
-                <tr><td class="req-id">Q4</td><td>Do you use IP-connected PTS-approved point-of-interaction devices only?</td><td><span class="status-badge status-na">N/A</span></td><td style="font-size:11px;color:var(--gray-lt);">→ SAQ-B-IP</td></tr>
-                <tr><td class="req-id">Q5</td><td>Do you use a payment application on internet-connected systems?</td><td><span class="status-badge status-na">N/A</span></td><td style="font-size:11px;color:var(--gray-lt);">→ SAQ-C</td></tr>
-              </tbody>
-            </table>
-            <div style="margin-top:20px;display:inline-flex;align-items:center;gap:16px;padding:14px 20px;border:1px solid rgba(200,240,0,.25);background:rgba(200,240,0,.04);">
-              <span style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.1em;text-transform:uppercase;">📌 Recommended SAQ Type</span>
-              <span style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:800;font-size:1.1rem;color:var(--lime);letter-spacing:-.04em;">SAQ-A</span>
+        <!-- SAQ Selector -->
+        <div class="wb-sheet" data-sheet="selector">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 60px 1fr 100px 140px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="row-header">1</div>
+              <div class="cell header-row">#</div>
+              <div class="cell header-row">Question</div>
+              <div class="cell header-row center">Answer</div>
+              <div class="cell header-row">Result</div>
+
+              <div class="row-section">SAQ Type Selector — answer to determine SAQ</div>
+
+              <div class="row-header">2</div>
+              <div class="cell bold">Q1</div>
+              <div class="cell sans">Does your organization store, process, or transmit cardholder data?</div>
+              <div class="cell center bold">Yes</div>
+              <div class="cell muted">Continue →</div>
+
+              <div class="row-header">3</div>
+              <div class="cell bold">Q2</div>
+              <div class="cell sans">Do you use a fully outsourced payment page (e.g. PayPal, Stripe) with no card data touching your servers?</div>
+              <div class="cell center bold">Yes</div>
+              <div class="cell"><span class="badge ok">→ SAQ-A</span></div>
+
+              <div class="row-header">4</div>
+              <div class="cell bold">Q3</div>
+              <div class="cell sans">Do you use only standalone, dial-out terminals not connected to internet?</div>
+              <div class="cell center muted">N/A</div>
+              <div class="cell muted">→ SAQ-B</div>
+
+              <div class="row-header">5</div>
+              <div class="cell bold">Q4</div>
+              <div class="cell sans">Do you use IP-connected PTS-approved point-of-interaction devices only?</div>
+              <div class="cell center muted">N/A</div>
+              <div class="cell muted">→ SAQ-B-IP</div>
+
+              <div class="row-header">6</div>
+              <div class="cell bold">Q5</div>
+              <div class="cell sans">Do you use a payment application on internet-connected systems?</div>
+              <div class="cell center muted">N/A</div>
+              <div class="cell muted">→ SAQ-C</div>
+            </div>
+            <div style="background: var(--ink); color: var(--paper); padding: 18px 24px; display: flex; align-items: center; gap: 16px;">
+              <span style="font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.18em; color: var(--accent); font-weight: 700;">RECOMMENDED SAQ TYPE</span>
+              <span style="font-weight: 800; font-size: 26px; letter-spacing: -0.02em;">SAQ-A</span>
+              <span style="font-size: 13px; color: rgba(255,255,255,0.7); margin-left: auto;">Card-not-present merchants · Fully outsourced processing</span>
             </div>
           </div>
+        </div>
 
-          <div id="pci-saqa" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">SAQ-A — Card-Not-Present Merchants</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Fully Outsourced Processing · PCI DSS v4.0</div>
-            <table class="wb-table">
-              <thead><tr><th>Req #</th><th>Description</th><th>Testing Procedure</th><th>Status</th><th>Evidence Ref</th><th>Owner</th></tr></thead>
-              <tbody>
-                <tr class="section-row"><td colspan="6">◆ Req 2 — Apply Secure Configurations to All System Components</td></tr>
-                <tr><td class="req-id">2.1.1</td><td>All security policies for Req 2 are documented, kept current, and in active use.</td><td style="font-size:11px;">Examine docs; verify reviewed annually.</td><td><span class="status-badge status-in-place">In Place</span></td><td style="font-size:11px;">SEC-POL-001</td><td style="font-size:11px;">J. Smith</td></tr>
-                <tr><td class="req-id">2.2.1</td><td>Configuration standards are developed, implemented, and maintained.</td><td style="font-size:11px;">Compare to CIS/NIST hardening guides.</td><td><span class="status-badge status-not-tested">Not Tested</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;">IT Ops</td></tr>
-                <tr><td class="req-id">2.2.7</td><td>All non-console administrative access uses strong cryptography.</td><td style="font-size:11px;">Observe admin sessions; verify encryption.</td><td><span class="status-badge status-in-place">In Place</span></td><td style="font-size:11px;">NET-ENC-004</td><td style="font-size:11px;">SysAdmin</td></tr>
-                <tr class="section-row"><td colspan="6">◆ Req 8 — Identify Users &amp; Authenticate Access to System Components</td></tr>
-                <tr><td class="req-id">8.2.1</td><td>All user IDs and authentication credentials are managed for valid and authorized users only.</td><td style="font-size:11px;">Review accounts; verify no orphan accounts.</td><td><span class="status-badge status-not-in-place">Not in Place</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
-                <tr><td class="req-id">8.3.6</td><td>Passwords/passphrases must meet minimum length of at least 12 characters.</td><td style="font-size:11px;">Review policy; test system enforcement.</td><td><span class="status-badge status-not-tested">Not Tested</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;">IT Ops</td></tr>
-              </tbody>
-            </table>
+        <!-- SAQ-A -->
+        <div class="wb-sheet" data-sheet="saqa">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 100px 1fr 1fr 130px 130px 120px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">Req #</div>
+              <div class="cell header-row">Description</div>
+              <div class="cell header-row">Testing Procedure</div>
+              <div class="cell header-row">Status</div>
+              <div class="cell header-row">Evidence Ref</div>
+              <div class="cell header-row">Owner</div>
+
+              <div class="row-section">Req 2 — Apply Secure Configurations to System Components</div>
+
+              <div class="row-header">2</div>
+              <div class="cell bold">2.1.1</div>
+              <div class="cell sans">All security policies for Req 2 are documented, kept current, and in active use.</div>
+              <div class="cell sans muted">Examine docs; verify reviewed annually.</div>
+              <div class="cell"><span class="badge ok">In Place</span></div>
+              <div class="cell">SEC-POL-001</div>
+              <div class="cell sans">J. Smith</div>
+
+              <div class="row-header">3</div>
+              <div class="cell bold">2.2.1</div>
+              <div class="cell sans">Configuration standards are developed, implemented, and maintained.</div>
+              <div class="cell sans muted">Compare to CIS/NIST hardening guides.</div>
+              <div class="cell"><span class="badge nt">Not Tested</span></div>
+              <div class="cell muted">—</div>
+              <div class="cell sans">IT Ops</div>
+
+              <div class="row-header">4</div>
+              <div class="cell bold">2.2.7</div>
+              <div class="cell sans">All non-console administrative access uses strong cryptography.</div>
+              <div class="cell sans muted">Observe admin sessions; verify encryption.</div>
+              <div class="cell"><span class="badge ok">In Place</span></div>
+              <div class="cell">NET-ENC-004</div>
+              <div class="cell sans">SysAdmin</div>
+
+              <div class="row-section">Req 8 — Identify Users & Authenticate Access</div>
+
+              <div class="row-header">5</div>
+              <div class="cell bold">8.2.1</div>
+              <div class="cell sans">All user IDs and authentication credentials are managed for valid and authorized users only.</div>
+              <div class="cell sans muted">Review accounts; verify no orphan accounts.</div>
+              <div class="cell"><span class="badge bad">Not in Place</span></div>
+              <div class="cell muted">—</div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+
+              <div class="row-header">6</div>
+              <div class="cell bold">8.3.6</div>
+              <div class="cell sans">Passwords/passphrases must meet minimum length of at least 12 characters.</div>
+              <div class="cell sans muted">Review policy; test system enforcement.</div>
+              <div class="cell"><span class="badge nt">Not Tested</span></div>
+              <div class="cell muted">—</div>
+              <div class="cell sans">IT Ops</div>
+            </div>
           </div>
+        </div>
 
-          <div id="pci-evidence" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">Evidence Tracker</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Master log of all evidence documents required for compliance</div>
-            <table class="wb-table">
-              <thead><tr><th>Evidence ID</th><th>Requirement</th><th>Document Name</th><th>Status</th><th>Last Updated</th><th>Owner</th></tr></thead>
-              <tbody>
-                <tr><td class="req-id">SEC-POL-001</td><td style="font-size:11px;">2.1.1</td><td>Information Security Policy v3.2</td><td><span class="status-badge status-collected">Collected</span></td><td style="font-size:11px;">Apr 2026</td><td style="font-size:11px;">J. Smith</td></tr>
-                <tr><td class="req-id">NET-ENC-004</td><td style="font-size:11px;">2.2.7</td><td>Network Encryption Config Screenshots</td><td><span class="status-badge status-collected">Collected</span></td><td style="font-size:11px;">Mar 2026</td><td style="font-size:11px;">SysAdmin</td></tr>
-                <tr><td class="req-id">ACC-REV-002</td><td style="font-size:11px;">8.2.1</td><td>User Access Review Report</td><td><span class="status-badge status-missing">Missing</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
-                <tr><td class="req-id">PWD-POL-003</td><td style="font-size:11px;">8.3.6</td><td>Password Policy Documentation</td><td><span class="status-badge status-pending">Pending</span></td><td style="font-size:11px;">—</td><td style="font-size:11px;">IT Ops</td></tr>
-              </tbody>
-            </table>
+        <!-- Evidence Tracker -->
+        <div class="wb-sheet" data-sheet="evidence">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 130px 90px 1fr 130px 130px 130px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">Evidence ID</div>
+              <div class="cell header-row">Req #</div>
+              <div class="cell header-row">Document Name</div>
+              <div class="cell header-row">Status</div>
+              <div class="cell header-row">Last Updated</div>
+              <div class="cell header-row">Owner</div>
+
+              <div class="row-header">2</div>
+              <div class="cell bold">SEC-POL-001</div>
+              <div class="cell">2.1.1</div>
+              <div class="cell sans">Information Security Policy v3.2</div>
+              <div class="cell"><span class="badge ok">Collected</span></div>
+              <div class="cell sans muted">Apr 2026</div>
+              <div class="cell sans">J. Smith</div>
+
+              <div class="row-header">3</div>
+              <div class="cell bold">NET-ENC-004</div>
+              <div class="cell">2.2.7</div>
+              <div class="cell sans">Network Encryption Config Screenshots</div>
+              <div class="cell"><span class="badge ok">Collected</span></div>
+              <div class="cell sans muted">Mar 2026</div>
+              <div class="cell sans">SysAdmin</div>
+
+              <div class="row-header">4</div>
+              <div class="cell bold">ACC-REV-002</div>
+              <div class="cell">8.2.1</div>
+              <div class="cell sans">User Access Review Report</div>
+              <div class="cell"><span class="badge bad">Missing</span></div>
+              <div class="cell muted">—</div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+
+              <div class="row-header">5</div>
+              <div class="cell bold">PWD-POL-003</div>
+              <div class="cell">8.3.6</div>
+              <div class="cell sans">Password Policy Documentation</div>
+              <div class="cell"><span class="badge warn">Pending</span></div>
+              <div class="cell muted">—</div>
+              <div class="cell sans">IT Ops</div>
+            </div>
           </div>
+        </div>
 
-          <div id="pci-roadmap" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">Remediation Roadmap</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Prioritized by risk impact · Assign owners and track to audit readiness</div>
-            <table class="wb-table">
-              <thead><tr><th>Priority</th><th>Req #</th><th>Action Required</th><th>Effort</th><th>Impact</th><th>Owner</th><th>Target Date</th></tr></thead>
-              <tbody>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);font-weight:700;">🔴 Critical</td><td class="req-id">8.2.1</td><td>Conduct full user access review; remove orphan accounts</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;color:var(--red);">High</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td><td style="font-size:11px;">Jun 2026</td></tr>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--yellow);font-weight:700;">🟡 High</td><td class="req-id">8.3.6</td><td>Update password policy to enforce 12+ character minimum</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;">IT Ops</td><td style="font-size:11px;">May 2026</td></tr>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--green);font-weight:700;">🟢 Low</td><td class="req-id">2.2.1</td><td>Document and test configuration standards against CIS benchmarks</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;">IT Ops</td><td style="font-size:11px;">Jul 2026</td></tr>
-              </tbody>
-            </table>
+        <!-- Roadmap -->
+        <div class="wb-sheet" data-sheet="roadmap">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 130px 80px 1.6fr 100px 100px 130px 110px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+              <div class="col-header">G</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">Priority</div>
+              <div class="cell header-row">Req #</div>
+              <div class="cell header-row">Action Required</div>
+              <div class="cell header-row">Effort</div>
+              <div class="cell header-row">Impact</div>
+              <div class="cell header-row">Owner</div>
+              <div class="cell header-row">Target</div>
+
+              <div class="row-header">2</div>
+              <div class="cell"><span class="prio critical">Critical</span></div>
+              <div class="cell bold">8.2.1</div>
+              <div class="cell sans">Conduct full user access review; remove orphan accounts</div>
+              <div class="cell sans">Medium</div>
+              <div class="cell sans bold">High</div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+              <div class="cell sans">Jun 2026</div>
+
+              <div class="row-header">3</div>
+              <div class="cell"><span class="prio high">High</span></div>
+              <div class="cell bold">8.3.6</div>
+              <div class="cell sans">Update password policy to enforce 12+ character minimum</div>
+              <div class="cell sans">Low</div>
+              <div class="cell sans">Medium</div>
+              <div class="cell sans">IT Ops</div>
+              <div class="cell sans">May 2026</div>
+
+              <div class="row-header">4</div>
+              <div class="cell"><span class="prio low">Low</span></div>
+              <div class="cell bold">2.2.1</div>
+              <div class="cell sans">Document and test configuration standards against CIS benchmarks</div>
+              <div class="cell sans">Medium</div>
+              <div class="cell sans muted">Low</div>
+              <div class="cell sans">IT Ops</div>
+              <div class="cell sans">Jul 2026</div>
+            </div>
           </div>
+        </div>
 
+        <!-- Sheet tabs (bottom) -->
+        <div class="wb-sheet-tabs">
+          <button class="stab active" data-target="cover"><span class="dot"></span>Cover</button>
+          <button class="stab" data-target="selector"><span class="dot"></span>SAQ Selector</button>
+          <button class="stab" data-target="saqa"><span class="dot"></span>SAQ-A</button>
+          <button class="stab" data-target="evidence"><span class="dot"></span>Evidence Tracker</button>
+          <button class="stab" data-target="roadmap"><span class="dot"></span>Roadmap</button>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="features-band">
-    <div class="band-header"><span class="band-num">Features</span><div class="band-rule-line"></div><span class="band-title-text">What's inside the workbook</span></div>
-    <div class="features-grid">
-      <div class="feature-cell"><div class="feature-icon">🎯</div><div class="feature-title">SAQ Type Selector</div><p class="feature-desc">8 guided questions that instantly identify which Self-Assessment Questionnaire applies to your organization — no guesswork required.</p></div>
-      <div class="feature-cell"><div class="feature-icon">⚙️</div><div class="feature-title">Full Requirements Checklists</div><p class="feature-desc">Pre-loaded with every sub-requirement for SAQ-A through SAQ-D, with testing procedures and status dropdowns built in.</p></div>
-      <div class="feature-cell"><div class="feature-icon">📁</div><div class="feature-title">Evidence Tracker</div><p class="feature-desc">Master log linking every evidence document to its requirement. Know exactly what's collected, missing, and who owns it.</p></div>
-      <div class="feature-cell"><div class="feature-icon">🗺️</div><div class="feature-title">Remediation Roadmap</div><p class="feature-desc">Prioritize gaps by effort vs. impact. Assign owners, set deadlines, and track progress from gap to audit-ready.</p></div>
+  <!-- Features -->
+  <section class="features">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <div class="eyebrow">03 · Inside the workbook</div>
+          <h2>What's <em>inside.</em></h2>
+        </div>
+        <p class="sub">Every sheet has a clear job. No fluff, no chrome, no consultant-speak — just the structure auditors actually want to see.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="id">01</div>
+          <h3>SAQ Type Selector</h3>
+          <p>Eight guided questions that instantly identify which Self-Assessment Questionnaire applies to your organization — no guesswork required.</p>
+        </div>
+        <div class="feature-card">
+          <div class="id">02</div>
+          <h3>Full Requirements Checklists</h3>
+          <p>Pre-loaded with every sub-requirement for SAQ-A through SAQ-D, with testing procedures and status dropdowns built in.</p>
+        </div>
+        <div class="feature-card">
+          <div class="id">03</div>
+          <h3>Evidence Tracker</h3>
+          <p>Master log linking every evidence document to its requirement. Know exactly what's collected, missing, and who owns it.</p>
+        </div>
+        <div class="feature-card">
+          <div class="id">04</div>
+          <h3>Remediation Roadmap</h3>
+          <p>Prioritize gaps by effort vs. impact. Assign owners, set deadlines, and track progress from gap to audit-ready.</p>
+        </div>
+      </div>
     </div>
-  </div>
+  </section>
 
-  <div class="cta-band">
-    <div>
-      <div class="cta-h2">Ready to start your<br>PCI DSS prep?</div>
-      <p class="cta-sub">One-time purchase. Instant download. Open in Excel or Google Sheets and start your first SAQ this afternoon. No consultants. No waiting.</p>
+  <!-- Final CTA -->
+  <section class="final on-dark">
+    <div class="wrap">
+      <div class="final-inner">
+        <div class="final-grid">
+          <div>
+            <div class="eyebrow light">Ready when you are</div>
+            <h2>Ready to start your <em>PCI DSS prep?</em></h2>
+            <p>One-time purchase. Instant download. Open in Excel or Google Sheets and start your first SAQ this afternoon. No consultants. No waiting.</p>
+            <div class="ctas">
+              <a class="btn btn-accent" href="https://payhip.com/b/xCJhD">Buy PCI DSS Pack — $149 <span class="arrow">→</span></a>
+              <a class="btn btn-secondary" href="https://payhip.com/b/cx1lY">Get Full Vault — $349</a>
+            </div>
+            <div class="secure">
+              <span>Secure checkout · Payhip</span>
+              <span>Instant download</span>
+              <span>One-time payment</span>
+            </div>
+          </div>
+          <div class="checklist">
+            <div class="ci"><div class="id">01</div><div class="t"><b>SAQ-A through D</b>Every type covered, with testing procedures.</div></div>
+            <div class="ci"><div class="id">02</div><div class="t"><b>Evidence Tracker</b>18-item master log, ready to populate.</div></div>
+            <div class="ci"><div class="id">03</div><div class="t"><b>Priority Roadmap</b>Effort vs. impact, gap to audit-ready.</div></div>
+            <div class="ci"><div class="id">04</div><div class="t"><b>Free updates</b>Within PCI DSS v4.x, included forever.</div></div>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="cta-actions">
-      <a href="https://payhip.com/b/xCJhD" target="_blank" class="btn-black">Buy PCI DSS Pack — $149 →</a>
-      <a href="https://payhip.com/b/cx1lY" target="_blank" class="btn-outline-black">Get Full Vault (Both Products) — $349</a>
-      <div class="cta-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</div>
-    </div>
-  </div>
-
-  <footer>
-    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
-    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
-    <div class="footer-links"><a href="https://riskforge.tech" target="_blank">Main Site</a><a href="https://payhip.com/b/cx1lY" target="_blank">Full Vault</a></div>
-  </footer>
+  </section>
 </div>
 
-
-<!-- NIST CSF 2.0 -->
-<div id="nist" class="section">
-
-  <div class="section-header-band">
-    <button class="back-btn" onclick="showSection('home')">← Back to Overview</button>
-    <div class="section-eyebrow">NIST CSF 2.0 · Gap Assessment Workbook</div>
-    <h2 class="section-h2">Know your gaps.<br>Build your roadmap.</h2>
-    <p class="section-desc">Score your maturity across all 6 NIST CSF functions, identify critical gaps, and generate a prioritized remediation plan — all in one workbook.</p>
-  </div>
-
-  <div class="score-band">
-    <div class="score-label-top">📊 Executive Summary — Scores auto-calculated from each function tab</div>
-    <div class="score-grid">
-      <div class="score-card"><div class="score-card-label">🔵 GV — Govern</div><div class="score-card-val">1.4</div><div class="score-card-level">Initial</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:28%"></div></div></div>
-      <div class="score-card"><div class="score-card-label">🟡 ID — Identify</div><div class="score-card-val">2.1</div><div class="score-card-level">Developing</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:42%"></div></div></div>
-      <div class="score-card"><div class="score-card-label">🟠 PR — Protect</div><div class="score-card-val">1.8</div><div class="score-card-level">Developing</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:36%"></div></div></div>
-      <div class="score-card"><div class="score-card-label">🔴 DE — Detect</div><div class="score-card-val" style="color:var(--red)">0.8</div><div class="score-card-level" style="color:var(--red)">⚠ Critical Gap</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:16%;background:var(--red)"></div></div></div>
-      <div class="score-card"><div class="score-card-label">🟣 RS — Respond</div><div class="score-card-val">1.2</div><div class="score-card-level">Initial</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:24%"></div></div></div>
-      <div class="score-card" style="border-right:none"><div class="score-card-label">🟢 RC — Recover</div><div class="score-card-val">1.6</div><div class="score-card-level">Initial</div><div class="score-bar-bg"><div class="score-bar-fill" style="width:32%"></div></div></div>
-    </div>
-    <div class="findings-grid">
-      <div class="finding-cell"><div class="finding-label" style="color:var(--red);">⚠ Highest Risk Function</div><div class="finding-val">DE — Detect (0.8 / 5)</div><div class="finding-note">No monitoring or anomaly detection currently in place</div></div>
-      <div class="finding-cell"><div class="finding-label" style="color:var(--lime);">✓ Quick Win Opportunity</div><div class="finding-val">GV.RM — Risk Policy</div><div class="finding-note">Formalizing risk appetite is low-effort, high-impact</div></div>
-    </div>
-  </div>
-
-  <div class="demo-band">
-    <div class="demo-inner">
-      <div class="demo-container">
-        <div class="demo-topbar">
-          <div class="topbar-dots"><div class="topbar-dot dot-r"></div><div class="topbar-dot dot-y"></div><div class="topbar-dot dot-g"></div></div>
-          <span class="topbar-title">NIST_CSF2_Gap_Assessment_Workbook.xlsx — RiskForge</span>
+<!-- ============================================
+     VIEW 03 · NIST DEMO
+     ============================================ -->
+<div class="view" id="view-nist">
+  <section class="demo-hero">
+    <div class="wrap">
+      <div class="demo-hero-grid">
+        <div>
+          <div class="eyebrow">03 · NIST CSF 2.0 · Gap Assessment Workbook</div>
+          <h1>Know your gaps. <em>Build your roadmap.</em></h1>
+          <p class="lead">Score your maturity across all 6 NIST CSF functions, identify critical gaps, and generate a prioritized remediation plan — all in one workbook.</p>
+          <div class="ctas">
+            <a class="btn btn-primary" href="https://payhip.com/b/9ucFo">Buy NIST Pack — $99 <span class="arrow">→</span></a>
+            <a class="btn btn-secondary" data-view="overview">Back to Overview</a>
+          </div>
         </div>
-        <div class="sheet-tabs">
-          <button class="sheet-tab active" onclick="switchSheet(this,'nist-govern','nist-sheets')">🔵 GV — Govern</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'nist-identify','nist-sheets')">🟡 ID — Identify</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'nist-detect','nist-sheets')">🔴 DE — Detect</button>
-          <button class="sheet-tab" onclick="switchSheet(this,'nist-roadmap','nist-sheets')">🗺️ Roadmap</button>
-        </div>
-        <div id="nist-sheets">
-
-          <div id="nist-govern" class="sheet-content">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">GV — Govern</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Score 0–5 for each subcategory. Gap column auto-calculated.</div>
-            <table class="wb-table">
-              <thead><tr><th>ID</th><th>Subcategory Description</th><th>Current (0–5)</th><th>Target</th><th>Gap</th><th>Owner</th></tr></thead>
-              <tbody>
-                <tr class="section-row"><td colspan="6">◆ GV.OC — Organizational Context</td></tr>
-                <tr><td class="req-id">GV.OC-01</td><td>Organizational mission informs cybersecurity risk management.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--yellow);font-family:'IBM Plex Mono',monospace;">-1</td><td style="font-size:11px;">CISO</td></tr>
-                <tr><td class="req-id">GV.OC-02</td><td>Stakeholders are identified and their cybersecurity needs understood.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:20%"></div></div><span class="maturity-num">1 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">GRC Team</td></tr>
-                <tr><td class="req-id">GV.OC-03</td><td>Legal, regulatory, and contractual requirements are understood and managed.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">Legal / GRC</td></tr>
-                <tr class="section-row"><td colspan="6">◆ GV.RM — Risk Management Strategy</td></tr>
-                <tr><td class="req-id">GV.RM-01</td><td>Risk management objectives are established and agreed upon by stakeholders.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-3</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
-                <tr><td class="req-id">GV.RM-02</td><td>Risk appetite and tolerance statements are established and communicated.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-3</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div id="nist-identify" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">ID — Identify</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Asset management, risk assessment, supply chain risk management</div>
-            <table class="wb-table">
-              <thead><tr><th>ID</th><th>Subcategory Description</th><th>Current (0–5)</th><th>Target</th><th>Gap</th><th>Evidence</th></tr></thead>
-              <tbody>
-                <tr class="section-row"><td colspan="6">◆ ID.AM — Asset Management</td></tr>
-                <tr><td class="req-id">ID.AM-01</td><td>Inventories of hardware managed by the organization are maintained.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:60%"></div></div><span class="maturity-num">3 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--yellow);font-family:'IBM Plex Mono',monospace;">-1</td><td style="font-size:11px;">CMDB Export</td></tr>
-                <tr><td class="req-id">ID.AM-02</td><td>Inventories of software, services, and systems managed by the organization are maintained.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">Partial list</td></tr>
-                <tr class="section-row"><td colspan="6">◆ ID.RA — Risk Assessment</td></tr>
-                <tr><td class="req-id">ID.RA-01</td><td>Vulnerabilities in assets are identified, validated, and recorded.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:40%"></div></div><span class="maturity-num">2 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">Vuln Scan Q1</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div id="nist-detect" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">DE — Detect</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);letter-spacing:.06em;margin-bottom:20px;">⚠ Critical gap — lowest scoring function at 0.8 average</div>
-            <table class="wb-table">
-              <thead><tr><th>ID</th><th>Subcategory Description</th><th>Current (0–5)</th><th>Target</th><th>Gap</th><th>Owner</th></tr></thead>
-              <tbody>
-                <tr class="section-row"><td colspan="6">◆ DE.CM — Continuous Monitoring</td></tr>
-                <tr><td class="req-id">DE.CM-01</td><td>Networks and network services are monitored to detect potential adverse events.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%;background:var(--red)"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">4</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-4</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
-                <tr><td class="req-id">DE.CM-03</td><td>Personnel activity and technology usage are monitored to find potential adverse events.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:20%;background:var(--red)"></div></div><span class="maturity-num" style="color:var(--red)">1 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-2</td><td style="font-size:11px;">IT Ops</td></tr>
-                <tr class="section-row"><td colspan="6">◆ DE.AE — Adverse Event Analysis</td></tr>
-                <tr><td class="req-id">DE.AE-02</td><td>Potentially adverse events are analyzed to better characterize them.</td><td><div class="maturity-bar"><div class="maturity-track"><div class="maturity-fill-bar" style="width:0%;background:var(--red)"></div></div><span class="maturity-num" style="color:var(--red)">0 / 5</span></div></td><td style="font-size:11px;">3</td><td style="font-size:11px;color:var(--red);font-family:'IBM Plex Mono',monospace;">-3</td><td style="font-size:11px;color:var(--red);">⚠ Unassigned</td></tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div id="nist-roadmap" class="sheet-content" style="display:none;">
-            <div style="font-family:'Plus Jakarta Sans',sans-serif;font-weight:700;font-size:1rem;margin-bottom:4px;color:var(--white);letter-spacing:-.03em;">Remediation Roadmap</div>
-            <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.06em;margin-bottom:20px;">Prioritized by effort vs. impact scoring</div>
-            <table class="wb-table">
-              <thead><tr><th>Priority</th><th>Function</th><th>Control</th><th>Action Required</th><th>Effort</th><th>Impact</th><th>Target</th></tr></thead>
-              <tbody>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);font-weight:700;">🔴 1</td><td style="font-size:11px;">RS — Respond</td><td class="req-id">RS.RP-01</td><td>Create and approve Incident Response Plan</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;color:var(--red);">Critical</td><td style="font-size:11px;">Jun 2026</td></tr>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--red);font-weight:700;">🔴 2</td><td style="font-size:11px;">DE — Detect</td><td class="req-id">DE.CM-01</td><td>Deploy SIEM or log monitoring solution</td><td style="font-size:11px;color:var(--red);">High</td><td style="font-size:11px;color:var(--red);">Critical</td><td style="font-size:11px;">Q3 2026</td></tr>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--yellow);font-weight:700;">🟡 3</td><td style="font-size:11px;">GV — Govern</td><td class="req-id">GV.RM-02</td><td>Draft and board-approve Risk Appetite Statement</td><td style="font-size:11px;color:var(--green);">Low</td><td style="font-size:11px;color:var(--yellow);">High</td><td style="font-size:11px;">May 2026</td></tr>
-                <tr><td style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--yellow);font-weight:700;">🟡 4</td><td style="font-size:11px;">ID — Identify</td><td class="req-id">ID.AM-02</td><td>Complete software and services inventory</td><td style="font-size:11px;color:var(--yellow);">Medium</td><td style="font-size:11px;color:var(--yellow);">High</td><td style="font-size:11px;">Jul 2026</td></tr>
-              </tbody>
-            </table>
-          </div>
-
+        <div class="meta">
+          <div class="meta-row"><span class="l">Version</span><span class="v">v2.0</span></div>
+          <div class="meta-row"><span class="l">Released</span><span class="v">Feb <em>2024</em></span></div>
+          <div class="meta-row"><span class="l">Functions</span><span class="v">6 (incl. Govern)</span></div>
+          <div class="meta-row"><span class="l">Subcategories</span><span class="v">100+</span></div>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <div class="features-band">
-    <div class="band-header"><span class="band-num">Features</span><div class="band-rule-line"></div><span class="band-title-text">What's inside the workbook</span></div>
-    <div class="features-grid">
-      <div class="feature-cell"><div class="feature-icon">📊</div><div class="feature-title">Auto-Calculated Dashboard</div><p class="feature-desc">Fill in your scores and the Executive Summary auto-populates — current vs. target maturity across all 6 CSF functions with gap analysis.</p></div>
-      <div class="feature-cell"><div class="feature-icon">🔵</div><div class="feature-title">All 6 CSF Functions</div><p class="feature-desc">Complete coverage of Govern, Identify, Protect, Detect, Respond, and Recover — including the new GV function in CSF 2.0.</p></div>
-      <div class="feature-cell"><div class="feature-icon">📈</div><div class="feature-title">0–5 Maturity Scoring</div><p class="feature-desc">Score each subcategory from Not Implemented to Optimizing. Every entry includes implementation guidance so you know exactly how to improve.</p></div>
-      <div class="feature-cell"><div class="feature-icon">🗺️</div><div class="feature-title">Prioritized Roadmap</div><p class="feature-desc">Effort vs. impact scoring surfaces quick wins and critical gaps so leadership can allocate resources where it matters most.</p></div>
-    </div>
-  </div>
+  <!-- Executive dashboard -->
+  <section class="workbook-section">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <div class="eyebrow">Executive summary</div>
+          <h2>Maturity at a <em>glance.</em></h2>
+        </div>
+        <p class="sub">Scores auto-calculate from each function tab. The lowest-scoring function flags as a critical gap; low-effort high-impact controls flag as quick wins.</p>
+      </div>
 
-  <div class="cta-band">
-    <div>
-      <div class="cta-h2">Know your gaps.<br>Fix them <em>first.</em></div>
-      <p class="cta-sub">One-time purchase. Instant download. Open in Excel or Google Sheets and start your NIST gap assessment today. No consultants. No waiting.</p>
-    </div>
-    <div class="cta-actions">
-      <a href="https://payhip.com/b/9ucFo" target="_blank" class="btn-black">Buy NIST CSF 2.0 Pack — $99 →</a>
-      <a href="https://payhip.com/b/cx1lY" target="_blank" class="btn-outline-black">Get Full Vault (Both Products) — $349</a>
-      <div class="cta-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</div>
-    </div>
-  </div>
+      <div class="nist-dashboard">
+        <div class="dash-head">
+          <h3>Executive Summary — Maturity Across All Functions</h3>
+          <div class="source">Auto-calculated · Source: GV / ID / PR / DE / RS / RC tabs</div>
+        </div>
+        <div class="dash-grid">
+          <div class="dash-cell">
+            <div class="code">GV</div>
+            <div class="name">Govern</div>
+            <div class="score-row"><span class="score">1.4</span><span class="denom">/ 5</span></div>
+            <div class="bar"><span class="bar-fill" style="width: 28%;"></span></div>
+            <div class="status-label">Initial</div>
+          </div>
+          <div class="dash-cell">
+            <div class="code">ID</div>
+            <div class="name">Identify</div>
+            <div class="score-row"><span class="score">2.1</span><span class="denom">/ 5</span></div>
+            <div class="bar"><span class="bar-fill" style="width: 42%;"></span></div>
+            <div class="status-label">Developing</div>
+          </div>
+          <div class="dash-cell">
+            <div class="code">PR</div>
+            <div class="name">Protect</div>
+            <div class="score-row"><span class="score">1.8</span><span class="denom">/ 5</span></div>
+            <div class="bar"><span class="bar-fill" style="width: 36%;"></span></div>
+            <div class="status-label">Developing</div>
+          </div>
+          <div class="dash-cell critical">
+            <div class="code">DE</div>
+            <div class="name">Detect</div>
+            <div class="score-row"><span class="score">0.8</span><span class="denom">/ 5</span></div>
+            <div class="bar"><span class="bar-fill" style="width: 16%;"></span></div>
+            <div class="status-label">Critical Gap</div>
+          </div>
+          <div class="dash-cell">
+            <div class="code">RS</div>
+            <div class="name">Respond</div>
+            <div class="score-row"><span class="score">1.2</span><span class="denom">/ 5</span></div>
+            <div class="bar"><span class="bar-fill" style="width: 24%;"></span></div>
+            <div class="status-label">Initial</div>
+          </div>
+          <div class="dash-cell">
+            <div class="code">RC</div>
+            <div class="name">Recover</div>
+            <div class="score-row"><span class="score">1.6</span><span class="denom">/ 5</span></div>
+            <div class="bar"><span class="bar-fill" style="width: 32%;"></span></div>
+            <div class="status-label">Initial</div>
+          </div>
+        </div>
 
-  <footer>
-    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
-    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
-    <div class="footer-links"><a href="https://riskforge.tech" target="_blank">Main Site</a><a href="https://payhip.com/b/cx1lY" target="_blank">Full Vault</a></div>
-  </footer>
+        <div class="dash-callouts">
+          <div class="callout risk">
+            <div class="ctitle">Highest Risk Function</div>
+            <div class="cname">DE — Detect (0.8 / 5)</div>
+            <div class="cdesc">No monitoring or anomaly detection currently in place. Allocate resources to SIEM or log monitoring first.</div>
+          </div>
+          <div class="callout win">
+            <div class="ctitle">Quick Win Opportunity</div>
+            <div class="cname">GV.RM — Risk Policy</div>
+            <div class="cdesc">Formalizing risk appetite is low-effort, high-impact. Draft and board-approve a Risk Appetite Statement.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Workbook with function tabs -->
+      <div class="workbook">
+        <div class="wb-title-bar">
+          <div class="file">NIST_CSF2_Gap_Assessment_Workbook.xlsx — RiskForge</div>
+          <div class="controls"><span></span><span></span><span></span></div>
+        </div>
+        <div class="wb-toolbar">
+          <div class="crumb">Active: <b id="nist-crumb">GV — Govern</b></div>
+          <div class="legend">
+            <span class="ok">On Target</span>
+            <span class="nt">Developing</span>
+            <span class="bad">Critical Gap</span>
+          </div>
+        </div>
+
+        <!-- GV -->
+        <div class="wb-sheet active" data-sheet="gv">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 130px 1fr 100px 80px 80px 130px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">ID</div>
+              <div class="cell header-row">Subcategory</div>
+              <div class="cell header-row center">Current</div>
+              <div class="cell header-row center">Target</div>
+              <div class="cell header-row center">Gap</div>
+              <div class="cell header-row">Owner</div>
+
+              <div class="row-section">GV.OC — Organizational Context</div>
+
+              <div class="row-header">2</div>
+              <div class="cell bold">GV.OC-01</div>
+              <div class="cell sans">Organizational mission informs cybersecurity risk management.</div>
+              <div class="cell center bold">2 / 5</div>
+              <div class="cell center muted">3</div>
+              <div class="cell center"><span class="badge nt">−1</span></div>
+              <div class="cell sans">CISO</div>
+
+              <div class="row-header">3</div>
+              <div class="cell bold">GV.OC-02</div>
+              <div class="cell sans">Stakeholders are identified and their cybersecurity needs understood.</div>
+              <div class="cell center bold">1 / 5</div>
+              <div class="cell center muted">3</div>
+              <div class="cell center"><span class="badge warn">−2</span></div>
+              <div class="cell sans">GRC Team</div>
+
+              <div class="row-header">4</div>
+              <div class="cell bold">GV.OC-03</div>
+              <div class="cell sans">Legal, regulatory, and contractual requirements are understood and managed.</div>
+              <div class="cell center bold">2 / 5</div>
+              <div class="cell center muted">4</div>
+              <div class="cell center"><span class="badge warn">−2</span></div>
+              <div class="cell sans">Legal / GRC</div>
+
+              <div class="row-section">GV.RM — Risk Management Strategy</div>
+
+              <div class="row-header">5</div>
+              <div class="cell bold">GV.RM-01</div>
+              <div class="cell sans">Risk management objectives are established and agreed upon by stakeholders.</div>
+              <div class="cell center bold">0 / 5</div>
+              <div class="cell center muted">3</div>
+              <div class="cell center"><span class="badge bad">−3</span></div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+
+              <div class="row-header">6</div>
+              <div class="cell bold">GV.RM-02</div>
+              <div class="cell sans">Risk appetite and tolerance statements are established and communicated.</div>
+              <div class="cell center bold">0 / 5</div>
+              <div class="cell center muted">3</div>
+              <div class="cell center"><span class="badge bad">−3</span></div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ID -->
+        <div class="wb-sheet" data-sheet="id">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 130px 1fr 100px 80px 80px 130px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">ID</div>
+              <div class="cell header-row">Subcategory</div>
+              <div class="cell header-row center">Current</div>
+              <div class="cell header-row center">Target</div>
+              <div class="cell header-row center">Gap</div>
+              <div class="cell header-row">Evidence</div>
+
+              <div class="row-section">ID.AM — Asset Management</div>
+
+              <div class="row-header">2</div>
+              <div class="cell bold">ID.AM-01</div>
+              <div class="cell sans">Inventories of hardware managed by the organization are maintained.</div>
+              <div class="cell center bold">3 / 5</div>
+              <div class="cell center muted">4</div>
+              <div class="cell center"><span class="badge nt">−1</span></div>
+              <div class="cell sans">CMDB Export</div>
+
+              <div class="row-header">3</div>
+              <div class="cell bold">ID.AM-02</div>
+              <div class="cell sans">Inventories of software, services, and systems are maintained.</div>
+              <div class="cell center bold">2 / 5</div>
+              <div class="cell center muted">4</div>
+              <div class="cell center"><span class="badge warn">−2</span></div>
+              <div class="cell sans muted">Partial list</div>
+
+              <div class="row-section">ID.RA — Risk Assessment</div>
+
+              <div class="row-header">4</div>
+              <div class="cell bold">ID.RA-01</div>
+              <div class="cell sans">Vulnerabilities in assets are identified, validated, and recorded.</div>
+              <div class="cell center bold">2 / 5</div>
+              <div class="cell center muted">4</div>
+              <div class="cell center"><span class="badge warn">−2</span></div>
+              <div class="cell sans">Vuln Scan Q1</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- DE -->
+        <div class="wb-sheet" data-sheet="de">
+          <div class="wb-scroll">
+            <div style="background: var(--ink); color: var(--paper); padding: 14px 24px; display: flex; align-items: center; gap: 12px;">
+              <span class="badge bad" style="background: var(--accent); color: var(--ink);">Critical Gap</span>
+              <span style="font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.14em; color: rgba(255,255,255,0.7);">DE — Detect · Average score 0.8 / 5 · Lowest scoring function</span>
+            </div>
+            <div class="wb-grid" style="grid-template-columns: 40px 130px 1fr 100px 80px 80px 130px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">ID</div>
+              <div class="cell header-row">Subcategory</div>
+              <div class="cell header-row center">Current</div>
+              <div class="cell header-row center">Target</div>
+              <div class="cell header-row center">Gap</div>
+              <div class="cell header-row">Owner</div>
+
+              <div class="row-section">DE.CM — Continuous Monitoring</div>
+
+              <div class="row-header">2</div>
+              <div class="cell bold">DE.CM-01</div>
+              <div class="cell sans">Networks and network services are monitored to detect adverse events.</div>
+              <div class="cell center bold">0 / 5</div>
+              <div class="cell center muted">4</div>
+              <div class="cell center"><span class="badge bad">−4</span></div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+
+              <div class="row-header">3</div>
+              <div class="cell bold">DE.CM-03</div>
+              <div class="cell sans">Personnel activity and tech usage are monitored to find adverse events.</div>
+              <div class="cell center bold">1 / 5</div>
+              <div class="cell center muted">3</div>
+              <div class="cell center"><span class="badge warn">−2</span></div>
+              <div class="cell sans">IT Ops</div>
+
+              <div class="row-section">DE.AE — Adverse Event Analysis</div>
+
+              <div class="row-header">4</div>
+              <div class="cell bold">DE.AE-02</div>
+              <div class="cell sans">Potentially adverse events are analyzed to characterize them.</div>
+              <div class="cell center bold">0 / 5</div>
+              <div class="cell center muted">3</div>
+              <div class="cell center"><span class="badge bad">−3</span></div>
+              <div class="cell sans bold" style="color: var(--status-bad);">Unassigned</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Roadmap -->
+        <div class="wb-sheet" data-sheet="nistroadmap">
+          <div class="wb-scroll">
+            <div class="wb-grid" style="grid-template-columns: 40px 130px 130px 130px 1.4fr 100px 100px 100px;">
+              <div class="col-header"></div>
+              <div class="col-header">A</div>
+              <div class="col-header">B</div>
+              <div class="col-header">C</div>
+              <div class="col-header">D</div>
+              <div class="col-header">E</div>
+              <div class="col-header">F</div>
+              <div class="col-header">G</div>
+
+              <div class="row-header">1</div>
+              <div class="cell header-row">Priority</div>
+              <div class="cell header-row">Function</div>
+              <div class="cell header-row">Control</div>
+              <div class="cell header-row">Action Required</div>
+              <div class="cell header-row">Effort</div>
+              <div class="cell header-row">Impact</div>
+              <div class="cell header-row">Target</div>
+
+              <div class="row-header">2</div>
+              <div class="cell"><span class="prio critical">01 · Critical</span></div>
+              <div class="cell sans bold">RS — Respond</div>
+              <div class="cell bold">RS.RP-01</div>
+              <div class="cell sans">Create and approve Incident Response Plan</div>
+              <div class="cell sans">Low</div>
+              <div class="cell sans bold">Critical</div>
+              <div class="cell sans">Jun 2026</div>
+
+              <div class="row-header">3</div>
+              <div class="cell"><span class="prio critical">02 · Critical</span></div>
+              <div class="cell sans bold">DE — Detect</div>
+              <div class="cell bold">DE.CM-01</div>
+              <div class="cell sans">Deploy SIEM or log monitoring solution</div>
+              <div class="cell sans">High</div>
+              <div class="cell sans bold">Critical</div>
+              <div class="cell sans">Q3 2026</div>
+
+              <div class="row-header">4</div>
+              <div class="cell"><span class="prio high">03 · High</span></div>
+              <div class="cell sans bold">GV — Govern</div>
+              <div class="cell bold">GV.RM-02</div>
+              <div class="cell sans">Draft and board-approve Risk Appetite Statement</div>
+              <div class="cell sans">Low</div>
+              <div class="cell sans">High</div>
+              <div class="cell sans">May 2026</div>
+
+              <div class="row-header">5</div>
+              <div class="cell"><span class="prio high">04 · High</span></div>
+              <div class="cell sans bold">ID — Identify</div>
+              <div class="cell bold">ID.AM-02</div>
+              <div class="cell sans">Complete software and services inventory</div>
+              <div class="cell sans">Medium</div>
+              <div class="cell sans">High</div>
+              <div class="cell sans">Jul 2026</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="wb-sheet-tabs">
+          <button class="stab active" data-target="gv"><span class="dot"></span>GV — Govern</button>
+          <button class="stab" data-target="id"><span class="dot"></span>ID — Identify</button>
+          <button class="stab" data-target="de"><span class="dot"></span>DE — Detect</button>
+          <button class="stab" data-target="nistroadmap"><span class="dot"></span>Roadmap</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="features">
+    <div class="wrap">
+      <div class="head">
+        <div>
+          <div class="eyebrow">03 · Inside the workbook</div>
+          <h2>What's <em>inside.</em></h2>
+        </div>
+        <p class="sub">Every CSF function and subcategory, with maturity scoring, auto-rollup, and a roadmap that prioritizes itself.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card">
+          <div class="id">01</div>
+          <h3>Auto-Calculated Dashboard</h3>
+          <p>Fill in your scores and the Executive Summary auto-populates — current vs. target maturity across all 6 CSF functions with gap analysis.</p>
+        </div>
+        <div class="feature-card">
+          <div class="id">02</div>
+          <h3>All 6 CSF Functions</h3>
+          <p>Complete coverage of Govern, Identify, Protect, Detect, Respond, and Recover — including the new GV function in CSF 2.0.</p>
+        </div>
+        <div class="feature-card">
+          <div class="id">03</div>
+          <h3>0–5 Maturity Scoring</h3>
+          <p>Score each subcategory from Not Implemented to Optimizing. Every entry includes implementation guidance so you know exactly how to improve.</p>
+        </div>
+        <div class="feature-card">
+          <div class="id">04</div>
+          <h3>Prioritized Roadmap</h3>
+          <p>Effort vs. impact scoring surfaces quick wins and critical gaps so leadership can allocate resources where it matters most.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="final on-dark">
+    <div class="wrap">
+      <div class="final-inner">
+        <div class="final-grid">
+          <div>
+            <div class="eyebrow light">Ready when you are</div>
+            <h2>Know your gaps. <em>Fix them first.</em></h2>
+            <p>One-time purchase. Instant download. Open in Excel or Google Sheets and start your NIST gap assessment today. No consultants. No waiting.</p>
+            <div class="ctas">
+              <a class="btn btn-accent" href="https://payhip.com/b/9ucFo">Buy NIST CSF 2.0 Pack — $99 <span class="arrow">→</span></a>
+              <a class="btn btn-secondary" href="https://payhip.com/b/cx1lY">Get Full Vault — $349</a>
+            </div>
+            <div class="secure">
+              <span>Secure checkout · Payhip</span>
+              <span>Instant download</span>
+              <span>One-time payment</span>
+            </div>
+          </div>
+          <div class="checklist">
+            <div class="ci"><div class="id">01</div><div class="t"><b>All 6 functions</b>Including the new Govern domain from CSF 2.0.</div></div>
+            <div class="ci"><div class="id">02</div><div class="t"><b>Auto Dashboard</b>Scores roll up to the Executive Summary automatically.</div></div>
+            <div class="ci"><div class="id">03</div><div class="t"><b>Priority Roadmap</b>Effort × impact, surfaced as quick wins.</div></div>
+            <div class="ci"><div class="id">04</div><div class="t"><b>Free updates</b>Within CSF v2.x, included forever.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
 
-
-<!-- FULL VAULT -->
-<div id="vault" class="section">
-
-  <div class="section-header-band">
-    <button class="back-btn" onclick="showSection('home')">← Back to Overview</button>
-    <div class="section-eyebrow">Full Compliance Vault · Best Value</div>
-    <h2 class="section-h2">Both workbooks. Every framework.<br><span class="accent">One price.</span></h2>
-    <p class="section-desc">Everything in the NIST CSF 2.0 and PCI DSS packs, plus all future frameworks as they release — at no extra cost. Buy once, stay current forever.</p>
-  </div>
-
-  <!-- Value Comparison -->
-  <div class="value-band">
-    <div style="font-family:'IBM Plex Mono',monospace;font-size:9px;color:var(--gray-lt);letter-spacing:.2em;text-transform:uppercase;margin-bottom:24px;">Cost Comparison</div>
-    <div class="value-grid">
-      <div class="value-col individual">
-        <div class="value-label">Buying individually</div>
-        <div class="value-items">
-          <div class="value-item">
-            <span class="value-item-name">NIST CSF 2.0 Gap Assessment</span>
-            <span class="value-item-price">$99</span>
-          </div>
-          <div class="value-item">
-            <span class="value-item-name">PCI DSS v4.0 SAQ Prep</span>
-            <span class="value-item-price">$149</span>
-          </div>
-          <div class="value-item">
-            <span class="value-item-name">Future frameworks (each)</span>
-            <span class="value-item-price" style="color:var(--gray-lt);">TBD</span>
+<!-- ============================================
+     VIEW 04 · FULL VAULT
+     ============================================ -->
+<div class="view" id="view-vault">
+  <section class="demo-hero">
+    <div class="wrap">
+      <div class="demo-hero-grid">
+        <div>
+          <div class="eyebrow">04 · Full Compliance Vault · Best Value</div>
+          <h1>Both workbooks. Every framework. <em>One price.</em></h1>
+          <p class="lead">Everything in the NIST CSF 2.0 and PCI DSS packs, plus all future frameworks as they release — at no extra cost. Buy once, stay current forever.</p>
+          <div class="ctas">
+            <a class="btn btn-accent" href="https://payhip.com/b/cx1lY">Get Full Vault — $349 <span class="arrow">→</span></a>
+            <a class="btn btn-secondary" data-view="overview">Back to Overview</a>
           </div>
         </div>
-        <div class="value-total">
-          <span class="value-total-label">Current total</span>
-          <span class="value-total-price crossed">$248+</span>
-        </div>
-        <div class="value-note">Price increases with each new framework added</div>
-      </div>
-      <div class="value-vs">— vs —</div>
-      <div class="value-col vault">
-        <div class="value-label" style="color:var(--lime);">Full Compliance Vault</div>
-        <div class="value-items">
-          <div class="value-item">
-            <span class="value-item-name">NIST CSF 2.0 Gap Assessment</span>
-            <span style="color:var(--lime);font-size:11px;font-family:'IBM Plex Mono',monospace;">Included</span>
-          </div>
-          <div class="value-item">
-            <span class="value-item-name">PCI DSS v4.0 SAQ Prep</span>
-            <span style="color:var(--lime);font-size:11px;font-family:'IBM Plex Mono',monospace;">Included</span>
-          </div>
-          <div class="value-item">
-            <span class="value-item-name">All future frameworks</span>
-            <span style="color:var(--lime);font-size:11px;font-family:'IBM Plex Mono',monospace;">Free forever</span>
-          </div>
-        </div>
-        <div class="value-total">
-          <span class="value-total-label" style="color:var(--white);font-weight:600;">One-time price</span>
-          <span class="value-total-price lime">$349</span>
-        </div>
-        <div class="value-bonus">
-          <div class="value-bonus-label">Also included — coming soon</div>
-          <ul class="value-bonus-list">
-            <li>NIST 800-53 — Federal security controls</li>
-            <li>CRI Profile 2.0 — Financial sector standard</li>
-            <li>CSA CCM — Cloud environments</li>
-            <li>COBIT — IT governance framework</li>
-          </ul>
+        <div class="meta">
+          <div class="meta-row"><span class="l">Frameworks today</span><span class="v">2 live</span></div>
+          <div class="meta-row"><span class="l">Coming soon</span><span class="v">4 frameworks</span></div>
+          <div class="meta-row"><span class="l">Future updates</span><span class="v">Included</span></div>
+          <div class="meta-row"><span class="l">Save vs. individual</span><span class="v">$400<em>+</em></span></div>
         </div>
       </div>
     </div>
-  </div>
+  </section>
 
-  <!-- What's in each workbook — links to demos -->
-  <div class="products-section">
-    <div class="products-intro">
-      <div class="products-h2">Explore what's<br>already included.</div>
-      <div class="products-sub">Both interactive demos are fully built. Click either product below to walk through every sheet before you buy.</div>
-    </div>
-
-    <div class="product-row" onclick="showSection('pci')">
-      <div class="pr-num">01</div>
-      <div class="pr-info">
-        <div class="pr-tag">PCI DSS v4.0 · Included in Vault</div>
-        <div class="pr-name">SAQ Preparation Workbook</div>
-        <div class="pr-desc">SAQ type selector, full checklists for SAQ-A through D, evidence tracker, and remediation roadmap. Mandatory compliance since March 2024.</div>
+  <!-- Cost comparison -->
+  <section class="compare">
+    <div class="wrap">
+      <div class="head">
+        <div class="eyebrow">01 · Cost comparison</div>
+        <h2>Buy <em>once.</em> Stay current <em>forever.</em></h2>
       </div>
-      <div class="pr-includes">
-        <div class="pr-inc-label">Includes</div>
-        <ul class="pr-inc-list">
-          <li>SAQ Type Selector (8 questions)</li>
-          <li>SAQ-A, B, B-IP, C, D checklists</li>
-          <li>Evidence Tracker (18 items)</li>
-          <li>Priority scoring roadmap</li>
+
+      <div class="compare-grid">
+        <div class="compare-col">
+          <div class="ctitle">Buying individually</div>
+          <h3>Pay-as-you-go</h3>
+          <div class="rows">
+            <div class="crow"><span class="l">NIST CSF 2.0 Gap Assessment</span><span class="v">$99</span></div>
+            <div class="crow"><span class="l">PCI DSS v4.0 SAQ Prep</span><span class="v">$149</span></div>
+            <div class="crow"><span class="l">NIST 800-53 (coming soon)</span><span class="v">TBD</span></div>
+            <div class="crow"><span class="l">CRI · CCM · COBIT</span><span class="v">TBD</span></div>
+          </div>
+          <div class="total"><span class="l">Current total</span><span class="v">$248<span style="color: var(--muted); font-size: 18px;">+</span></span></div>
+          <div class="note">Price increases with each new framework</div>
+        </div>
+
+        <div class="compare-divider">— vs —</div>
+
+        <div class="compare-col feature">
+          <div class="ctitle">Full Compliance Vault</div>
+          <h3>One-time, forever.</h3>
+          <div class="rows">
+            <div class="crow"><span class="l">NIST CSF 2.0 Gap Assessment</span><span class="v">Included</span></div>
+            <div class="crow"><span class="l">PCI DSS v4.0 SAQ Prep</span><span class="v">Included</span></div>
+            <div class="crow"><span class="l">NIST 800-53 (coming soon)</span><span class="v">Included</span></div>
+            <div class="crow"><span class="l">All future frameworks</span><span class="v">Free forever</span></div>
+          </div>
+          <div class="total"><span class="l">One-time price</span><span class="v">$349</span></div>
+          <div class="note">Save $400+ vs. buying individually</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Framework roadmap -->
+  <section class="roadmap">
+    <div class="wrap">
+      <div class="ov-section-head">
+        <div>
+          <div class="eyebrow">02 · Roadmap</div>
+          <h2>The full framework <em>roadmap.</em></h2>
+        </div>
+        <p class="sub">Vault buyers get every framework below as it releases — no additional charge, no re-purchase. All future updates included.</p>
+      </div>
+
+      <div class="fw-grid">
+        <article class="fw-card live">
+          <div class="code">FWK · 01</div>
+          <h3>NIST CSF 2.0</h3>
+          <p>NIST Cybersecurity Framework — all 6 functions including new Govern. 100+ subcategories with maturity scoring.</p>
+        </article>
+        <article class="fw-card live">
+          <div class="code">FWK · 02</div>
+          <h3>PCI DSS v4.0</h3>
+          <p>Payment Card Industry — mandatory March 2024. SAQ selector, checklists, evidence tracker, roadmap.</p>
+        </article>
+        <article class="fw-card soon">
+          <div class="code">FWK · 03</div>
+          <h3>NIST 800-53</h3>
+          <p>Security &amp; Privacy Controls — federal gold standard. Government, defense contractors. Control families + evidence mapping.</p>
+        </article>
+        <article class="fw-card soon">
+          <div class="code">FWK · 04</div>
+          <h3>CRI Profile 2.0</h3>
+          <p>Cyber Risk Institute — financial sector preferred. Banks, credit unions, fintechs aligned to NIST CSF.</p>
+        </article>
+        <article class="fw-card soon">
+          <div class="code">FWK · 05</div>
+          <h3>CSA CCM</h3>
+          <p>Cloud Controls Matrix — essential for AWS, Azure, GCP environments and cloud-native organizations.</p>
+        </article>
+        <article class="fw-card soon">
+          <div class="code">FWK · 06</div>
+          <h3>COBIT 2019</h3>
+          <p>IT governance — for audit committees, boards, and IT leadership globally.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="final on-dark">
+    <div class="wrap">
+      <div class="final-inner">
+        <div class="final-grid">
+          <div>
+            <div class="eyebrow light">Ready when you are</div>
+            <h2>The smartest compliance <em>investment</em> you can make.</h2>
+            <p>One price. Both current workbooks. Every framework that follows. No renewals, no re-purchasing, no surprises — just compliance coverage that grows with you.</p>
+            <div class="ctas">
+              <a class="btn btn-accent" href="https://payhip.com/b/cx1lY">Get Full Vault — $349 <span class="arrow">→</span></a>
+              <a class="btn btn-secondary" href="https://payhip.com/b/xCJhD">PCI DSS Only — $149</a>
+              <a class="btn btn-secondary" href="https://payhip.com/b/9ucFo">NIST CSF Only — $99</a>
+            </div>
+            <div class="secure">
+              <span>Secure checkout · Payhip</span>
+              <span>Instant download</span>
+              <span>One-time payment</span>
+            </div>
+          </div>
+          <div class="checklist">
+            <div class="ci"><div class="id">01</div><div class="t"><b>Save $400+</b>vs. buying frameworks individually.</div></div>
+            <div class="ci"><div class="id">02</div><div class="t"><b>Future-proof</b>Every new framework included free.</div></div>
+            <div class="ci"><div class="id">03</div><div class="t"><b>One purchase</b>No renewals, ever.</div></div>
+            <div class="ci"><div class="id">04</div><div class="t"><b>30-day refund</b>Full refund if it doesn't fit.</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============================================
+     FOOTER
+     ============================================ -->
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="logo" href="index.html"><span class="mark">RF</span> RiskForge</a>
+        <p>Professional-grade compliance workbooks for IT Risk and Audit teams. Built by practitioners, priced for sanity.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Products</h4>
+        <ul>
+          <li>NIST CSF 2.0 Workbook</li>
+          <li>PCI DSS v4.0 Workbook</li>
+          <li>Full Compliance Vault</li>
+          <li>Coming Soon</li>
         </ul>
       </div>
-      <div class="pr-action"><button class="btn-row">Explore Demo →</button></div>
-    </div>
-
-    <div class="product-row" onclick="showSection('nist')">
-      <div class="pr-num">02</div>
-      <div class="pr-info">
-        <div class="pr-tag">NIST CSF 2.0 · Included in Vault</div>
-        <div class="pr-name">Gap Assessment Workbook</div>
-        <div class="pr-desc">All 6 CSF functions with 0–5 maturity scoring, auto-calculated Executive Dashboard, gap analysis, and prioritized roadmap.</div>
-      </div>
-      <div class="pr-includes">
-        <div class="pr-inc-label">Includes</div>
-        <ul class="pr-inc-list">
-          <li>Executive Summary Dashboard</li>
-          <li>GV, ID, PR, DE, RS, RC tabs</li>
-          <li>Maturity scoring 0–5 scale</li>
-          <li>Remediation Roadmap</li>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <ul>
+          <li>Main Site</li>
+          <li>About</li>
+          <li>Contact</li>
+          <li>License</li>
         </ul>
       </div>
-      <div class="pr-action"><button class="btn-row">Explore Demo →</button></div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <ul>
+          <li>Demo Workbook</li>
+          <li>FAQ</li>
+          <li>Refund Policy</li>
+          <li>Terms</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div>© 2026 RiskForge · All rights reserved</div>
+      <div class="links"><span>Privacy</span><span>Terms</span><span>License</span></div>
     </div>
   </div>
-
-  <!-- Framework Roadmap -->
-  <div class="fw-band">
-    <div class="fw-intro">
-      <div class="fw-h2">The full framework roadmap.</div>
-      <p class="fw-sub">Vault buyers get every framework below as it releases — no additional charge, no re-purchase. All future updates included.</p>
-    </div>
-    <div class="fw-grid">
-      <div class="fw-cell live"><span class="fw-chip chip-nist">NIST CSF 2.0</span><div class="fw-name">NIST Cybersecurity Framework</div><p class="fw-desc">All 6 functions including new Govern. 100+ subcategories with maturity scoring.</p><div class="fw-status"><div class="dot dot-lime"></div><span class="status-lime">Live — Included</span></div></div>
-      <div class="fw-cell live"><span class="fw-chip chip-pci">PCI DSS v4.0</span><div class="fw-name">Payment Card Industry</div><p class="fw-desc">Mandatory March 2024. SAQ selector, checklists, evidence tracker, roadmap.</p><div class="fw-status"><div class="dot dot-lime"></div><span class="status-lime">Live — Included</span></div></div>
-      <div class="fw-cell"><span class="fw-chip chip-800">NIST 800-53</span><div class="fw-name">Security & Privacy Controls</div><p class="fw-desc">Federal gold standard — government, defense contractors. Control families + evidence mapping.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
-      <div class="fw-cell"><span class="fw-chip chip-cri">CRI Profile 2.0</span><div class="fw-name">Cyber Risk Institute</div><p class="fw-desc">Financial sector preferred — banks, credit unions, and fintechs aligned to NIST CSF.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
-      <div class="fw-cell"><span class="fw-chip chip-ccm">CSA CCM</span><div class="fw-name">Cloud Controls Matrix</div><p class="fw-desc">Essential for AWS, Azure, and GCP environments and cloud-native organizations.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
-      <div class="fw-cell"><span class="fw-chip chip-cobit">COBIT</span><div class="fw-name">COBIT Governance</div><p class="fw-desc">IT governance for audit committees, boards, and IT leadership globally.</p><div class="fw-status"><div class="dot dot-gray"></div><span class="status-gray">Coming Soon</span></div></div>
-    </div>
-  </div>
-
-  <div class="cta-band">
-    <div>
-      <div class="cta-h2">The smartest compliance<br>investment you can make.</div>
-      <p class="cta-sub">One price. Both current workbooks. Every framework that follows. No renewals, no re-purchasing, no surprises — just compliance coverage that grows with you.</p>
-    </div>
-    <div class="cta-actions">
-      <a href="https://payhip.com/b/cx1lY" target="_blank" class="btn-black">Get Full Vault — $349 →</a>
-      <a href="https://payhip.com/b/xCJhD" target="_blank" class="btn-outline-black">PCI DSS Only — $149</a>
-      <a href="https://payhip.com/b/9ucFo" target="_blank" class="btn-outline-black">NIST CSF Only — $99</a>
-      <div class="cta-note">🔒 Secure checkout via Payhip · Instant download · One-time payment</div>
-    </div>
-  </div>
-
-  <footer>
-    <div class="footer-left"><div class="footer-mark">RF</div><span class="footer-name">RiskForge</span></div>
-    <span class="footer-copy">© 2025 RiskForge · riskforge.tech · All rights reserved.</span>
-    <div class="footer-links"><a href="https://riskforge.tech" target="_blank">Main Site</a><a href="https://payhip.com/b/cx1lY" target="_blank">Buy Full Vault</a></div>
-  </footer>
-</div>
-
+</footer>
 
 <script>
-function showSection(id) {
-  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-  document.getElementById(id).classList.add('active');
-  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-  const idx = {home:0, pci:1, nist:2, vault:3}[id];
-  const tabs = document.querySelectorAll('.nav-tab');
-  if (tabs[idx]) tabs[idx].classList.add('active');
-  window.scrollTo({top:0, behavior:'smooth'});
-}
-function switchSheet(btn, sheetId, containerId) {
-  document.getElementById(containerId).querySelectorAll('.sheet-content').forEach(s => s.style.display = 'none');
-  document.getElementById(sheetId).style.display = 'block';
-  btn.closest('.sheet-tabs').querySelectorAll('.sheet-tab').forEach(t => t.classList.remove('active'));
-  btn.classList.add('active');
-}
-(function() {
-  const h = window.location.hash.slice(1);
-  if (h === 'pci' || h === 'nist' || h === 'vault') showSection(h);
-})();
+  // View tabs
+  const views = document.querySelectorAll('.view');
+  const topTabs = document.querySelectorAll('.demo-tabs .tab');
+  function switchView(name) {
+    views.forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
+    topTabs.forEach(t => t.classList.toggle('active', t.dataset.view === name));
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+  topTabs.forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
+  document.querySelectorAll('[data-view]').forEach(el => {
+    if (!el.classList.contains('tab')) {
+      el.addEventListener('click', (e) => {
+        e.preventDefault();
+        switchView(el.dataset.view);
+      });
+      el.style.cursor = 'pointer';
+    }
+  });
+
+  // Workbook sheet tabs (works for both PCI and NIST workbooks independently)
+  document.querySelectorAll('.workbook').forEach(wb => {
+    const stabs = wb.querySelectorAll('.stab');
+    const sheets = wb.querySelectorAll('.wb-sheet');
+    const crumb = wb.querySelector('.wb-toolbar .crumb b');
+    stabs.forEach(st => {
+      st.addEventListener('click', () => {
+        const target = st.dataset.target;
+        stabs.forEach(s => s.classList.toggle('active', s === st));
+        sheets.forEach(sh => sh.classList.toggle('active', sh.dataset.sheet === target));
+        if (crumb) crumb.textContent = st.textContent.trim();
+      });
+    });
+  });
 </script>
+
 </body>
 </html>
