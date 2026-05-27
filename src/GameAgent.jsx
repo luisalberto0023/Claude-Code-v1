@@ -639,6 +639,29 @@ const TOOLS = [
     },
   },
   {
+    name: "execute_sequence",
+    description: "Execute a batch of up to 15 simple actions in one tool call (saves tokens). Aborts early if 2 consecutive actions produce no screen change. Supported action tools: press_key, type_text, click. Use this for repetitive moves like multiple arrow keys in 2048.",
+    input_schema: {
+      type: "object",
+      properties: {
+        actions: {
+          type: "array",
+          maxItems: 15,
+          items: {
+            type: "object",
+            properties: {
+              tool: { type: "string", enum: ["press_key", "type_text", "click"] },
+              input: { type: "object", description: "Arguments for that tool" },
+            },
+            required: ["tool", "input"],
+          },
+          description: "Ordered list of actions to execute sequentially.",
+        },
+      },
+      required: ["actions"],
+    },
+  },
+  {
     name: "update_memory",
     description: "Save discoveries, strategies, or lessons to persistent memory for future sessions.",
     input_schema: {
@@ -741,6 +764,7 @@ export default function GameAgent() {
   // Advanced
   const [skipResearch, setSkipResearch] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [maxTokens, setMaxTokens] = useState(150000);
 
   // Runtime state
   const [running, setRunning] = useState(false);
@@ -782,6 +806,8 @@ export default function GameAgent() {
   const currentScoreRef = useRef(null);
   const goalsRef = useRef([]);
   const currentGoalIndexRef = useRef(0);
+  const lastTurnHashRef = useRef(null);
+  const backendHealthRef = useRef(0);
   const streamRef = useRef(null);
   const logEndRef = useRef(null);
   const gameEndRef = useRef(null); // set by signal_game_end tool
@@ -810,6 +836,40 @@ export default function GameAgent() {
       }
     });
   }, [addLog]);
+
+  // B4: Continuous backend watchdog — pings every 10s, auto-pauses on 2 consecutive failures
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      let ok = false;
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 3000);
+        const res = await fetch("/api/health", { signal: ctrl.signal });
+        clearTimeout(timer);
+        const j = await res.json();
+        ok = j?.status === "ok";
+      } catch { ok = false; }
+
+      if (ok) {
+        if (backendHealthRef.current > 0 || !backendOk) {
+          backendHealthRef.current = 0;
+          setBackendOk(true);
+          addLog("Backend healthy again.", "success");
+        }
+      } else {
+        backendHealthRef.current++;
+        if (backendHealthRef.current >= 2 && backendOk) {
+          setBackendOk(false);
+          addLog("⚠ Backend health check failed (2 consecutive) — auto-paused.", "error");
+          if (running && !pauseRef.current) {
+            pauseRef.current = true;
+            setPaused(true);
+          }
+        }
+      }
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [backendOk, running, addLog]);
 
   // Auto-scroll log
   useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [log]);
@@ -973,6 +1033,63 @@ export default function GameAgent() {
       return toolResult(`Goals set: ${newGoals.length} total. Currently on goal ${newIdx + 1}: "${active}".`);
     }
 
+    if (toolName === "execute_sequence") {
+      const actions = Array.isArray(toolInput.actions) ? toolInput.actions.slice(0, 15) : [];
+      let executed = 0;
+      let noChangeStreak = 0;
+      const summary = [];
+      let lastConfirmInfo = null;
+
+      for (const a of actions) {
+        if (stopRef.current) break;
+        while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 200));
+        if (stopRef.current) break;
+
+        const t = a.tool;
+        const inp = a.input ?? {};
+        let r;
+
+        if (t === "press_key") {
+          r = await backend("/keyboard/press", { key: inp.key });
+        } else if (t === "type_text") {
+          r = await backend("/keyboard/type", { text: inp.text, interval: timing.typingInterval });
+        } else if (t === "click") {
+          const s = scaled(inp.x, inp.y);
+          r = await backend("/mouse/click", {
+            x: s.x, y: s.y,
+            button: inp.button ?? "left",
+            clicks: inp.clicks ?? 1,
+            move_duration: timing.mouseSpeed,
+          });
+        } else {
+          summary.push(`${executed + 1}: unsupported tool "${t}" — skipped`);
+          continue;
+        }
+
+        const confirm = await waitChange(videoRef.current, canvasRef.current, scaleRef, timing.confirmDelay);
+        executed++;
+        lastConfirmInfo = confirm;
+        addAction(`seq.${t}`, inp, { ok: r?.ok ?? false, ...confirm });
+
+        if (!confirm.changed) {
+          noChangeStreak++;
+          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — no change`);
+          if (noChangeStreak >= 2) {
+            summary.push("ABORT: 2 consecutive no-change actions");
+            break;
+          }
+        } else {
+          noChangeStreak = 0;
+          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — changed`);
+        }
+
+        if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      }
+
+      if (lastConfirmInfo) setLastConfirm(lastConfirmInfo);
+      return toolResult(`Executed ${executed}/${actions.length} actions.\n${summary.join("\n")}`);
+    }
+
     if (toolName === "update_memory") {
       const gameKey = slugify(gameDesc);
       await saveMemory(gameKey, { gameDesc, ...toolInput });
@@ -1022,10 +1139,15 @@ export default function GameAgent() {
     const goalLine = goalsRef.current.length > 0
       ? `\nCurrent goal (${currentGoalIndexRef.current + 1}/${goalsRef.current.length}): ${goalsRef.current[currentGoalIndexRef.current] ?? "n/a"}`
       : "";
-    const turnText = `Turn ${turnCountRef.current}.${goalLine}\nFirst call analyse_game_state, then take your next action.`;
+    const turnText = `Turn ${turnCountRef.current}.${goalLine}\nFirst call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.`;
 
+    // A1: skip image when screen is effectively unchanged from previous turn
     const frame = captureFrame(videoRef.current, canvasRef.current, scaleRef);
-    if (frame) {
+    const currentHash = frame ? frameHash(canvasRef.current) : null;
+    const distFromLast = (currentHash && lastTurnHashRef.current) ? hashDist(lastTurnHashRef.current, currentHash) : 999;
+    const skipImage = turnCountRef.current > 1 && distFromLast < 2.0;
+
+    if (frame && !skipImage) {
       convRef.current.push({
         role: "user",
         content: [
@@ -1033,12 +1155,18 @@ export default function GameAgent() {
           { type: "text", text: turnText },
         ],
       });
+    } else if (frame && skipImage) {
+      convRef.current.push({
+        role: "user",
+        content: `${turnText}\n[Screen unchanged since last action — image omitted to save tokens. Continue based on prior observations.]`,
+      });
     } else {
       convRef.current.push({
         role: "user",
         content: `${turnText} (screen unavailable)`,
       });
     }
+    lastTurnHashRef.current = currentHash;
 
     let resp;
     try {
@@ -1055,6 +1183,14 @@ export default function GameAgent() {
       setTokenCount({ ...tokenRef.current });
     }
     setTurnCount(t => t + 1);
+
+    // A2: enforce token budget cap — auto-pause when exceeded
+    const totalTokens = tokenRef.current.input + tokenRef.current.output;
+    if (maxTokens > 0 && totalTokens >= maxTokens && !pauseRef.current) {
+      pauseRef.current = true;
+      setPaused(true);
+      addLog(`⚠️ Token cap reached: ${totalTokens.toLocaleString()} / ${maxTokens.toLocaleString()}. Auto-paused. Resume to continue.`, "warn");
+    }
 
     // Update stuck ring
     const hash = frameHash(canvasRef.current);
@@ -1088,7 +1224,7 @@ export default function GameAgent() {
     }
 
     return { stop: false };
-  }, [providerKey, model, addLog, executeTool]);
+  }, [providerKey, model, addLog, executeTool, maxTokens]);
 
   // ── runResearch ──────────────────────────────────────────────────────────────
   const runResearch = useCallback(async (apiKey) => {
@@ -1134,6 +1270,7 @@ export default function GameAgent() {
     currentScoreRef.current = null;
     goalsRef.current = [];
     currentGoalIndexRef.current = 0;
+    lastTurnHashRef.current = null;
 
     setRunning(true);
     setGameResult(null);
@@ -1178,6 +1315,7 @@ TOOLS AVAILABLE:
 - observe_screen / read_screen_text: See the current screen
 - click, drag, scroll, move_mouse: Mouse control (use image-space pixel coordinates)
 - press_key, hold_key, type_text: Keyboard control
+- execute_sequence: Batch up to 15 actions in ONE tool call — strongly preferred for repetitive moves (e.g. multiple arrow keys in 2048). Saves significant tokens.
 - analyse_game_state: REQUIRED reasoning step before every physical action
 - set_goals: Define and track your ordered sub-goals toward the main objective
 - update_memory: Save discoveries and strategies for future sessions
@@ -1185,14 +1323,15 @@ TOOLS AVAILABLE:
 - signal_game_end: Call when the game is over
 
 CRITICAL WORKFLOW RULES (follow every turn):
-1. ALWAYS call analyse_game_state FIRST before any physical action (click, press_key, drag, scroll, type_text, move_mouse, hold_key). State what you see, what you intend to do, and why. This is non-negotiable.
+1. ALWAYS call analyse_game_state FIRST before any physical action (click, press_key, drag, scroll, type_text, move_mouse, hold_key, execute_sequence). State what you see, what you intend to do, and why. This is non-negotiable.
 2. Exception: observe_screen, read_screen_text, set_goals, update_memory, report_progress, signal_game_end do NOT need analyse_game_state first.
 3. On the FIRST play turn, call set_goals to plan an ordered list of 3-6 concrete sub-goals working toward the main objective.
 4. As you complete sub-goals, call set_goals again to update currentIndex. You may also rewrite the goal list if the situation changes.
 5. After taking an action, the response tells you whether the screen changed. If unchanged, try a different position/key/approach.
-6. Call report_progress whenever you achieve a milestone or read a new score.
-7. Call signal_game_end immediately when you detect win/loss/game-over.
-8. Call update_memory when you discover something repeatable worth remembering across sessions.
+6. TOKEN EFFICIENCY: prefer execute_sequence for repetitive moves (e.g. 3-5 arrow presses in 2048) — one tool call instead of many. If a turn message says "Screen unchanged — image omitted", trust prior observations and continue without requesting a new screen.
+7. Call report_progress whenever you achieve a milestone or read a new score.
+8. Call signal_game_end immediately when you detect win/loss/game-over.
+9. Call update_memory when you discover something repeatable worth remembering across sessions.
 
 COORDINATE SYSTEM:
 - All x,y coordinates are in the DOWNSCALED image space (max 1280px wide)
@@ -1510,11 +1649,24 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             {showAdvanced ? "▾" : "▸"} ADVANCED
           </button>
           {showAdvanced && (
-            <div style={{ marginTop: 6 }}>
+            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase
               </label>
+              <div>
+                <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
+                  Token budget cap (0 = no cap)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="10000"
+                  value={maxTokens}
+                  onChange={e => setMaxTokens(Math.max(0, Number(e.target.value) || 0))}
+                  style={inputStyle()}
+                />
+              </div>
             </div>
           )}
         </div>
@@ -1662,6 +1814,13 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <HudRow label="Turns"   value={turnCount} />
           <HudRow label="In tok"  value={tokenCount.input.toLocaleString()} />
           <HudRow label="Out tok" value={tokenCount.output.toLocaleString()} />
+          {maxTokens > 0 && (
+            <HudRow
+              label="Budget"
+              value={`${Math.round(100 * (tokenCount.input + tokenCount.output) / maxTokens)}%`}
+              color={(tokenCount.input + tokenCount.output) >= maxTokens ? C.red : (tokenCount.input + tokenCount.output) >= maxTokens * 0.8 ? C.yellow : C.green}
+            />
+          )}
           {screenInfo && <HudRow label="Screen" value={`${screenInfo.width}×${screenInfo.height}`} />}
           {lastConfirm && (
             <HudRow label="Confirm"
