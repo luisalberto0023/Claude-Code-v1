@@ -1603,6 +1603,11 @@ function switchView(v){
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 tabs.forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
+/* Hash-based deep-linking: demo.html#nist / #pci / #vault / #overview */
+(function(){
+  const h = window.location.hash.slice(1);
+  if (['pci','nist','vault','overview'].includes(h)) switchView(h);
+})();
 document.querySelectorAll('[data-view]').forEach(el => {
   if (el.classList.contains('tab')) return;
   el.addEventListener('click', e => {

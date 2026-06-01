@@ -252,6 +252,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .footer-col ul { display: flex; flex-direction: column; gap: 10px; }
 .footer-col li { font-size: 13.5px; color: var(--ink-2); }
 .footer-col li:hover { color: var(--ink); }
+.footer-col li a { color: inherit; transition: color 120ms; }
+.footer-col li a:hover { color: var(--ink); }
 .footer-bottom { padding-top: 28px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
 .footer-bottom .links { display: flex; gap: 28px; }
 
@@ -680,7 +682,6 @@ h1, h2, h3, h4, p { margin: 0; }
       <span>Instant download</span>
       <span>Secure checkout · Payhip</span>
       <span>One-time payment</span>
-      <span>14-day refund</span>
     </div>
 
     <!-- Combined Vault stat strip -->
@@ -886,7 +887,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <div class="id">Q · 05</div>
         <div>
           <div class="q">What if it isn't what I expected?</div>
-          <div class="a">14-day refund, no questions asked. The Demo also lets you walk through every tab before you buy — it's a real workbook, not a screenshot.</div>
+          <div class="a">All sales are final. We encourage you to use the interactive Demo to walk through every tab before you buy — it's a real workbook, not a screenshot.</div>
         </div>
       </div>
     </div>
@@ -903,7 +904,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <div>
           <div class="eyebrow light">Ready when you are</div>
           <h2>Skip the invoice. <em>Ship the work.</em></h2>
-          <p>Download the workbooks today. If they don't replace a consulting engagement, send them back in 14 days.</p>
+          <p>Download the workbooks today and start your first gap assessment this afternoon — no consultants, no waiting, no guesswork.</p>
           <div class="ctas">
             <a class="btn btn-accent" href="https://payhip.com/b/cx1lY">Get the Full Vault <span class="arrow">→</span></a>
             <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
@@ -921,10 +922,6 @@ h1, h2, h3, h4, p { margin: 0; }
           </div>
           <div>
             <div class="id">03</div>
-            <div class="text"><b>14-day refund</b>If it doesn't fit, full refund — no questions.</div>
-          </div>
-          <div>
-            <div class="id">04</div>
             <div class="text"><b>Lifetime updates</b>Free updates within the same major version.</div>
           </div>
         </div>
@@ -949,27 +946,26 @@ h1, h2, h3, h4, p { margin: 0; }
       <div class="footer-col">
         <h4>Products</h4>
         <ul>
-          <li>NIST CSF 2.0 Workbook</li>
-          <li>PCI DSS v4.0 Workbook</li>
-          <li>Full Compliance Vault</li>
+          <li><a href="demo.html#nist">NIST CSF 2.0 Workbook</a></li>
+          <li><a href="demo.html#pci">PCI DSS v4.0 Workbook</a></li>
+          <li><a href="demo.html#vault">Full Compliance Vault</a></li>
           <li>Coming Soon</li>
         </ul>
       </div>
       <div class="footer-col">
         <h4>Company</h4>
         <ul>
-          <li>About</li>
-          <li>Frameworks</li>
-          <li>Contact</li>
+          <li><a href="#about">About</a></li>
+          <li><a href="#frameworks">Frameworks</a></li>
+          <li><a href="mailto:hello@riskforge.tech">Contact</a></li>
           <li>License</li>
         </ul>
       </div>
       <div class="footer-col">
         <h4>Resources</h4>
         <ul>
-          <li>Demo Workbook</li>
-          <li>FAQ</li>
-          <li>Refund Policy</li>
+          <li><a href="demo.html">Demo Workbook</a></li>
+          <li><a href="#faq">FAQ</a></li>
           <li>Terms</li>
         </ul>
       </div>
