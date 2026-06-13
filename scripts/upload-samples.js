@@ -30,14 +30,23 @@ const files = [
   }
 ];
 
-// When run via `netlify dev:exec`, the CLI injects NETLIFY_SITE_ID and
-// NETLIFY_AUTH_TOKEN but doesn't auto-wire the Blobs context. Pass them
-// explicitly so the SDK can authenticate against the live Blobs API.
-const siteID = process.env.NETLIFY_SITE_ID;
-const token  = process.env.NETLIFY_AUTH_TOKEN;
-if (!siteID || !token) {
-  console.error("ERROR: NETLIFY_SITE_ID or NETLIFY_AUTH_TOKEN not found.");
-  console.error("Run via: netlify dev:exec node scripts/upload-samples.js");
+// Resolve site ID: env var first, then the known RiskForge site ID.
+// Resolve token: try all names the Netlify CLI uses across versions, then
+// fall back to NETLIFY_TOKEN which the user can set manually (see below).
+const KNOWN_SITE_ID = "63ae3e3b-bbc5-4734-a870-fb4deb57d2f4";
+const siteID = process.env.NETLIFY_SITE_ID || KNOWN_SITE_ID;
+const token  =
+  process.env.NETLIFY_AUTH_TOKEN  ||
+  process.env.NETLIFY_ACCESS_TOKEN ||
+  process.env.NETLIFY_TOKEN;
+
+if (!token) {
+  console.error("ERROR: no Netlify auth token found.\n");
+  console.error("Set NETLIFY_TOKEN to your personal access token, then re-run:\n");
+  console.error("  PowerShell:  $env:NETLIFY_TOKEN='<token>'; node scripts/upload-samples.js");
+  console.error("  Cmd:         set NETLIFY_TOKEN=<token> && node scripts/upload-samples.js");
+  console.error("  Mac/Linux:   NETLIFY_TOKEN=<token> node scripts/upload-samples.js\n");
+  console.error("Get a token: Netlify dashboard -> your avatar -> User settings -> Applications -> Personal access tokens -> New access token");
   process.exit(1);
 }
 const store = getStore({ name: "samples", siteID, token });
