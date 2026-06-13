@@ -5,6 +5,16 @@
 <title>RiskForge — NIST CSF 2.0 & PCI DSS v4.0.1 Workbooks for Practitioners</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0.1 workbooks. 45 tabs, 701 sub-requirements, every artifact your auditor expects. Built by practitioners. From $99." />
+<link rel="canonical" href="https://riskforge.tech/" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="RiskForge" />
+<meta property="og:title" content="RiskForge — NIST CSF 2.0 & PCI DSS v4.0.1 Workbooks for Practitioners" />
+<meta property="og:description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0.1 workbooks. 45 tabs, 701 sub-requirements, every artifact your auditor expects. Built by practitioners. From $99." />
+<meta property="og:url" content="https://riskforge.tech/" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="RiskForge — NIST CSF 2.0 & PCI DSS v4.0.1 Workbooks for Practitioners" />
+<meta name="twitter:description" content="Professional-grade compliance workbooks built by practitioners. One-time purchase from $99." />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23C8F02D'/><text x='16' y='22' font-family='monospace' font-weight='700' font-size='13' text-anchor='middle' fill='%230A0A0A'>RF</text></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -242,8 +252,8 @@ h1, h2, h3, h4, p { margin: 0; }
 .footer-col ul { display: flex; flex-direction: column; gap: 10px; }
 .footer-col li { font-size: 13.5px; color: var(--ink-2); }
 .footer-col li:hover { color: var(--ink); }
-.footer-col a { color: inherit; text-decoration: none; }
-.footer-col a:hover { text-decoration: underline; }
+.footer-col li a { color: inherit; transition: color 120ms; }
+.footer-col li a:hover { color: var(--ink); }
 .footer-bottom { padding-top: 28px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
 .footer-bottom .links { display: flex; gap: 28px; }
 
@@ -419,59 +429,6 @@ h1, h2, h3, h4, p { margin: 0; }
   .footer-bottom { flex-direction: column; gap: 12px; align-items: flex-start; font-size: 9.5px; }
   .footer-bottom .links { gap: 18px; }
 }
-
-/* =========================================================
-   FREE INTERACTIVE TOOLS
-   ========================================================= */
-.tools { padding: var(--s-section) 0; border-bottom: 1px solid var(--rule); background: var(--paper); }
-.tool-card { border: 1px solid var(--ink); background: var(--paper); display: flex; flex-direction: column; }
-.tools-switch { display: flex; border-bottom: 1px solid var(--ink); }
-.tools-tab { flex: 1; background: var(--paper); border: none; border-right: 1px solid var(--ink); padding: 16px 20px; cursor: pointer; font-family: var(--f-sans); text-align: center; display: flex; flex-direction: column; gap: 4px; align-items: center; transition: 120ms; }
-.tools-tab:last-child { border-right: none; }
-.tools-tab .code { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
-.tools-tab .nm { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
-.tools-tab.active { background: var(--ink); color: var(--paper); }
-.tools-tab.active .code { color: var(--accent); }
-.tools-tab:not(.active):hover { background: var(--paper-2); }
-
-.tools-stage { display: grid; grid-template-columns: 0.92fr 1.08fr; gap: var(--s-block); align-items: start; }
-.tools-info { padding: 28px 26px; }
-.tool-pane { display: none; flex-direction: column; gap: 20px; }
-.tool-pane.active { display: flex; }
-.tool-pane .code { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); }
-.tool-pane h3 { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; }
-.tool-pane > p { font-size: 14.5px; line-height: 1.6; color: var(--ink-3); }
-.tool-pane .how { list-style: none; counter-reset: step; padding: 0; margin: 0; border-top: 1px solid var(--rule); }
-.tool-pane .how li { counter-increment: step; display: grid; grid-template-columns: 32px 1fr; gap: 14px; padding: 13px 0; border-bottom: 1px solid var(--rule); font-size: 13.5px; line-height: 1.5; color: var(--ink-2); align-items: start; }
-.tool-pane .how li::before { content: counter(step, decimal-leading-zero); font-family: var(--f-mono); font-size: 11px; color: var(--accent-deep); font-weight: 700; padding-top: 2px; }
-.tool-sample { border: 1px solid var(--rule-2); border-left: 3px solid var(--accent); padding: 16px 18px; display: flex; flex-direction: column; gap: 7px; }
-.tool-sample .lbl { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
-.tool-sample p { font-size: 12.8px; line-height: 1.55; color: var(--ink-3); margin: 0; }
-.tool-sample b { color: var(--ink); font-weight: 700; }
-.tool-actions { display: flex; gap: 10px; flex-wrap: wrap; }
-
-.tools-embed { position: sticky; top: 88px; }
-.browser { border: 1px solid var(--ink); background: var(--paper); }
-.browser .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--rule); background: var(--paper-2); }
-.browser .bar .dots { display: flex; gap: 6px; }
-.browser .bar .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--rule-2); }
-.browser .bar .url { font-family: var(--f-mono); font-size: 11px; color: var(--muted); letter-spacing: 0.04em; flex: 1; padding: 5px 12px; background: var(--paper); border: 1px solid var(--rule); }
-.browser iframe { width: 100%; height: 640px; border: none; display: block; background: #fff; }
-.browser iframe.frame-hidden { display: none; }
-.embed-note { margin-top: 12px; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-.embed-note::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-
-@media (max-width: 960px) {
-  .tools-stage { grid-template-columns: 1fr; gap: 32px; }
-  .tools-embed { position: static; }
-}
-@media (max-width: 640px) {
-  .tools-switch { flex-direction: column; }
-  .tools-tab { border-right: none; border-bottom: 1px solid var(--ink); }
-  .tools-tab:last-child { border-bottom: none; }
-  .tool-pane h3 { font-size: 25px; }
-  .browser iframe { height: 580px; }
-}
 </style>
 </head>
 <body>
@@ -497,7 +454,6 @@ h1, h2, h3, h4, p { margin: 0; }
       <ul class="nav-links">
         <li><a href="#problem">Problem</a></li>
         <li><a href="#frameworks">Frameworks</a></li>
-        <li><a href="#tools">Free Tools</a></li>
         <li><a href="#pricing">Pricing</a></li>
         <li><a href="#practitioners">Built For</a></li>
         <li><a href="#faq">FAQ</a></li>
@@ -648,83 +604,6 @@ h1, h2, h3, h4, p { margin: 0; }
         <p>Governance and management objectives with capability scoring, design factors workbook, and goals cascade worksheet.</p>
         <div class="meta"><span>40 objectives</span><b>Q4</b></div>
       </article>
-    </div>
-  </div>
-</section>
-
-<!-- ============================================
-     FREE INTERACTIVE TOOLS
-     ============================================ -->
-<section class="tools" id="tools">
-  <div class="wrap">
-    <div class="section-head">
-      <div>
-        <div class="eyebrow">Free interactive tools</div>
-        <h2>Try the engine before you <em>buy the workbook.</em></h2>
-      </div>
-      <p class="sub">Two free tools run the exact logic that ships inside the workbooks — no download, nothing to install. Use either one right here, then optionally add your details to receive a free, watermarked sample of the matching workbook by email.</p>
-    </div>
-
-    <div class="tools-stage">
-      <div class="tool-card">
-        <div class="tools-switch">
-          <button class="tools-tab active" data-tool="pci"><span class="code">PCI DSS v4.0.1</span><span class="nm">SAQ Selector</span></button>
-          <button class="tools-tab" data-tool="nist"><span class="code">NIST CSF 2.0</span><span class="nm">Maturity Snapshot</span></button>
-        </div>
-        <div class="tools-info">
-        <!-- PCI pane -->
-        <div class="tool-pane active" data-tool="pci">
-          <div class="code">PCI · SAQ Selector · Free</div>
-          <h3>Which SAQ do you actually need?</h3>
-          <p>Up to eight yes/no questions resolve which of the 10 official SAQ types applies to you — with the same precedence the workbook enforces (service provider beats stored-CHD beats virtual-terminal-only). It shows your result first, then offers the email capture.</p>
-          <ol class="how">
-            <li>Answer up to 8 yes/no questions about how you accept cardholder data.</li>
-            <li>Get your SAQ type instantly — name, scope, card-storage rules, and typical size.</li>
-            <li>Optionally share your details to receive a one-page checklist and a free sample.</li>
-          </ol>
-          <div class="tool-sample">
-            <span class="lbl">After you finish · free PCI sample workbook</span>
-            <p>Add your details (<b>name + email required</b>, company + role optional) and we’ll email a free sample of the <b>PCI SAQ Prep Workbook</b> — a generous teaser faithful to the real thing: a “Free Sample” cover, 3–6 populated example rows per key tab, “··· N more rows in the full version ···” notes, a “Get Full Version” tab, and a SAMPLE footer on every sheet.</p>
-          </div>
-          <div class="tool-actions">
-            <a class="btn btn-primary" href="pci-saq-selector.html">Open the full tool <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="demo.html">See it in the demo</a>
-          </div>
-        </div>
-
-        <!-- NIST pane -->
-        <div class="tool-pane" data-tool="nist">
-          <div class="code">NIST · Maturity Snapshot · Free</div>
-          <h3>How mature is your program?</h3>
-          <p>Twelve quick questions — two per CSF function, on a 5-point maturity scale — produce an instant radar chart of maturity by function, your overall maturity level, and your two biggest gaps. Exactly what the workbook’s Executive Summary produces.</p>
-          <ol class="how">
-            <li>Rate two statements for each of the six functions (Govern → Recover).</li>
-            <li>See your radar, overall level, per-function bars, and biggest gaps instantly.</li>
-            <li>Optionally share your details to receive your scores and a free sample.</li>
-          </ol>
-          <div class="tool-sample">
-            <span class="lbl">After you finish · free NIST sample workbook</span>
-            <p>Add your details (<b>name + email required</b>, company + role optional) and we’ll email a free sample of the <b>NIST CSF 2.0 Gap Assessment Workbook</b> — a generous teaser faithful to the real thing: a “Free Sample” cover, 3–6 populated example rows per key tab, “··· N more rows in the full version ···” notes, a “Get Full Version” tab, and a SAMPLE footer on every sheet.</p>
-          </div>
-          <div class="tool-actions">
-            <a class="btn btn-primary" href="nist-maturity-snapshot.html">Open the full tool <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="demo.html">See it in the demo</a>
-          </div>
-        </div>
-        </div><!-- /tools-info -->
-      </div><!-- /tool-card -->
-
-      <div class="tools-embed">
-        <div class="browser">
-          <div class="bar">
-            <span class="dots"><span></span><span></span><span></span></span>
-            <span class="url" data-url>riskforge.tech/tools/saq-selector</span>
-          </div>
-          <iframe data-frame="pci" title="PCI SAQ Selector" src="pci-saq-selector.html?embed=1"></iframe>
-          <iframe data-frame="nist" class="frame-hidden" title="NIST Maturity Snapshot" src="nist-maturity-snapshot.html?embed=1"></iframe>
-        </div>
-        <div class="embed-note">Live preview — interact with it right here</div>
-      </div>
     </div>
   </div>
 </section>
@@ -888,7 +767,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <p>Every workbook is structured the way auditors actually want to see evidence presented. No filler. No theatre. Just the deliverables the consulting bill was hiding.</p>
         <div class="ctas" style="margin-top: 32px; display: flex; gap: 12px;">
           <a class="btn btn-accent" href="#pricing">See What's Inside <span class="arrow">→</span></a>
-          <a class="btn btn-secondary" href="#contact">Contact Founder</a>
+          <a class="btn btn-secondary" href="mailto:hello@riskforge.tech">Contact Founder</a>
         </div>
       </div>
 
@@ -972,7 +851,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <div class="eyebrow">06 · FAQ</div>
         <h2>Common questions, <em>direct answers.</em></h2>
       </div>
-      <p class="sub">If you have a question we haven't answered, email us at <a href="mailto:hello@riskforge.tech" style="color: inherit;">hello@riskforge.tech</a> — we usually reply within one business day.</p>
+      <p class="sub">If you have a question we haven't answered, email us at <a href="mailto:hello@riskforge.tech">hello@riskforge.tech</a> — we usually reply within one business day.</p>
     </div>
 
     <div class="faq-list">
@@ -1008,7 +887,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <div class="id">Q · 05</div>
         <div>
           <div class="q">What if it isn't what I expected?</div>
-          <div class="a">The Demo lets you walk through every tab before you buy — it's a real workbook, not a screenshot. You'll know exactly what you're getting.</div>
+          <div class="a">All sales are final. We encourage you to use the interactive Demo to walk through every tab before you buy — it's a real workbook, not a screenshot.</div>
         </div>
       </div>
     </div>
@@ -1025,7 +904,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <div>
           <div class="eyebrow light">Ready when you are</div>
           <h2>Skip the invoice. <em>Ship the work.</em></h2>
-          <p>Download the workbooks today and put them to work before your next audit cycle.</p>
+          <p>Download the workbooks today and start your first gap assessment this afternoon — no consultants, no waiting, no guesswork.</p>
           <div class="ctas">
             <a class="btn btn-accent" href="https://payhip.com/b/cx1lY">Get the Full Vault <span class="arrow">→</span></a>
             <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
@@ -1076,7 +955,7 @@ h1, h2, h3, h4, p { margin: 0; }
       <div class="footer-col">
         <h4>Company</h4>
         <ul>
-          <li>About</li>
+          <li><a href="#about">About</a></li>
           <li><a href="#frameworks">Frameworks</a></li>
           <li><a href="mailto:hello@riskforge.tech">Contact</a></li>
           <li>License</li>
@@ -1101,24 +980,6 @@ h1, h2, h3, h4, p { margin: 0; }
     </div>
   </div>
 </footer>
-
-<script>
-/* Free Tools — switch between PCI and NIST */
-(function(){
-  const tabs = document.querySelectorAll('.tools-tab');
-  const panes = document.querySelectorAll('.tool-pane');
-  const frames = document.querySelectorAll('.browser iframe');
-  const url = document.querySelector('[data-url]');
-  const urls = { pci: 'riskforge.tech/tools/saq-selector', nist: 'riskforge.tech/tools/maturity-snapshot' };
-  function sel(t){
-    tabs.forEach(x => x.classList.toggle('active', x.dataset.tool === t));
-    panes.forEach(x => x.classList.toggle('active', x.dataset.tool === t));
-    frames.forEach(x => x.classList.toggle('frame-hidden', x.dataset.frame !== t));
-    if (url) url.textContent = urls[t] || '';
-  }
-  tabs.forEach(t => t.addEventListener('click', () => sel(t.dataset.tool)));
-})();
-</script>
 
 </body>
 </html>

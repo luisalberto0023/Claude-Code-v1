@@ -1,0 +1,14 @@
+{
+  "name": "riskforge-site",
+  "version": "3.0.0",
+  "private": true,
+  "type": "module",
+  "description": "RiskForge static site + Netlify Functions for gated sample delivery (MailerLite + JWT + Blobs).",
+  "scripts": {
+    "upload-samples": "netlify dev:exec node scripts/upload-samples.js"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

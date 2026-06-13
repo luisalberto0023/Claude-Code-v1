@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Which PCI SAQ do I need? — Free Selector by RiskForge</title>
+<meta name="description" content="Answer a few yes/no questions and find out which PCI DSS v4.0.1 Self-Assessment Questionnaire (SAQ) applies to you. Free tool by RiskForge.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<!--
+  ============================================================================
+  RISKFORGE — FREE PCI SAQ SELECTOR  (self-contained, no dependencies)
+  Brand-aligned build · mirrors the 8-question logic that ships in the workbook.
+  Append ?embed to the URL to hide the page chrome for clean iframe embedding.
+  Set CONFIG.formEndpoint to your MailerLite/Brevo/Formspree POST URL to collect
+  leads; blank falls back to a pre-filled mailto. Leads are tagged source:"saq-selector"
+  so automation sends the PCI sample workbook.
+  ============================================================================
+-->
+<style>
+  :root{
+    --paper:#FFFFFF; --paper-2:#F6F6F4; --ink:#0A0A0A; --ink-2:#1A1A1A; --ink-3:#3A3A3A;
+    --muted:#6B6B6B; --rule:#E5E5E2; --rule-2:#D6D6D2;
+    --accent:#C8F02D; --accent-deep:#B8E01A; --ok:#2C7A3D; --ok-bg:#EEF6DC;
+    --amber:#9A6B00; --red:#B91C1C;
+    --f-sans:'Manrope',system-ui,sans-serif; --f-mono:'JetBrains Mono',monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--paper-2); color:var(--ink);
+    font-family:var(--f-sans); line-height:1.5; -webkit-font-smoothing:antialiased;}
+  a{color:inherit}
+
+  .topbar{background:var(--ink); color:var(--paper); border-bottom:1px solid var(--ink);}
+  .topbar-inner{max-width:680px; margin:0 auto; padding:14px 20px; display:flex; align-items:center; justify-content:space-between;}
+  .logo{display:flex; align-items:center; gap:10px; font-weight:800; font-size:15px; letter-spacing:-0.02em;}
+  .logo .mark{width:26px; height:26px; background:var(--accent); color:var(--ink); display:flex; align-items:center; justify-content:center; font-family:var(--f-mono); font-weight:700; font-size:11px;}
+  .topbar a.back{font-family:var(--f-mono); font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:rgba(255,255,255,0.6); text-decoration:none;}
+  .topbar a.back:hover{color:var(--paper);}
+
+  .wrap{max-width:680px; margin:0 auto; padding:36px 20px 56px}
+  .kicker{font-family:var(--f-mono); font-size:11px; font-weight:600; letter-spacing:0.22em; text-transform:uppercase; color:var(--ok); margin:0 0 12px; display:inline-flex; align-items:center; gap:9px;}
+  .kicker::before{content:''; width:6px; height:6px; background:var(--accent); border-radius:50%;}
+  h1{font-size:34px; line-height:1.08; margin:0 0 12px; font-weight:800; letter-spacing:-0.035em;}
+  h1 em{font-style:normal; background:linear-gradient(to bottom,transparent 0,transparent 14%,var(--accent) 14%,var(--accent) 86%,transparent 86%,transparent 100%); padding:0 6px; -webkit-box-decoration-break:clone; box-decoration-break:clone;}
+  .sub{color:var(--ink-3); font-size:15.5px; margin:0 0 26px; max-width:560px;}
+
+  .card{background:var(--card,#fff); border:1px solid var(--rule-2); padding:30px 28px;}
+  .progress{display:flex; align-items:center; justify-content:space-between; margin-bottom:16px}
+  .steps{font-family:var(--f-mono); font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:var(--muted)}
+  .bar{height:4px; background:var(--rule); overflow:hidden; margin-bottom:24px}
+  .bar > i{display:block; height:100%; width:0; background:var(--accent); transition:width .25s ease}
+  .qtext{font-size:22px; font-weight:700; line-height:1.28; margin:0 0 10px; letter-spacing:-0.02em}
+  .qhelp{font-size:14px; color:var(--muted); margin:0 0 24px; line-height:1.55}
+  .answers{display:flex; gap:12px}
+  .btn{appearance:none; cursor:pointer; border:1px solid var(--ink); background:#fff; color:var(--ink);
+       font-family:var(--f-sans); font-size:14px; font-weight:700; padding:14px 18px; transition:.13s; letter-spacing:-0.005em}
+  .btn:hover{background:var(--ink); color:var(--paper)}
+  .answers .btn{flex:1}
+  .btn.yes:hover{background:var(--ink); color:var(--paper)}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--ink)}
+  .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:var(--ink)}
+  .btn.ghost{background:transparent; border-color:var(--rule-2)}
+  .btn.ghost:hover{background:var(--ink); color:var(--paper); border-color:var(--ink)}
+  .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  .back{margin-top:18px; background:none; border:none; color:var(--muted); font-size:13px; cursor:pointer; padding:6px 0; font-family:var(--f-sans); font-weight:600}
+  .back:hover{color:var(--ink)}
+  .tag{display:inline-block; font-family:var(--f-mono); font-size:10px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase;
+       color:var(--ink); background:var(--accent); padding:5px 9px}
+  .result-saq{font-size:52px; font-weight:800; letter-spacing:-0.04em; margin:16px 0 4px; line-height:1}
+  .result-name{font-size:15px; color:var(--muted); margin:0 0 18px; font-weight:600; font-family:var(--f-mono); letter-spacing:0.02em; text-transform:uppercase}
+  .facts{list-style:none; padding:0; margin:20px 0 0}
+  .facts li{display:flex; gap:12px; padding:11px 0; border-top:1px solid var(--rule); font-size:14.5px}
+  .facts li:first-child{border-top:none}
+  .facts .k{color:var(--muted); min-width:130px; font-family:var(--f-mono); font-size:10.5px; letter-spacing:0.12em; text-transform:uppercase; font-weight:600; padding-top:2px}
+  .cta{margin-top:24px; padding-top:24px; border-top:1px solid var(--rule)}
+  .disclaimer{font-size:12px; color:var(--muted); margin-top:16px; line-height:1.55}
+  .email-block{margin-top:24px; background:var(--ink); color:var(--paper); padding:24px}
+  .email-block h3{margin:0 0 6px; font-size:18px; font-weight:700; letter-spacing:-0.015em}
+  .email-block h3 .acc{background:var(--accent); color:var(--ink); padding:0 5px}
+  .email-block > p{margin:0 0 14px; font-size:13.5px; color:rgba(255,255,255,0.72); line-height:1.55}
+  .sample-note{border:1px solid rgba(255,255,255,0.16); padding:14px 16px; margin:0 0 18px; display:flex; flex-direction:column; gap:7px}
+  .sample-note .lbl{font-family:var(--f-mono); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase; color:var(--accent); font-weight:700}
+  .sample-note ul{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:5px}
+  .sample-note li{font-size:12.5px; color:rgba(255,255,255,0.82); display:flex; gap:9px; line-height:1.45}
+  .sample-note li::before{content:'+'; color:var(--accent); font-family:var(--f-mono); flex-shrink:0}
+  .fields{display:flex; flex-direction:column; gap:10px}
+  .frow{display:flex; gap:10px; flex-wrap:wrap}
+  .field{flex:1; min-width:190px; display:flex; flex-direction:column; gap:5px}
+  .field label{font-family:var(--f-mono); font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:rgba(255,255,255,0.6)}
+  .field input{padding:12px 13px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); color:var(--paper); font-size:15px; font-family:var(--f-sans)}
+  .field input::placeholder{color:rgba(255,255,255,0.4)}
+  .field input:focus{outline:none; border-color:var(--accent); background:rgba(255,255,255,0.1)}
+  .field .opt-tag{font-weight:500; color:rgba(255,255,255,0.45); text-transform:none; letter-spacing:0}
+  .email-block .btn.primary{margin-top:4px}
+  .mini{font-size:11.5px; color:rgba(255,255,255,0.5); margin-top:11px}
+  .email-done{margin-top:24px; background:var(--ok-bg); border:1px solid #cfe09a; padding:22px}
+  .email-done h3{margin:0 0 6px; font-size:17px; color:var(--ok)}
+  .email-done p{margin:0; font-size:13.5px; color:var(--ink-3)}
+  .footer{margin-top:28px; text-align:center; font-size:12px; color:var(--muted)}
+  .footer a{color:var(--ok); text-decoration:none; font-weight:600}
+  .codeline{font-family:var(--f-mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color:var(--muted); text-align:center; margin-top:8px}
+  .hide{display:none !important}
+  a.linklike{color:var(--ok); font-weight:600; text-decoration:none}
+  a.linklike:hover{text-decoration:underline}
+
+  /* embed mode — drop page chrome so it sits cleanly inside an iframe */
+  body.embed{background:#fff}
+  body.embed .topbar{display:none}
+  body.embed .wrap{padding:24px 18px 28px}
+  body.embed .footer{display:none}
+
+  @media(max-width:520px){ h1{font-size:27px} .result-saq{font-size:42px} .answers{flex-direction:column} }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="logo" href="index.html"><span class="mark">RF</span> RiskForge</a>
+    <a class="back" href="index.html">← Back to RiskForge</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <p class="kicker">Free tool · PCI DSS v4.0.1</p>
+  <h1>Which PCI SAQ do you <em>actually</em> need?</h1>
+  <p class="sub">Answer a few yes/no questions. Most people finish in under a minute. Built by practitioners — the same precedence logic that ships inside the RiskForge SAQ Prep Workbook, resolving all 10 official SAQ types.</p>
+
+  <div class="card" id="card">
+    <!-- QUESTION VIEW -->
+    <div id="qview">
+      <div class="progress">
+        <span class="steps" id="stepLabel">Question 1</span>
+        <span class="steps" id="stepHint">~3–6 questions</span>
+      </div>
+      <div class="bar"><i id="barFill"></i></div>
+      <p class="qtext" id="qText"></p>
+      <p class="qhelp" id="qHelp"></p>
+      <div class="answers">
+        <button class="btn yes" id="btnYes" onclick="answer(true)">Yes</button>
+        <button class="btn" id="btnNo" onclick="answer(false)">No</button>
+      </div>
+      <button class="back" id="backBtn" onclick="goBack()">← Back</button>
+    </div>
+
+    <!-- RESULT VIEW -->
+    <div id="rview" class="hide">
+      <span class="tag" id="rTag">Your result</span>
+      <div class="result-saq" id="rSaq"></div>
+      <p class="result-name" id="rName"></p>
+      <p id="rDesc" style="font-size:15.5px;margin:0;line-height:1.55;color:var(--ink-3)"></p>
+      <ul class="facts" id="rFacts"></ul>
+
+      <div class="cta">
+        <div class="row">
+          <a class="btn primary" id="buyBtn" href="#" target="_blank" rel="noopener">Get the workbook →</a>
+          <a class="btn ghost" id="demoBtn" href="#" target="_blank" rel="noopener">Explore the live demo</a>
+        </div>
+        <p class="disclaimer" id="rDisc"></p>
+      </div>
+
+      <!-- EMAIL CAPTURE (shown after result) -->
+      <div class="email-block" id="emailBlock">
+        <h3 id="emailH">Get your <span class="acc" id="emailSaq"></span> checklist + a free PCI sample workbook</h3>
+        <p>Add your details and we’ll email a one-page requirements checklist for your SAQ type, plus a free, watermarked sample of the PCI DSS v4.0.1 SAQ Prep Workbook.</p>
+        <div class="sample-note">
+          <span class="lbl">What the free PCI sample includes</span>
+          <ul>
+            <li>A “Free Sample” cover — faithful to the real workbook (same columns, real example rows)</li>
+            <li>3–6 populated example rows per key tab, with “··· N more rows in the full version ···” notes</li>
+            <li>A “Get Full Version” tab and a SAMPLE watermark footer on every sheet</li>
+          </ul>
+        </div>
+        <form id="emailForm" onsubmit="return submitEmail(event)">
+          <div class="fields">
+            <div class="frow">
+              <div class="field"><label for="fName">Name</label><input id="fName" type="text" required></div>
+              <div class="field"><label for="fEmail">Work email</label><input id="fEmail" type="email" placeholder="you@company.com" required></div>
+            </div>
+            <div class="frow">
+              <div class="field"><label for="fCompany">Company <span class="opt-tag">(optional)</span></label><input id="fCompany" type="text"></div>
+              <div class="field"><label for="fRole">Job title <span class="opt-tag">(optional)</span></label><input id="fRole" type="text"></div>
+            </div>
+            <button class="btn primary" type="submit" style="align-self:flex-start">Send my sample + checklist →</button>
+          </div>
+        </form>
+        <p class="mini">Name + email required · company + role optional. We’ll only use your details to send the sample and occasional practitioner tips. Unsubscribe anytime.</p>
+      </div>
+      <div class="email-done hide" id="emailDone">
+        <h3>✓ On its way.</h3>
+        <p id="doneMsg" style="margin:0">Check your inbox shortly. In the meantime, the full workbook covers all 10 SAQ types — including yours.</p>
+      </div>
+
+      <button class="back" onclick="restart()">↺ Start over</button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div>© <span id="yr"></span> RiskForge · <a href="https://riskforge.tech" target="_blank" rel="noopener">riskforge.tech</a> · Questions? <a id="contactLink" href="#">hello@riskforge.tech</a></div>
+    <div class="codeline">Instant download · Secure checkout · One-time payment</div>
+  </div>
+</div>
+
+<script>
+/* ====================== CONFIG — edit these ====================== */
+/* =====================================================================
+   TODO [CLAUDE CODE] — LEAD CAPTURE WIRING REQUIRED
+   ---------------------------------------------------------------------
+   Set formEndpoint below to the email-platform POST URL that should
+   receive leads from THIS tool (MailerLite / Brevo / Formspree / etc.).
+   • While blank "", the form falls back to a pre-filled mailto to
+     fallbackEmail — fine for a soft launch, but no list is built.
+   • Leads POST as JSON including  source:"saq-selector"  and
+     framework:"PCI DSS v4.0.1"  — use that tag in your automation to
+     send the PCI sample workbook (NOT the NIST one).
+   ===================================================================== */
+const CONFIG = {
+  formEndpoint: "/.netlify/functions/register",   /* PCI leads -> JWT + MailerLite */
+  fallbackEmail: "hello@riskforge.tech",
+  pciBuyUrl:   "https://payhip.com/b/xCJhD",         // PCI pack ($149)
+  nistBuyUrl:  "https://payhip.com/b/9ucFo",         // NIST pack ($99)
+  vaultBuyUrl: "https://payhip.com/b/cx1lY",         // Full Vault ($349)
+  demoUrl:     "demo.html",        // local demo page
+  site:        "https://riskforge.tech"
+};
+/* ================================================================ */
+
+/* embed mode — strip chrome when loaded inside an iframe via ?embed */
+if (location.search.indexOf('embed') !== -1) document.body.classList.add('embed');
+
+document.getElementById('yr').textContent = new Date().getFullYear();
+document.getElementById('contactLink').href = "mailto:" + CONFIG.fallbackEmail;
+document.getElementById('demoBtn').href = CONFIG.demoUrl;
+
+// Ordered decision steps (precedence matters). Each: question + which result a "yes" yields.
+// "no" advances to the next step. Falling off the end => SAQ-D (Merchant).
+const STEPS = [
+  { key:"chd",
+    q:"Does your organization store, process, or transmit cardholder data?",
+    help:"Cardholder data = the card number (PAN) and related data. If you never touch it in any way, PCI DSS may not apply.",
+    yesGoesNext:true, noResult:"NA" },
+  { key:"sp",
+    q:"Are you a service provider — handling cardholder data on behalf of OTHER businesses (not your own sales)?",
+    help:"E.g., a payment gateway, hosting provider, or processor. Choose No if you’re a merchant selling your own goods/services.",
+    yesResult:"D_SP" },
+  { key:"store",
+    q:"Do you store cardholder data electronically in any system you control?",
+    help:"Databases, spreadsheets, logs, call recordings, CRM, etc. Any electronic storage of card data pushes you to the most comprehensive SAQ.",
+    yesResult:"D_MERCH" },
+  { key:"a",
+    q:"Are you card-not-present only (e-commerce / phone / mail) with ALL payment processing fully outsourced — and no card data ever touches your website or systems?",
+    help:"E.g., you redirect to or fully embed a hosted page from Stripe, PayPal, Square. You never see or handle the card data.",
+    yesResult:"A" },
+  { key:"aep",
+    q:"Are you an e-commerce merchant who outsources payment processing, BUT your website can affect the security of the payment (e.g., an iframe, direct-post, or JavaScript you manage)?",
+    help:"Your site doesn’t store card data, but its code is in the path of the transaction.",
+    yesResult:"A_EP" },
+  { key:"p2pe",
+    q:"Do you accept payments ONLY through a validated, PCI-listed P2PE (point-to-point encryption) solution?",
+    help:"The P2PE solution must appear on the PCI SSC’s list of validated solutions, used for all card acceptance.",
+    yesResult:"P2PE" },
+  { key:"spoc",
+    q:"Do you accept payments ONLY through a SPoC solution (software-based PIN entry on a commercial off-the-shelf device / 'tap to pay on phone')?",
+    help:"A validated SPoC solution used exclusively for card acceptance.",
+    yesResult:"SPOC" },
+  { key:"b",
+    q:"Do you use ONLY standalone, dial-out terminals with no connection to the internet or other systems?",
+    help:"Old-school terminals that dial out over a phone line. No IP/internet connection.",
+    yesResult:"B" },
+  { key:"bip",
+    q:"Do you use ONLY standalone, PTS-approved payment terminals connected to your processor over IP / the internet?",
+    help:"Standalone approved terminals (PTS-listed) with an internet connection, no other payment systems.",
+    yesResult:"B_IP" },
+  { key:"cvt",
+    q:"Do you take payments ONLY by manually keying one transaction at a time into a web-based virtual terminal in a browser?",
+    help:"A single, isolated computer used to key transactions into a hosted virtual terminal. No card data stored.",
+    yesResult:"C_VT" },
+  { key:"c",
+    q:"Do you use a payment application or POS system that is connected to the internet?",
+    help:"E.g., POS software or a payment app on internet-connected systems, with no electronic storage of card data.",
+    yesResult:"C" }
+];
+
+const RESULTS = {
+  NA: { saq:"PCI may not apply", name:"No cardholder data in scope",
+        desc:"If you genuinely never store, process, or transmit cardholder data, a SAQ may not be required — but confirm with your acquirer before concluding you’re out of scope.",
+        facts:[["Next step","Confirm scope with your acquiring bank"],["If outsourced","You may still need to validate your providers are PCI compliant"]],
+        buy:"vault", primary:false },
+  A:   { saq:"SAQ A", name:"Card-not-present, fully outsourced",
+        desc:"Your card data functions are entirely outsourced to PCI-compliant third parties and no card data touches your environment. This is the shortest SAQ.",
+        facts:[["Scope","Smallest — fully outsourced e-commerce / MOTO"],["Card storage","None permitted"],["Typical size","~30+ sub-requirements"]],
+        buy:"pci", primary:true },
+  A_EP:{ saq:"SAQ A-EP", name:"E-commerce, partially outsourced",
+        desc:"You outsource processing, but your website is in the path of the payment (iframe / direct-post / JS you control), so more controls apply to protect that path.",
+        facts:[["Scope","E-commerce where your site affects the transaction"],["Card storage","None permitted"],["Typical size","~150+ sub-requirements"]],
+        buy:"pci", primary:true },
+  B:   { saq:"SAQ B", name:"Standalone dial-out terminals",
+        desc:"You use only imprint machines or standalone dial-out terminals, with no electronic cardholder data storage and no internet connection.",
+        facts:[["Scope","Dial-out terminals only"],["Card storage","None electronic"],["Typical size","~40+ sub-requirements"]],
+        buy:"pci", primary:true },
+  B_IP:{ saq:"SAQ B-IP", name:"Standalone IP terminals",
+        desc:"You use only standalone, PTS-approved terminals connected over IP to your processor, with no electronic cardholder data storage.",
+        facts:[["Scope","PTS-approved IP terminals only"],["Card storage","None electronic"],["Typical size","~80+ sub-requirements"]],
+        buy:"pci", primary:true },
+  C_VT:{ saq:"SAQ C-VT", name:"Web-based virtual terminal",
+        desc:"You key transactions one at a time into a browser-based virtual terminal on an isolated computer, with no electronic cardholder data storage.",
+        facts:[["Scope","Manual virtual-terminal entry only"],["Card storage","None electronic"],["Typical size","~80+ sub-requirements"]],
+        buy:"pci", primary:true },
+  C:   { saq:"SAQ C", name:"Payment application, internet-connected",
+        desc:"You have a payment application/POS system connected to the internet, with no electronic cardholder data storage.",
+        facts:[["Scope","Internet-connected payment app / POS"],["Card storage","None electronic"],["Typical size","~160+ sub-requirements"]],
+        buy:"pci", primary:true },
+  P2PE:{ saq:"SAQ P2PE", name:"Validated P2PE solution only",
+        desc:"You accept payments exclusively through a PCI-listed P2PE solution, which sharply reduces your applicable requirements. No electronic card data storage.",
+        facts:[["Scope","Validated P2PE solution only"],["Card storage","None electronic"],["Typical size","~30+ sub-requirements"]],
+        buy:"pci", primary:true },
+  SPOC:{ saq:"SAQ SPoC", name:"Software-based PIN entry (SPoC)",
+        desc:"You accept payments exclusively through a validated SPoC ('tap to pay on phone') solution. A focused requirement set applies.",
+        facts:[["Scope","Validated SPoC solution only"],["Card storage","None electronic"],["Typical size","Focused subset"]],
+        buy:"pci", primary:true },
+  D_MERCH:{ saq:"SAQ D", name:"Merchant — all other scenarios",
+        desc:"Either you store cardholder data electronically, or your acceptance doesn’t fit a narrower SAQ. SAQ-D (Merchant) is the most comprehensive — and the one most worth getting organized.",
+        facts:[["Scope","All other merchants"],["Card storage","Electronic storage in scope"],["Typical size","~225+ sub-requirements"]],
+        buy:"pci", primary:true },
+  D_SP:{ saq:"SAQ D", name:"Service Provider",
+        desc:"You handle cardholder data on behalf of other organizations. SAQ-eligible service providers complete SAQ-D (Service Provider) — the most comprehensive set.",
+        facts:[["Scope","Service providers handling others’ card data"],["Card storage","In scope"],["Typical size","~290+ sub-requirements"]],
+        buy:"pci", primary:true }
+};
+
+let idx = 0;            // current step index
+let path = [];          // history of step indices visited (for Back)
+let answeredKeys = [];  // for analytics if needed
+let currentResult = null;
+
+function renderQuestion(){
+  document.getElementById('qview').classList.remove('hide');
+  document.getElementById('rview').classList.add('hide');
+  const step = STEPS[idx];
+  document.getElementById('stepLabel').textContent = "Question " + (path.length + 1);
+  document.getElementById('qText').textContent = step.q;
+  document.getElementById('qHelp').textContent = step.help || "";
+  const pct = Math.min(92, Math.round(((path.length) / STEPS.length) * 100) + 8);
+  document.getElementById('barFill').style.width = pct + "%";
+  document.getElementById('backBtn').style.visibility = path.length ? "visible" : "hidden";
+}
+
+function answer(isYes){
+  const step = STEPS[idx];
+  path.push(idx);
+  if(isYes){
+    if(step.yesResult){ return showResult(step.yesResult); }
+  } else {
+    if(step.noResult){ return showResult(step.noResult); }
+  }
+  if(idx + 1 < STEPS.length){ idx++; renderQuestion(); }
+  else { showResult("D_MERCH"); }
+}
+
+function goBack(){
+  if(!path.length) return;
+  document.getElementById('rview').classList.add('hide');
+  document.getElementById('qview').classList.remove('hide');
+  idx = path.pop();
+  renderQuestion();
+}
+
+function showResult(code){
+  currentResult = code;
+  const r = RESULTS[code];
+  document.getElementById('qview').classList.add('hide');
+  document.getElementById('rview').classList.remove('hide');
+  document.getElementById('barFill').style.width = "100%";
+  document.getElementById('rTag').textContent = code === "NA" ? "Heads up" : "Your likely SAQ";
+  document.getElementById('rSaq').textContent = r.saq;
+  document.getElementById('rName').textContent = r.name;
+  document.getElementById('rDesc').textContent = r.desc;
+  const ul = document.getElementById('rFacts'); ul.innerHTML = "";
+  r.facts.forEach(([k,v])=>{
+    const li=document.createElement('li');
+    li.innerHTML = '<span class="k">'+k+'</span><span>'+v+'</span>';
+    ul.appendChild(li);
+  });
+  const buy = r.buy === "nist" ? CONFIG.nistBuyUrl : r.buy === "vault" ? CONFIG.vaultBuyUrl : CONFIG.pciBuyUrl;
+  const buyBtn = document.getElementById('buyBtn');
+  buyBtn.href = buy;
+  buyBtn.textContent = code === "NA"
+     ? "See the RiskForge Vault →"
+     : "Get the PCI SAQ Prep Workbook — $149 →";
+  document.getElementById('rDisc').textContent =
+     "Guidance only — your acquiring bank or QSA makes the final determination. The RiskForge PCI workbook includes a built-in selector and full checklists for all 10 SAQ types.";
+  document.getElementById('emailSaq').textContent = (code==="NA") ? "PCI scoping" : r.saq;
+  document.getElementById('emailBlock').classList.remove('hide');
+  document.getElementById('emailDone').classList.add('hide');
+  document.getElementById('emailForm').reset && document.getElementById('emailForm').reset();
+}
+
+function submitEmail(e){
+  e.preventDefault();
+  const name = document.getElementById('fName').value.trim();
+  const email = document.getElementById('fEmail').value.trim();
+  const company = document.getElementById('fCompany').value.trim();
+  const role = document.getElementById('fRole').value.trim();
+  if(!name || !email) return false;
+  const r = RESULTS[currentResult] || {};
+  const payload = { name:name, email:email, company:company, role:role, product:"pci",
+    saq: currentResult, saq_label:(r.saq||""), source: "saq-selector", framework:"PCI DSS v4.0.1", site: CONFIG.site };
+  const done = ()=>{
+    document.getElementById('emailBlock').classList.add('hide');
+    document.getElementById('emailDone').classList.remove('hide');
+    document.getElementById('doneMsg').textContent =
+      "Check your inbox, " + name.split(" ")[0] + " — your " + (r.saq||"SAQ") + " checklist and free PCI sample workbook are on the way. The full version covers all 10 SAQ types, including yours.";
+  };
+  if(CONFIG.formEndpoint){
+    fetch(CONFIG.formEndpoint, {
+      method:"POST", headers:{"Content-Type":"application/json","Accept":"application/json"},
+      body: JSON.stringify(payload)
+    }).then(done).catch(()=>{ fallbackMail(payload); done(); });
+  } else {
+    fallbackMail(payload);
+    done();
+  }
+  return false;
+}
+
+function fallbackMail(p){
+  const r = RESULTS[currentResult] || {};
+  const subject = encodeURIComponent("PCI sample + SAQ checklist request - " + p.name + " (" + (r.saq||"SAQ") + ")");
+  const body = encodeURIComponent(
+    "Please send me the " + (r.saq||"SAQ") + " requirements checklist and the free PCI sample workbook.\n\n" +
+    "Name: " + p.name + "\nEmail: " + p.email + "\nCompany: " + (p.company||"-") + "\nRole: " + (p.role||"-") +
+    "\nResult: " + (r.saq||"") + " (" + (r.name||"") + ")\n");
+  window.location.href = "mailto:" + CONFIG.fallbackEmail + "?subject=" + subject + "&body=" + body;
+}
+
+function restart(){ idx=0; path=[]; currentResult=null; renderQuestion(); }
+
+renderQuestion();
+</script>
+</body>
+</html>

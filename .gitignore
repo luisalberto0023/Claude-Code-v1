@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+
+# Sample workbooks — these live in Netlify Blobs ONLY, never in git
+*.xlsx
+RiskForge_PCI_DSS_v4_SAQ_SAMPLE.xlsx
+RiskForge_NIST_CSF2_Gap_Assessment_SAMPLE.xlsx
+
+# Netlify local state
+.netlify/
+
+# Env / secrets
+.env
+.env.*
+
+# OS noise
+.DS_Store

@@ -5,6 +5,16 @@
 <title>RiskForge — Interactive Product Demo (v2.0)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="description" content="Tour the v2.0 PCI DSS v4.0.1 and NIST CSF 2.0 workbooks. Live SAQ Type Selector, interactive tab navigator, every artifact a QSA expects." />
+<link rel="canonical" href="https://riskforge.tech/demo" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="RiskForge" />
+<meta property="og:title" content="RiskForge — Interactive Product Demo (v2.0)" />
+<meta property="og:description" content="Tour the PCI DSS v4.0.1 and NIST CSF 2.0 workbooks. Live SAQ Type Selector, interactive tab navigator, every artifact a QSA expects." />
+<meta property="og:url" content="https://riskforge.tech/demo" />
+<meta name="twitter:card" content="summary_large_image" />
+<meta name="twitter:title" content="RiskForge — Interactive Product Demo" />
+<meta name="twitter:description" content="Walk through every tab of the NIST CSF 2.0 and PCI DSS v4.0.1 workbooks before you buy." />
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%23C8F02D'/><text x='16' y='22' font-family='monospace' font-weight='700' font-size='13' text-anchor='middle' fill='%230A0A0A'>RF</text></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -281,13 +291,6 @@ h1, h2, h3, h4, p { margin: 0; }
 .saq-live .ans:hover { background: var(--ink); color: var(--paper); }
 .saq-live .ans .k { font-family: var(--f-mono); font-size: 10.5px; color: var(--muted); font-weight: 500; margin-right: 8px; letter-spacing: 0.16em; }
 .saq-live .ans:hover .k { color: rgba(255,255,255,0.6); }
-
-/* Try-the-free-tool callout (showcase preview panels) */
-.try-tool { margin-top: 14px; border: 1px solid var(--ink); padding: 18px 20px; display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; background: var(--paper); }
-.try-tool .tt-txt { flex: 1; min-width: 240px; }
-.try-tool .tt-txt .lbl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent-deep); font-weight: 700; display: block; margin-bottom: 6px; }
-.try-tool .tt-txt p { font-size: 13px; line-height: 1.5; color: var(--ink-2); margin: 0; }
-.try-tool .tt-txt b { font-weight: 700; }
 
 /* Result panel */
 .saq-result { background: var(--ink); color: var(--paper); padding: 28px 26px; display: flex; flex-direction: column; gap: 14px; }
@@ -606,35 +609,6 @@ h1, h2, h3, h4, p { margin: 0; }
   .fc-row { grid-template-columns: 50px 1fr 70px; gap: 10px; }
   .fc-row .driver { display: none; }
 }
-
-/* =========================================================
-   FREE TOOL CTA (per-product)
-   ========================================================= */
-.tool-cta { padding: var(--s-section) 0; background: var(--ink); color: var(--paper); border-top: 1px solid var(--ink); }
-.tool-cta .eyebrow { color: rgba(255,255,255,0.55); }
-.tool-cta-grid { display: grid; grid-template-columns: 1fr 1.05fr; gap: var(--s-block); align-items: start; }
-.tool-cta h2 { font-weight: 800; font-size: 40px; letter-spacing: -0.035em; line-height: 1.05; margin: 16px 0 18px; }
-.tool-cta h2 em { font-style: normal; color: var(--accent); }
-.tool-cta .lead { font-size: 15.5px; line-height: 1.6; color: rgba(255,255,255,0.75); margin-bottom: 26px; max-width: 470px; }
-.tool-cta .how { list-style: none; counter-reset: s; padding: 0; margin: 0 0 24px; border-top: 1px solid rgba(255,255,255,0.14); }
-.tool-cta .how li { counter-increment: s; display: grid; grid-template-columns: 30px 1fr; gap: 12px; padding: 12px 0; border-bottom: 1px solid rgba(255,255,255,0.14); font-size: 13.5px; line-height: 1.5; color: rgba(255,255,255,0.85); }
-.tool-cta .how li::before { content: counter(s, decimal-leading-zero); font-family: var(--f-mono); font-size: 11px; color: var(--accent); font-weight: 700; padding-top: 2px; }
-.tool-cta .sample { border: 1px solid rgba(255,255,255,0.16); border-left: 3px solid var(--accent); padding: 15px 17px; margin-bottom: 26px; }
-.tool-cta .sample .lbl { font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); font-weight: 700; display: block; margin-bottom: 7px; }
-.tool-cta .sample p { font-size: 12.5px; line-height: 1.55; color: rgba(255,255,255,0.8); margin: 0; }
-.tool-cta .sample b { color: var(--paper); font-weight: 700; }
-.tool-cta .ctas { display: flex; gap: 10px; flex-wrap: wrap; }
-.tool-cta .btn-secondary { color: var(--paper); border-color: rgba(255,255,255,0.3); background: transparent; }
-.tool-cta .btn-secondary:hover { background: var(--paper); color: var(--ink); border-color: var(--paper); }
-.tool-embed .browser { border: 1px solid rgba(255,255,255,0.2); background: var(--paper); }
-.tool-embed .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--rule); background: var(--paper-2); }
-.tool-embed .bar .dots { display: flex; gap: 6px; }
-.tool-embed .bar .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--rule-2); }
-.tool-embed .bar .url { font-family: var(--f-mono); font-size: 11px; color: var(--muted); flex: 1; padding: 5px 12px; background: var(--paper); border: 1px solid var(--rule); }
-.tool-embed iframe { width: 100%; height: 640px; border: none; display: block; background: #fff; }
-.tool-embed .note { margin-top: 12px; font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.5); display: flex; align-items: center; gap: 8px; }
-.tool-embed .note::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-@media (max-width: 960px) { .tool-cta-grid { grid-template-columns: 1fr; gap: 32px; } .tool-cta h2 { font-size: 32px; } }
 </style>
 </head>
 <body>
@@ -680,7 +654,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <span class="eyebrow">Interactive Preview · PCI DSS v4.0.1 · NIST CSF 2.0</span>
       </div>
       <h1>Every artifact your <em>auditor</em> expects, in one place.</h1>
-      <p class="lead">Both v2.0 workbooks ship with 45 visible tabs, 701 sub-requirements, and every required artifact mandated by PCI and NIST. Take the guided tour below — six panels per product, ~3 minutes each. The live SAQ Selector and interactive tab navigator are the same widgets that ship inside the workbooks. Each product tour now also includes a free interactive tool you can run right here — finish it and get a free sample workbook by email.</p>
+      <p class="lead">Both v2.0 workbooks ship with 45 visible tabs, 701 sub-requirements, and every required artifact mandated by PCI and NIST. Take the guided tour below — six panels per product, ~3 minutes each. The live SAQ Selector and interactive tab navigator are the same widgets that ship inside the workbooks.</p>
       <div class="ctas">
         <a class="btn btn-primary" data-view="pci">Tour the PCI Workbook <span class="arrow">→</span></a>
         <a class="btn btn-secondary" data-view="nist">Tour the NIST Workbook</a>
@@ -768,7 +742,6 @@ h1, h2, h3, h4, p { margin: 0; }
           <p class="lead">Every SAQ type, every required artifact, every workpaper your auditor expects to see. Drop in your status, let the Roadmap rank what to fix first.</p>
           <div class="ctas">
             <a class="btn btn-primary" href="https://payhip.com/b/xCJhD">Buy PCI Pack — $149 <span class="arrow">→</span></a>
-            <a class="btn btn-accent" href="pci-saq-selector.html">Open the PCI SAQ Selector Interactive Tool <span class="arrow">→</span></a>
             <a class="btn btn-secondary" data-view="overview">Back to Overview</a>
           </div>
         </div>
@@ -792,13 +765,13 @@ h1, h2, h3, h4, p { margin: 0; }
           <div class="eyebrow">Guided tour</div>
           <h2>Six panels, ~3 minutes. <em>The real workbook.</em></h2>
         </div>
-        <p class="sub">Use the tabs below or the prev/next arrows. Panel 02 previews the SAQ Selector that ships inside the workbook — and you can try the full interactive version free, no download required, then get a sample workbook emailed to you.</p>
+        <p class="sub">Use the tabs below or the prev/next arrows. Panel 02 (SAQ Selector) is a working version of the exact widget shipped inside the workbook — answer your own questions and see your recommended SAQ.</p>
       </div>
 
       <div class="sc-shell" data-showcase="pci">
         <div class="sc-tabs">
           <button class="sc-tab active" data-panel="0"><span class="num">01</span><span class="lbl">Welcome</span></button>
-          <button class="sc-tab" data-panel="1"><span class="num">02</span><span class="lbl">SAQ Selector · Preview</span></button>
+          <button class="sc-tab" data-panel="1"><span class="num">02</span><span class="lbl">SAQ Selector · Live</span></button>
           <button class="sc-tab" data-panel="2"><span class="num">03</span><span class="lbl">SAQ-D Walkthrough</span></button>
           <button class="sc-tab" data-panel="3"><span class="num">04</span><span class="lbl">Required Artifacts</span></button>
           <button class="sc-tab" data-panel="4"><span class="num">05</span><span class="lbl">Dynamic Roadmap</span></button>
@@ -827,33 +800,9 @@ h1, h2, h3, h4, p { margin: 0; }
               </div>
             </div>
 
-            <!-- Panel 2: SAQ Selector preview -->
+            <!-- Panel 2: Live SAQ Selector -->
             <div class="sc-panel" data-panel="1">
-              <div class="mini-wb">
-                <div class="top"><span>PCI Workbook · Sheet: SAQ Type Selector</span><span class="dots"><span></span><span></span><span></span></span></div>
-                <div class="crumb">SAQ Type Selector · <b>8 questions</b> · resolves all 10 SAQ types with precedence</div>
-                <div class="mini-grid" style="grid-template-columns: 64px 1fr 92px;">
-                  <div class="h">Q#</div><div class="h">Eligibility question</div><div class="h">Answer</div>
-                  <div class="c bold">Q1</div><div class="c sans">Service provider — store/process/transmit CHD for other entities?</div><div class="c"><span class="badge bad">No</span></div>
-                  <div class="c bold">Q2</div><div class="c sans">Electronically store cardholder data in any system you operate?</div><div class="c"><span class="badge bad">No</span></div>
-                  <div class="c bold">Q3</div><div class="c sans">All transactions through a PCI-validated P2PE solution?</div><div class="c"><span class="badge bad">No</span></div>
-                  <div class="c bold">Q4</div><div class="c sans">All transactions through a validated SPoC solution?</div><div class="c"><span class="badge bad">No</span></div>
-                  <div class="c bold">Q5</div><div class="c sans">Card-not-present e-commerce, payment processing fully outsourced?</div><div class="c"><span class="badge ok">Yes</span></div>
-                  <div class="c bold">Q6</div><div class="c sans">Payment form embedded via redirect / iframe only?</div><div class="c"><span class="badge ok">Yes</span></div>
-                </div>
-                <div style="padding: 16px 20px; border-top: 1px solid var(--ink); display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
-                  <span style="font-family: var(--f-mono); font-size: 9.5px; letter-spacing: 0.18em; color: var(--muted); text-transform: uppercase;">Computed result</span>
-                  <span style="font-weight: 800; font-size: 22px; letter-spacing: -0.02em; background: var(--accent); padding: 2px 10px;">SAQ-A</span>
-                  <span style="font-family: var(--f-mono); font-size: 11px; color: var(--muted);">22 sub-requirements · fully outsourced e-commerce</span>
-                </div>
-              </div>
-              <div class="try-tool">
-                <div class="tt-txt">
-                  <span class="lbl">Want to run it yourself?</span>
-                  <p>Try the <b>free interactive PCI SAQ Selector</b> — answer your own questions and get your SAQ type instantly, no download required. Finish it and you can have a free sample workbook emailed to you.</p>
-                </div>
-                <a class="btn btn-primary" href="pci-saq-selector.html">Open the free tool <span class="arrow">→</span></a>
-              </div>
+              <div id="saq-widget"></div>
             </div>
 
             <!-- Panel 3: SAQ-D walkthrough -->
@@ -984,39 +933,6 @@ h1, h2, h3, h4, p { margin: 0; }
     </div>
   </section>
 
-  <!-- FREE TOOL CTA · PCI -->
-  <section class="tool-cta">
-    <div class="wrap">
-      <div class="tool-cta-grid">
-        <div>
-          <div class="eyebrow">Free interactive tool</div>
-          <h2>Not sure which SAQ? <em>Find out free.</em></h2>
-          <p class="lead">The PCI — SAQ Selector mirrors the workbook’s 8-question logic and resolves all 10 SAQ types with proper precedence. It shows your result first, then offers the email capture — nothing to install, no signup to use it.</p>
-          <ol class="how">
-            <li>Answer up to 8 yes/no questions about how you accept cardholder data.</li>
-            <li>Get your SAQ type instantly — scope, card-storage rules, and typical size.</li>
-            <li>Optionally add your details for a one-page checklist and a free sample.</li>
-          </ol>
-          <div class="sample">
-            <span class="lbl">After the tool · free PCI sample workbook</span>
-            <p>Add your details (<b>name + email required</b>, company + role optional) and we’ll email a free sample of the <b>PCI SAQ Prep Workbook</b> — a generous teaser faithful to the real workbook (same columns, real example rows), trimmed and watermarked: a “Free Sample” cover, 3–6 example rows per key tab, “··· N more rows in the full version ···” notes, a “Get Full Version” tab, and a SAMPLE footer on every sheet.</p>
-          </div>
-          <div class="ctas">
-            <a class="btn btn-accent" href="pci-saq-selector.html">Open the PCI SAQ Selector <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="https://payhip.com/b/xCJhD">Buy PCI Pack — $149</a>
-          </div>
-        </div>
-        <div class="tool-embed">
-          <div class="browser">
-            <div class="bar"><span class="dots"><span></span><span></span><span></span></span><span class="url">riskforge.tech/tools/saq-selector</span></div>
-            <iframe title="PCI SAQ Selector" src="pci-saq-selector.html?embed=1"></iframe>
-          </div>
-          <div class="note">Live preview — interact with it right here</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- TAB NAVIGATOR · PCI -->
   <section class="tabnav">
     <div class="wrap">
@@ -1104,7 +1020,6 @@ h1, h2, h3, h4, p { margin: 0; }
           <p class="lead">Every subcategory, every Implementation Example, every Informative Reference. Tier Self-Assessment, Organizational Profile, and a Risk-Adjusted Roadmap that ranks gaps by Function criticality.</p>
           <div class="ctas">
             <a class="btn btn-primary" href="https://payhip.com/b/9ucFo">Buy NIST Pack — $99 <span class="arrow">→</span></a>
-            <a class="btn btn-accent" href="nist-maturity-snapshot.html">Open the NIST Maturity Snapshot Interactive Tool <span class="arrow">→</span></a>
             <a class="btn btn-secondary" data-view="overview">Back to Overview</a>
           </div>
         </div>
@@ -1385,39 +1300,6 @@ h1, h2, h3, h4, p { margin: 0; }
     </div>
   </section>
 
-  <!-- FREE TOOL CTA · NIST -->
-  <section class="tool-cta">
-    <div class="wrap">
-      <div class="tool-cta-grid">
-        <div>
-          <div class="eyebrow">Free interactive tool</div>
-          <h2>Score your maturity <em>in two minutes.</em></h2>
-          <p class="lead">The NIST — Maturity Snapshot asks twelve quick questions (two per CSF function) on a 5-point scale, then builds an instant radar of maturity by function, your overall maturity level, and your two biggest gaps — exactly what the workbook’s Executive Summary produces.</p>
-          <ol class="how">
-            <li>Rate two statements for each of the six functions (Govern → Recover).</li>
-            <li>See your radar, overall level, per-function bars, and biggest gaps.</li>
-            <li>Optionally add your details for your scores and a free sample.</li>
-          </ol>
-          <div class="sample">
-            <span class="lbl">After the tool · free NIST sample workbook</span>
-            <p>Add your details (<b>name + email required</b>, company + role optional) and we’ll email a free sample of the <b>NIST CSF 2.0 Gap Assessment Workbook</b> — a generous teaser faithful to the real workbook (same columns, real example rows), trimmed and watermarked: a “Free Sample” cover, 3–6 example rows per key tab, “··· N more rows in the full version ···” notes, a “Get Full Version” tab, and a SAMPLE footer on every sheet.</p>
-          </div>
-          <div class="ctas">
-            <a class="btn btn-accent" href="nist-maturity-snapshot.html">Open the NIST Maturity Snapshot <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="https://payhip.com/b/9ucFo">Buy NIST Pack — $99</a>
-          </div>
-        </div>
-        <div class="tool-embed">
-          <div class="browser">
-            <div class="bar"><span class="dots"><span></span><span></span><span></span></span><span class="url">riskforge.tech/tools/maturity-snapshot</span></div>
-            <iframe title="NIST Maturity Snapshot" src="nist-maturity-snapshot.html?embed=1"></iframe>
-          </div>
-          <div class="note">Live preview — interact with it right here</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <!-- TAB NAVIGATOR · NIST -->
   <section class="tabnav">
     <div class="wrap">
@@ -1689,6 +1571,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <ul>
           <li>Interactive Demo</li>
           <li>FAQ</li>
+          <li>Refund Policy</li>
           <li>Terms</li>
         </ul>
       </div>
@@ -1720,15 +1603,11 @@ function switchView(v){
   window.scrollTo({ top: 0, behavior: 'instant' });
 }
 tabs.forEach(t => t.addEventListener('click', () => switchView(t.dataset.view)));
-// Deep-link: honor #pci / #nist / #vault / #overview on load (e.g. from the main site Products links)
+/* Hash-based deep-linking: demo.html#nist / #pci / #vault / #overview */
 (function(){
-  const v = (location.hash || '').replace('#','');
-  if (['pci','nist','vault','overview'].indexOf(v) !== -1) switchView(v);
+  const h = window.location.hash.slice(1);
+  if (['pci','nist','vault','overview'].includes(h)) switchView(h);
 })();
-window.addEventListener('hashchange', () => {
-  const v = (location.hash || '').replace('#','');
-  if (['pci','nist','vault','overview'].indexOf(v) !== -1) switchView(v);
-});
 document.querySelectorAll('[data-view]').forEach(el => {
   if (el.classList.contains('tab')) return;
   el.addEventListener('click', e => {
@@ -1745,7 +1624,7 @@ document.querySelectorAll('[data-view]').forEach(el => {
 const SHOWCASE_COPY = {
   pci: [
     {lbl: 'Panel 01 · Welcome', h: 'Take a tour of the PCI v4.0.1 Workbook.', p: 'Six guided panels, ~3 minutes total. Each panel shows a real piece of the workbook on the left and what you\u2019re looking at on the right. Use the tabs above or the prev/next arrows.', pts: ['27 visible tabs · 2 hidden (Master List + Branding)', '10 SAQ types · 595 sub-requirements pre-loaded', 'TRA · CCW · CAW · Scope · Diagrams artifacts', 'Dynamic Roadmap auto-prioritized from status entries'], fn: 'Use \u2190 \u2192 keys or click any tab to jump'},
-    {lbl: 'Panel 02 · SAQ Type Selector', h: 'Eight questions. The right SAQ.', p: 'A preview of the selector that ships inside the workbook. Eight yes/no questions resolve which of the 10 official SAQ types applies \u2014 precedence enforced (Service Provider beats merchant-stores-CHD beats virtual-terminal-only) so you can\u2019t land on the wrong type. Want to run it yourself? The full interactive SAQ Selector is free.', pts: ['Handles all 10 official SAQ types', 'Eligibility precedence enforced', 'Free interactive version \u2014 no download required', 'Same nested formula ships inside the workbook'], fn: 'Open the free interactive SAQ Selector \u2014 button in the panel'},
+    {lbl: 'Panel 02 · SAQ Type Selector', h: 'Eight questions. The right SAQ.', p: 'This is the actual selector that ships in the workbook \u2014 working live. Answer your own yes/no questions and see your recommended SAQ. Precedence is enforced (Service Provider beats merchant-stores-CHD beats virtual-terminal-only) so you can\u2019t accidentally land on the wrong type.', pts: ['Handles all 10 official SAQ types', 'Eligibility precedence enforced', 'Restart any time \u2014 your trace shows what you answered', 'Same nested formula ships inside the workbook'], fn: 'Try answering as your own organization'},
     {lbl: 'Panel 03 · SAQ-D Walkthrough', h: 'Inside the deepest SAQ tab.', p: 'SAQ-D Merchant is the most comprehensive (225 sub-requirements). The status column uses PCI\u2019s six official AoC values \u2014 In Place / In Place with CCW / In Place with CA / N/A / Not Tested / Not in Place \u2014 color-coded with WCAG 2.1 AA contrast.', pts: ['Assessor testing procedures pre-loaded per row', 'Evidence Ref column links to your evidence library', 'CCW + CA statuses cross-link to their own worksheets', '595 sub-reqs distributed across the 10 SAQ tabs'], fn: 'AoC wording matches PCI Council exactly'},
     {lbl: 'Panel 04 · Required Artifacts', h: 'The artifacts your QSA expects to see.', p: 'These five tabs are PCI-mandated. Most templates skip them and your QSA issues an automatic \u00a712.3 / \u00a712.5 / \u00a71.2 deficiency. The Targeted Risk Analysis captures every flexible-approach control per \u00a712.3.1 with inherent and residual risk scoring.', pts: ['TRA (\u00a712.3.1) \u2014 every flexible-approach control', 'CCW (App. C) \u2014 six required sections', 'CAW (App. E) \u2014 with linked TRA reference', 'Scope tab \u2014 CDE boundary + annual confirmation', 'Diagrams \u2014 Network + CHDFD (\u00a71.2.4)'], fn: 'Five artifacts. Five QSA deficiencies prevented.'},
     {lbl: 'Panel 05 · Dynamic Roadmap', h: 'Mark it \u201cNot in Place.\u201d Watch the Roadmap update.', p: 'The Roadmap is genuinely dynamic. Mark any sub-requirement \u201cNot in Place\u201d on any SAQ tab and it appears here with an integer Priority Score and P1/P2/P3 tier classification. No copy-paste, no maintenance, no drift.', pts: ['Formula: Priority Score = Impact \u00d7 (4 \u2212 Effort)', 'P1 / P2 / P3 tier auto-classified', 'Sort or filter by Owner, Target date, or Tier', 'Anything resolved drops off automatically'], fn: 'Updates the moment you change a status'},

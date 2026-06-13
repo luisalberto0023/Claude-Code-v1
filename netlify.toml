@@ -1,9 +1,27 @@
-# Netlify configuration — RiskForge v2
+# Netlify configuration — RiskForge v3
 
-# Clean URL: /demo → /demo.html
+[build.environment]
+  NODE_VERSION = "18"
+
+# Serverless functions: gated sample delivery (register.js + download.js)
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Clean URLs
 [[redirects]]
   from = "/demo"
   to = "/demo.html"
+  status = 200
+
+[[redirects]]
+  from = "/pci-saq-selector"
+  to = "/pci-saq-selector.html"
+  status = 200
+
+[[redirects]]
+  from = "/nist-maturity-snapshot"
+  to = "/nist-maturity-snapshot.html"
   status = 200
 
 # Block design-review tools from production crawl (belt-and-braces)

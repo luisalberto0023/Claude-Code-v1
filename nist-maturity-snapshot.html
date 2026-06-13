@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NIST CSF 2.0 Maturity Snapshot — Free Tool by RiskForge</title>
+<meta name="description" content="Rate your cybersecurity maturity across the six NIST CSF 2.0 functions and get an instant radar snapshot. Free tool by RiskForge.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<!--
+  ============================================================================
+  RISKFORGE — FREE NIST CSF 2.0 MATURITY SNAPSHOT  (self-contained, no deps)
+  Brand-aligned build · 12 questions (2 per CSF function) → instant radar.
+  Append ?embed to the URL to hide page chrome for clean iframe embedding.
+  Leads are tagged source:"nist-maturity" so automation sends the NIST sample.
+  ============================================================================
+-->
+<style>
+  :root{
+    --paper:#FFFFFF; --paper-2:#F6F6F4; --ink:#0A0A0A; --ink-2:#1A1A1A; --ink-3:#3A3A3A;
+    --muted:#6B6B6B; --rule:#E5E5E2; --rule-2:#D6D6D2;
+    --accent:#C8F02D; --accent-deep:#B8E01A; --ok:#2C7A3D; --ok-bg:#EEF6DC; --amber:#9A6B00;
+    --f-sans:'Manrope',system-ui,sans-serif; --f-mono:'JetBrains Mono',monospace;
+  }
+  *{box-sizing:border-box} html,body{margin:0;padding:0}
+  body{background:var(--paper-2); color:var(--ink);
+    font-family:var(--f-sans); line-height:1.5; -webkit-font-smoothing:antialiased;}
+  a{color:inherit}
+
+  .topbar{background:var(--ink); color:var(--paper);}
+  .topbar-inner{max-width:680px; margin:0 auto; padding:14px 20px; display:flex; align-items:center; justify-content:space-between;}
+  .logo{display:flex; align-items:center; gap:10px; font-weight:800; font-size:15px; letter-spacing:-0.02em;}
+  .logo .mark{width:26px; height:26px; background:var(--accent); color:var(--ink); display:flex; align-items:center; justify-content:center; font-family:var(--f-mono); font-weight:700; font-size:11px;}
+  .topbar a.back{font-family:var(--f-mono); font-size:11px; letter-spacing:0.16em; text-transform:uppercase; color:rgba(255,255,255,0.6); text-decoration:none;}
+  .topbar a.back:hover{color:var(--paper);}
+
+  .wrap{max-width:680px; margin:0 auto; padding:36px 20px 56px}
+  .kicker{font-family:var(--f-mono); font-size:11px; font-weight:600; letter-spacing:0.22em; text-transform:uppercase; color:var(--ok); margin:0 0 12px; display:inline-flex; align-items:center; gap:9px;}
+  .kicker::before{content:''; width:6px; height:6px; background:var(--accent); border-radius:50%;}
+  h1{font-size:34px; line-height:1.08; margin:0 0 12px; font-weight:800; letter-spacing:-0.035em;}
+  h1 em{font-style:normal; background:linear-gradient(to bottom,transparent 0,transparent 14%,var(--accent) 14%,var(--accent) 86%,transparent 86%,transparent 100%); padding:0 6px; -webkit-box-decoration-break:clone; box-decoration-break:clone;}
+  .sub{color:var(--ink-3); font-size:15.5px; margin:0 0 26px; max-width:560px;}
+
+  .card{background:#fff; border:1px solid var(--rule-2); padding:30px 28px}
+  .progress{display:flex; align-items:center; justify-content:space-between; margin-bottom:10px}
+  .steps{font-family:var(--f-mono); font-size:10.5px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:var(--muted)}
+  .fnbadge{font-family:var(--f-mono); font-size:10px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:var(--ink); background:var(--accent); padding:5px 9px}
+  .bar{height:4px; background:var(--rule); overflow:hidden; margin:14px 0 24px}
+  .bar > i{display:block; height:100%; width:0; background:var(--accent); transition:width .25s ease}
+  .qtext{font-size:20px; font-weight:700; line-height:1.32; margin:6px 0 22px; letter-spacing:-0.015em}
+  .scale{display:flex; flex-direction:column; gap:9px}
+  .opt{appearance:none; cursor:pointer; text-align:left; border:1px solid var(--rule-2); background:#fff; color:var(--ink);
+       font-family:var(--f-sans); font-size:15px; font-weight:600; padding:13px 16px; transition:.13s; display:flex; gap:13px; align-items:center}
+  .opt:hover{border-color:var(--ink); background:var(--paper-2); transform:translateY(-1px)}
+  .opt .num{flex:none; width:26px;height:26px;background:var(--ink);color:#fff;font-family:var(--f-mono);font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
+  .opt small{display:block; color:var(--muted); font-weight:500; font-size:12.5px; margin-top:1px}
+  .back{margin-top:18px; background:none; border:none; color:var(--muted); font-size:13px; cursor:pointer; padding:6px 0; font-family:var(--f-sans); font-weight:600}
+  .back:hover{color:var(--ink)}
+  .btn{appearance:none; cursor:pointer; border:1px solid var(--ink); background:#fff; color:var(--ink); font-family:var(--f-sans); font-size:14px; font-weight:700; padding:14px 18px; transition:.15s; text-decoration:none; display:inline-block; letter-spacing:-0.005em}
+  .btn:hover{background:var(--ink); color:var(--paper)}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--ink)}
+  .btn.primary:hover{background:var(--accent-deep); border-color:var(--accent-deep); color:var(--ink)}
+  .btn.ghost{background:transparent; border-color:var(--rule-2)}
+  .btn.ghost:hover{background:var(--ink); color:var(--paper); border-color:var(--ink)}
+  .row{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+  .tag{display:inline-block; font-family:var(--f-mono); font-size:10px; font-weight:600; letter-spacing:0.18em; text-transform:uppercase; color:var(--ink); background:var(--accent); padding:5px 9px}
+  .score-big{font-size:52px; font-weight:800; letter-spacing:-0.04em; margin:16px 0 0; line-height:1}
+  .score-big small{font-size:22px; color:var(--muted); font-weight:700}
+  .level{font-size:16px; color:var(--ink); margin:6px 0 2px; font-weight:700}
+  .level span{color:var(--ok)}
+  .levelhint{font-size:13.5px; color:var(--muted); margin:0 0 8px}
+  .radarwrap{display:flex; justify-content:center; margin:10px 0 4px}
+  .legend{display:flex; gap:18px; justify-content:center; font-family:var(--f-mono); font-size:10.5px; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; flex-wrap:wrap}
+  .legend i{display:inline-block; width:18px; height:3px; vertical-align:middle; margin-right:6px}
+  .fnlist{list-style:none; padding:0; margin:16px 0 0}
+  .fnlist li{display:flex; align-items:center; gap:12px; padding:9px 0; border-top:1px solid var(--rule); font-size:14px}
+  .fnlist li:first-child{border-top:none}
+  .fnlist .nm{min-width:132px; font-weight:700}
+  .fnlist .track{flex:1; height:8px; background:var(--rule); overflow:hidden}
+  .fnlist .fillb{display:block; height:100%; background:var(--ok)}
+  .fnlist .val{min-width:96px; text-align:right; color:var(--muted); font-family:var(--f-mono); font-weight:500; font-size:11.5px; letter-spacing:0.04em}
+  .gapbox{margin-top:18px; border:1px solid var(--rule-2); border-left:3px solid var(--amber); padding:14px 16px; font-size:14px; color:var(--ink-3); line-height:1.55}
+  .gapbox b{color:var(--ink)}
+  .cta{margin-top:22px; padding-top:22px; border-top:1px solid var(--rule)}
+  .disclaimer{font-size:12px; color:var(--muted); margin-top:14px; line-height:1.55}
+  .email-block{margin-top:24px; background:var(--ink); color:var(--paper); padding:24px}
+  .email-block h3{margin:0 0 6px; font-size:18px; font-weight:700; letter-spacing:-0.015em}
+  .email-block > p{margin:0 0 14px; font-size:13.5px; color:rgba(255,255,255,0.72); line-height:1.55}
+  .sample-note{border:1px solid rgba(255,255,255,0.16); padding:14px 16px; margin:0 0 18px; display:flex; flex-direction:column; gap:7px}
+  .sample-note .lbl{font-family:var(--f-mono); font-size:9.5px; letter-spacing:0.18em; text-transform:uppercase; color:var(--accent); font-weight:700}
+  .sample-note ul{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:5px}
+  .sample-note li{font-size:12.5px; color:rgba(255,255,255,0.82); display:flex; gap:9px; line-height:1.45}
+  .sample-note li::before{content:'+'; color:var(--accent); font-family:var(--f-mono); flex-shrink:0}
+  .fields{display:flex; flex-direction:column; gap:10px}
+  .frow{display:flex; gap:10px; flex-wrap:wrap}
+  .field{flex:1; min-width:190px; display:flex; flex-direction:column; gap:5px}
+  .field label{font-family:var(--f-mono); font-size:10px; font-weight:600; letter-spacing:0.14em; text-transform:uppercase; color:rgba(255,255,255,0.6)}
+  .field input{padding:12px 13px; border:1px solid rgba(255,255,255,0.2); background:rgba(255,255,255,0.06); color:var(--paper); font-size:15px; font-family:var(--f-sans)}
+  .field input::placeholder{color:rgba(255,255,255,0.4)}
+  .field input:focus{outline:none; border-color:var(--accent); background:rgba(255,255,255,0.1)}
+  .field .opt-tag{font-weight:500; color:rgba(255,255,255,0.45); text-transform:none; letter-spacing:0}
+  .mini{font-size:11.5px; color:rgba(255,255,255,0.5); margin-top:11px}
+  .email-done{margin-top:24px; background:var(--ok-bg); border:1px solid #cfe09a; padding:22px}
+  .email-done h3{margin:0 0 6px; font-size:17px; color:var(--ok)}
+  .email-done p{margin:0; font-size:13.5px; color:var(--ink-3)}
+  .footer{margin-top:28px; text-align:center; font-size:12px; color:var(--muted)}
+  .footer a{color:var(--ok); text-decoration:none; font-weight:600}
+  .codeline{font-family:var(--f-mono); font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color:var(--muted); text-align:center; margin-top:8px}
+  .hide{display:none !important}
+
+  body.embed{background:#fff}
+  body.embed .topbar{display:none}
+  body.embed .wrap{padding:24px 18px 28px}
+  body.embed .footer{display:none}
+
+  @media(max-width:520px){ h1{font-size:27px} .score-big{font-size:42px} }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <a class="logo" href="index.html"><span class="mark">RF</span> RiskForge</a>
+    <a class="back" href="index.html">← Back to RiskForge</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <p class="kicker">Free tool · NIST CSF 2.0</p>
+  <h1>How mature is your <em>cybersecurity program?</em></h1>
+  <p class="sub">Rate two quick statements for each of the six NIST CSF 2.0 functions. Get an instant maturity radar, your overall level, and your two biggest gaps — exactly what the workbook’s Executive Summary produces. ~2 minutes.</p>
+
+  <div class="card" id="card">
+    <!-- QUESTION VIEW -->
+    <div id="qview">
+      <div class="progress">
+        <span class="fnbadge" id="fnBadge">Govern</span>
+        <span class="steps" id="stepLabel">1 of 12</span>
+      </div>
+      <div class="bar"><i id="barFill"></i></div>
+      <p class="qtext" id="qText"></p>
+      <div class="scale" id="scale"></div>
+      <button class="back" id="backBtn" onclick="goBack()">← Back</button>
+    </div>
+
+    <!-- RESULT VIEW -->
+    <div id="rview" class="hide">
+      <span class="tag">Your maturity snapshot</span>
+      <div class="score-big"><span id="rScore"></span><small> / 5</small></div>
+      <p class="level">Overall level: <span id="rLevel"></span></p>
+      <p class="levelhint" id="rHint"></p>
+
+      <div class="legend">
+        <span><i style="background:#2C7A3D"></i>Your maturity</span>
+        <span><i style="background:#0A0A0A"></i>Common target (Defined · 3)</span>
+      </div>
+      <div class="radarwrap" id="radarWrap"></div>
+
+      <ul class="fnlist" id="fnList"></ul>
+
+      <div class="gapbox" id="gapBox"></div>
+
+      <div class="cta">
+        <p id="rPitch" style="font-size:14.5px;margin:0 0 16px;color:var(--ink-3);line-height:1.55"></p>
+        <div class="row">
+          <a class="btn primary" id="buyBtn" href="#" target="_blank" rel="noopener">Get the NIST workbook — $99 →</a>
+          <a class="btn ghost" id="demoBtn" href="#" target="_blank" rel="noopener">Explore the live demo</a>
+        </div>
+        <p class="disclaimer">This is an indicative self-assessment, not a formal audit. The full RiskForge workbook scores all 106 CSF 2.0 subcategories against NIST’s own implementation examples and builds this radar automatically.</p>
+      </div>
+
+      <!-- EMAIL CAPTURE -->
+      <div class="email-block" id="emailBlock">
+        <h3>Get the free NIST sample workbook + your snapshot results</h3>
+        <p>Add your details and we’ll email the watermarked NIST CSF 2.0 sample (real tabs, populated examples) plus a recap of your scores by function.</p>
+        <div class="sample-note">
+          <span class="lbl">What the free NIST sample includes</span>
+          <ul>
+            <li>A “Free Sample” cover — faithful to the real workbook (same columns, real example rows)</li>
+            <li>3–6 populated example rows per key tab, with “··· N more rows in the full version ···” notes</li>
+            <li>A “Get Full Version” tab and a SAMPLE watermark footer on every sheet</li>
+          </ul>
+        </div>
+        <form id="emailForm" onsubmit="return submitForm(event)">
+          <div class="fields">
+            <div class="frow">
+              <div class="field"><label for="fName">Name</label><input id="fName" type="text" required></div>
+              <div class="field"><label for="fEmail">Work email</label><input id="fEmail" type="email" placeholder="you@company.com" required></div>
+            </div>
+            <div class="frow">
+              <div class="field"><label for="fCompany">Company <span class="opt-tag">(optional)</span></label><input id="fCompany" type="text"></div>
+              <div class="field"><label for="fRole">Role <span class="opt-tag">(optional)</span></label><input id="fRole" type="text"></div>
+            </div>
+            <button class="btn primary" type="submit" style="align-self:flex-start">Send me the sample →</button>
+          </div>
+        </form>
+        <p class="mini">Name + email required · company + role optional. We’ll only use your details to send the sample and occasional practitioner tips. Unsubscribe anytime.</p>
+      </div>
+      <div class="email-done hide" id="emailDone">
+        <h3>✓ On its way.</h3>
+        <p id="doneMsg" style="margin:0"></p>
+      </div>
+
+      <button class="back" onclick="restart()">↺ Start over</button>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div>© <span id="yr"></span> RiskForge · <a href="https://riskforge.tech" target="_blank" rel="noopener">riskforge.tech</a> · Questions? <a id="contactLink" href="#">hello@riskforge.tech</a></div>
+    <div class="codeline">Instant download · Secure checkout · One-time payment</div>
+  </div>
+</div>
+
+<script>
+/* ====================== CONFIG — edit these ====================== */
+/* =====================================================================
+   TODO [CLAUDE CODE] — LEAD CAPTURE WIRING REQUIRED
+   ---------------------------------------------------------------------
+   Set formEndpoint below to the email-platform POST URL that should
+   receive leads from THIS tool (MailerLite / Brevo / Formspree / etc.).
+   • While blank "", the form falls back to a pre-filled mailto to
+     fallbackEmail — fine for a soft launch, but no list is built.
+   • Leads POST as JSON including  source:"nist-maturity"  and
+     framework:"NIST CSF 2.0"  — use that tag in your automation to
+     send the NIST sample workbook (NOT the PCI one).
+   ===================================================================== */
+const CONFIG = {
+  formEndpoint: "/.netlify/functions/register",   /* NIST leads -> JWT + MailerLite */
+  fallbackEmail: "hello@riskforge.tech",
+  nistBuyUrl:  "https://payhip.com/b/9ucFo",        // NIST pack ($99)
+  vaultBuyUrl: "https://payhip.com/b/cx1lY",        // Full Vault ($349)
+  demoUrl:     "demo.html",       // local demo page
+  site:        "https://riskforge.tech",
+  leadSource:  "nist-maturity"                      // tags the lead -> send NIST sample only
+};
+/* ================================================================ */
+
+if (location.search.indexOf('embed') !== -1) document.body.classList.add('embed');
+
+document.getElementById('yr').textContent=new Date().getFullYear();
+document.getElementById('contactLink').href="mailto:"+CONFIG.fallbackEmail;
+document.getElementById('demoBtn').href=CONFIG.demoUrl;
+document.getElementById('buyBtn').href=CONFIG.nistBuyUrl;
+
+const FUNCS=[
+  ["GV","Govern"],["ID","Identify"],["PR","Protect"],["DE","Detect"],["RS","Respond"],["RC","Recover"]
+];
+const QUESTIONS=[
+  {fn:"GV",text:"We have a documented cybersecurity strategy with a defined risk appetite, roles, and leadership oversight."},
+  {fn:"GV",text:"Cybersecurity policies and responsibilities are formally assigned, communicated, and reviewed on a schedule."},
+  {fn:"ID",text:"We maintain a current inventory of assets, data, and the systems and suppliers that matter most."},
+  {fn:"ID",text:"Cybersecurity risks to the organization are identified, recorded, and prioritized."},
+  {fn:"PR",text:"Access control, MFA, and least-privilege are enforced across our critical systems."},
+  {fn:"PR",text:"Data is protected (encryption, secure config, backups) and staff complete security-awareness training."},
+  {fn:"DE",text:"We monitor systems and networks for anomalies and security events."},
+  {fn:"DE",text:"Detection processes are tested and alerts are triaged in a defined, repeatable way."},
+  {fn:"RS",text:"We have a tested incident-response plan with defined roles and communications."},
+  {fn:"RS",text:"Incidents are analyzed and contained, and lessons learned feed back into our controls."},
+  {fn:"RC",text:"We have recovery and continuity plans with tested backups to restore operations."},
+  {fn:"RC",text:"Recovery activities and stakeholder communications are planned and improved after events."}
+];
+const OPTIONS=[
+  {v:1,label:"Not started",       hint:"No real activity here yet"},
+  {v:2,label:"Ad hoc",            hint:"Happens, but inconsistent / undocumented"},
+  {v:3,label:"Defined",           hint:"Documented and repeatable across the org"},
+  {v:4,label:"Managed",           hint:"Measured, reviewed, consistently governed"},
+  {v:5,label:"Optimized",         hint:"Continuously improving and adaptive"}
+];
+
+let cur=0;
+let answers=new Array(QUESTIONS.length).fill(null);
+
+function fnName(code){ return (FUNCS.find(f=>f[0]===code)||[code,code])[1]; }
+
+function renderQuestion(){
+  document.getElementById('qview').classList.remove('hide');
+  document.getElementById('rview').classList.add('hide');
+  const q=QUESTIONS[cur];
+  document.getElementById('fnBadge').textContent=fnName(q.fn);
+  document.getElementById('stepLabel').textContent=(cur+1)+" of "+QUESTIONS.length;
+  document.getElementById('qText').textContent=q.text;
+  document.getElementById('barFill').style.width=Math.round((cur/QUESTIONS.length)*100)+"%";
+  document.getElementById('backBtn').style.visibility=cur?"visible":"hidden";
+  const sc=document.getElementById('scale'); sc.innerHTML="";
+  OPTIONS.forEach(o=>{
+    const b=document.createElement('button');
+    b.className="opt"; b.type="button";
+    b.innerHTML='<span class="num">'+o.v+'</span><span>'+o.label+'<small>'+o.hint+'</small></span>';
+    b.onclick=()=>answer(o.v);
+    if(answers[cur]===o.v) b.style.borderColor="var(--ink)";
+    sc.appendChild(b);
+  });
+}
+function answer(v){
+  answers[cur]=v;
+  if(cur+1<QUESTIONS.length){ cur++; renderQuestion(); }
+  else showResult();
+}
+function goBack(){
+  if(document.getElementById('rview').classList.contains('hide')){ if(cur>0){cur--; renderQuestion();} }
+  else { document.getElementById('rview').classList.add('hide'); document.getElementById('qview').classList.remove('hide'); cur=QUESTIONS.length-1; renderQuestion(); }
+}
+
+function fnScores(){
+  const map={}; FUNCS.forEach(f=>map[f[0]]=[]);
+  QUESTIONS.forEach((q,i)=>{ if(answers[i]!=null) map[q.fn].push(answers[i]); });
+  const out={}; FUNCS.forEach(f=>{ const a=map[f[0]]; out[f[0]]= a.length? a.reduce((x,y)=>x+y,0)/a.length : 0; });
+  return out;
+}
+function levelFor(a){
+  if(a<1.5) return ["Initial","Largely ad hoc — foundational work to do."];
+  if(a<2.5) return ["Developing","Some practices exist but are inconsistent."];
+  if(a<3.5) return ["Defined","Documented and repeatable across the organization."];
+  if(a<4.5) return ["Managed","Measured and consistently governed."];
+  return ["Optimized","Continuously improving and adaptive."];
+}
+
+// ---- SVG radar ----
+function radarSVG(scores){
+  const cx=150, cy=150, R=108, N=6, levels=5;
+  const pt=(i,val)=>{ const ang=(-90 + i*(360/N))*Math.PI/180; const r=(val/5)*R; return [cx+r*Math.cos(ang), cy+r*Math.sin(ang)]; };
+  let grid="";
+  for(let lv=1; lv<=levels; lv++){ const p=[]; for(let i=0;i<N;i++) p.push(pt(i,lv).join(",")); grid+='<polygon points="'+p.join(" ")+'" fill="none" stroke="#E5E5E2" stroke-width="1"/>'; }
+  let axes="",labels="";
+  for(let i=0;i<N;i++){ const e=pt(i,5); axes+='<line x1="'+cx+'" y1="'+cy+'" x2="'+e[0]+'" y2="'+e[1]+'" stroke="#E5E5E2" stroke-width="1"/>';
+    const l=pt(i,5.78); labels+='<text x="'+l[0]+'" y="'+l[1]+'" font-size="12.5" font-family="JetBrains Mono, monospace" font-weight="700" fill="#0A0A0A" text-anchor="middle" dominant-baseline="middle">'+FUNCS[i][0]+'</text>'; }
+  const tg=[]; for(let i=0;i<N;i++) tg.push(pt(i,3).join(",")); const target='<polygon points="'+tg.join(" ")+'" fill="none" stroke="#0A0A0A" stroke-width="1.3" stroke-dasharray="4 3" opacity="0.7"/>';
+  const sp=[]; for(let i=0;i<N;i++) sp.push(pt(i,scores[i]).join(",")); const poly='<polygon points="'+sp.join(" ")+'" fill="rgba(44,122,61,0.22)" stroke="#2C7A3D" stroke-width="2.5"/>';
+  let dots=""; for(let i=0;i<N;i++){ const d=pt(i,scores[i]); dots+='<circle cx="'+d[0]+'" cy="'+d[1]+'" r="3.6" fill="#2C7A3D"/>'; }
+  return '<svg viewBox="0 0 300 300" width="320" style="max-width:100%">'+grid+axes+target+poly+dots+labels+'</svg>';
+}
+
+let RESULT=null;
+function showResult(){
+  document.getElementById('qview').classList.add('hide');
+  document.getElementById('rview').classList.remove('hide');
+  document.getElementById('barFill').style.width="100%";
+  const fs=fnScores();
+  const arr=FUNCS.map(f=>fs[f[0]]);
+  const overall=arr.reduce((a,b)=>a+b,0)/arr.length;
+  const [lvl,hint]=levelFor(overall);
+  RESULT={overall:overall, level:lvl, scores:fs};
+  document.getElementById('rScore').textContent=overall.toFixed(1);
+  document.getElementById('rLevel').textContent=lvl;
+  document.getElementById('rHint').textContent=hint;
+  document.getElementById('radarWrap').innerHTML=radarSVG(arr);
+  const ul=document.getElementById('fnList'); ul.innerHTML="";
+  FUNCS.forEach(f=>{
+    const s=fs[f[0]]; const [fl]=levelFor(s);
+    const li=document.createElement('li');
+    li.innerHTML='<span class="nm">'+f[0]+' — '+f[1]+'</span><span class="track"><span class="fillb" style="width:'+(s/5*100)+'%"></span></span><span class="val">'+s.toFixed(1)+' · '+fl+'</span>';
+    ul.appendChild(li);
+  });
+  const sorted=[...FUNCS].sort((a,b)=>fs[a[0]]-fs[b[0]]);
+  const g1=sorted[0], g2=sorted[1];
+  document.getElementById('gapBox').innerHTML='<b>Your biggest gaps:</b> '+g1[1]+' ('+fs[g1[0]].toFixed(1)+') and '+g2[1]+' ('+fs[g2[0]].toFixed(1)+'). Most organizations aim for at least “Defined” (3) across all six functions — start where the distance is largest.';
+  document.getElementById('rPitch').textContent="Your snapshot is a 12-question estimate. The full NIST CSF 2.0 Gap Assessment Workbook scores all 106 subcategories with NIST’s published implementation examples, builds this radar for you, and gives you a risk-adjusted roadmap to close the gaps above.";
+  document.getElementById('emailBlock').classList.remove('hide');
+  document.getElementById('emailDone').classList.add('hide');
+}
+
+function submitForm(e){
+  e.preventDefault();
+  const name=document.getElementById('fName').value.trim();
+  const email=document.getElementById('fEmail').value.trim();
+  const company=document.getElementById('fCompany').value.trim();
+  const role=document.getElementById('fRole').value.trim();
+  if(!name||!email) return false;
+  const scoreStr=FUNCS.map(f=>f[0]+":"+RESULT.scores[f[0]].toFixed(1)).join(", ");
+  const payload={ name:name, email:email, company:company, role:role, product:"nist",
+    source:CONFIG.leadSource, framework:"NIST CSF 2.0",
+    overall:RESULT.overall.toFixed(1), level:RESULT.level, scores:scoreStr, site:CONFIG.site };
+  const done=()=>{
+    document.getElementById('emailBlock').classList.add('hide');
+    document.getElementById('emailDone').classList.remove('hide');
+    document.getElementById('doneMsg').textContent="Check your inbox, "+name.split(" ")[0]+" — your free NIST CSF 2.0 sample workbook and snapshot recap are on the way. The full workbook covers all 106 subcategories.";
+  };
+  if(CONFIG.formEndpoint){
+    fetch(CONFIG.formEndpoint,{method:"POST",headers:{"Content-Type":"application/json","Accept":"application/json"},body:JSON.stringify(payload)})
+      .then(done).catch(()=>{ fallbackMail(payload); done(); });
+  } else { fallbackMail(payload); done(); }
+  return false;
+}
+function fallbackMail(p){
+  const subject=encodeURIComponent("NIST sample request — "+p.name+" ("+p.level+")");
+  const body=encodeURIComponent("Please send me the free NIST CSF 2.0 sample workbook.\n\nName: "+p.name+"\nEmail: "+p.email+"\nCompany: "+(p.company||"-")+"\nRole: "+(p.role||"-")+"\n\nOverall maturity: "+p.overall+" ("+p.level+")\nBy function: "+p.scores+"\n");
+  window.location.href="mailto:"+CONFIG.fallbackEmail+"?subject="+subject+"&body="+body;
+}
+function restart(){ cur=0; answers=new Array(QUESTIONS.length).fill(null); RESULT=null; renderQuestion(); }
+
+renderQuestion();
+</script>
+</body>
+</html>
