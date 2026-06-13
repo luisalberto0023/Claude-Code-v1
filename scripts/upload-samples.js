@@ -30,7 +30,17 @@ const files = [
   }
 ];
 
-const store = getStore("samples");
+// When run via `netlify dev:exec`, the CLI injects NETLIFY_SITE_ID and
+// NETLIFY_AUTH_TOKEN but doesn't auto-wire the Blobs context. Pass them
+// explicitly so the SDK can authenticate against the live Blobs API.
+const siteID = process.env.NETLIFY_SITE_ID;
+const token  = process.env.NETLIFY_AUTH_TOKEN;
+if (!siteID || !token) {
+  console.error("ERROR: NETLIFY_SITE_ID or NETLIFY_AUTH_TOKEN not found.");
+  console.error("Run via: netlify dev:exec node scripts/upload-samples.js");
+  process.exit(1);
+}
+const store = getStore({ name: "samples", siteID, token });
 
 let uploaded = 0;
 for (const { localPath, key } of files) {
