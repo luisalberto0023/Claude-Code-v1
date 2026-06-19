@@ -5,6 +5,19 @@
 <title>RiskForge — NIST CSF 2.0 & PCI DSS v4.0.1 Workbooks for Practitioners</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0.1 workbooks. 45 tabs, 701 sub-requirements, every artifact your auditor expects. Built by practitioners. From $99." />
+<link rel="canonical" href="https://riskforge.tech/" />
+<!-- Open Graph -->
+<meta property="og:type"        content="website" />
+<meta property="og:url"         content="https://riskforge.tech/" />
+<meta property="og:title"       content="RiskForge — NIST CSF 2.0 & PCI DSS v4.0.1 Workbooks for Practitioners" />
+<meta property="og:description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0.1 workbooks. 45 tabs, 701 sub-requirements, every artifact your auditor expects. Built by practitioners. From $99." />
+<meta property="og:site_name"   content="RiskForge" />
+<!-- Twitter -->
+<meta name="twitter:card"        content="summary_large_image" />
+<meta name="twitter:title"       content="RiskForge — NIST CSF 2.0 & PCI DSS v4.0.1 Workbooks for Practitioners" />
+<meta name="twitter:description" content="Professional-grade NIST CSF 2.0 and PCI DSS v4.0.1 workbooks. Built by practitioners. From $99." />
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230A0A0A'/><text x='16' y='22' font-family='monospace' font-size='14' font-weight='700' fill='%23C8F02D' text-anchor='middle'>RF</text></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -434,7 +447,7 @@ h1, h2, h3, h4, p { margin: 0; }
 .tools-tab.active .code { color: var(--accent); }
 .tools-tab:not(.active):hover { background: var(--paper-2); }
 
-.tools-stage { display: grid; grid-template-columns: 0.92fr 1.08fr; gap: var(--s-block); align-items: start; }
+.tools-stage { display: grid; grid-template-columns: 1fr; gap: var(--s-block); align-items: start; max-width: 860px; margin: 0 auto; }
 .tools-info { padding: 28px 26px; }
 .tool-pane { display: none; flex-direction: column; gap: 20px; }
 .tool-pane.active { display: flex; }
@@ -450,27 +463,14 @@ h1, h2, h3, h4, p { margin: 0; }
 .tool-sample b { color: var(--ink); font-weight: 700; }
 .tool-actions { display: flex; gap: 10px; flex-wrap: wrap; }
 
-.tools-embed { position: sticky; top: 88px; }
-.browser { border: 1px solid var(--ink); background: var(--paper); }
-.browser .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--rule); background: var(--paper-2); }
-.browser .bar .dots { display: flex; gap: 6px; }
-.browser .bar .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--rule-2); }
-.browser .bar .url { font-family: var(--f-mono); font-size: 11px; color: var(--muted); letter-spacing: 0.04em; flex: 1; padding: 5px 12px; background: var(--paper); border: 1px solid var(--rule); }
-.browser iframe { width: 100%; height: 640px; border: none; display: block; background: #fff; }
-.browser iframe.frame-hidden { display: none; }
-.embed-note { margin-top: 12px; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
-.embed-note::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
-
 @media (max-width: 960px) {
   .tools-stage { grid-template-columns: 1fr; gap: 32px; }
-  .tools-embed { position: static; }
 }
 @media (max-width: 640px) {
   .tools-switch { flex-direction: column; }
   .tools-tab { border-right: none; border-bottom: 1px solid var(--ink); }
   .tools-tab:last-child { border-bottom: none; }
   .tool-pane h3 { font-size: 25px; }
-  .browser iframe { height: 580px; }
 }
 </style>
 </head>
@@ -481,7 +481,7 @@ h1, h2, h3, h4, p { margin: 0; }
   <span>RISKFORGE v2.0 · UPDATED MAY 2026 · PCI DSS v4.0.1 + NIST CSF 2.0</span>
   <span class="right">
     <span>45 TABS · 701 SUB-REQUIREMENTS · 10 SAQ TYPES · 106 CSF SUBCATEGORIES</span>
-    <span><a href="demo.html" style="color: inherit; text-decoration: underline;">Explore Demo →</a></span>
+    <span><a href="demo.html" style="color: inherit; text-decoration: underline;">Explore Workbooks →</a></span>
   </span>
 </div>
 
@@ -501,9 +501,10 @@ h1, h2, h3, h4, p { margin: 0; }
         <li><a href="#pricing">Pricing</a></li>
         <li><a href="#practitioners">Built For</a></li>
         <li><a href="#faq">FAQ</a></li>
+        <li><a href="about.html">About</a></li>
       </ul>
     <div class="nav-cta">
-      <a class="btn btn-ghost" href="demo.html">Explore Demo</a>
+      <a class="btn btn-ghost" href="demo.html">Explore Workbooks</a>
       <a class="btn btn-primary" href="#pricing">Get Templates <span class="arrow">→</span></a>
     </div>
   </div>
@@ -521,7 +522,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <p class="lead">Professional-grade NIST CSF 2.0 and PCI DSS v4.0.1 workbooks — 45 tabs, 701 sub-requirements, every artifact a QSA or auditor expects. Built by IT Risk &amp; Compliance practitioners with a decade across banking, defense, and financial services. Pay once. Download instantly. Audit-ready.</p>
         <div class="ctas">
           <a class="btn btn-primary" href="#pricing">View Templates &amp; Pricing <span class="arrow">→</span></a>
-          <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
+          <a class="btn btn-secondary" href="demo.html">Explore Workbooks</a>
         </div>
       </div>
 
@@ -688,7 +689,7 @@ h1, h2, h3, h4, p { margin: 0; }
           </div>
           <div class="tool-actions">
             <a class="btn btn-primary" href="pci-saq-selector.html">Open the full tool <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="demo.html">See it in the demo</a>
+            <a class="btn btn-secondary" href="demo.html">See it in the workbook tour</a>
           </div>
         </div>
 
@@ -708,23 +709,11 @@ h1, h2, h3, h4, p { margin: 0; }
           </div>
           <div class="tool-actions">
             <a class="btn btn-primary" href="nist-maturity-snapshot.html">Open the full tool <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="demo.html">See it in the demo</a>
+            <a class="btn btn-secondary" href="demo.html">See it in the workbook tour</a>
           </div>
         </div>
         </div><!-- /tools-info -->
       </div><!-- /tool-card -->
-
-      <div class="tools-embed">
-        <div class="browser">
-          <div class="bar">
-            <span class="dots"><span></span><span></span><span></span></span>
-            <span class="url" data-url>riskforge.tech/tools/saq-selector</span>
-          </div>
-          <iframe data-frame="pci" title="PCI SAQ Selector" src="pci-saq-selector.html?embed=1"></iframe>
-          <iframe data-frame="nist" class="frame-hidden" title="NIST Maturity Snapshot" src="nist-maturity-snapshot.html?embed=1"></iframe>
-        </div>
-        <div class="embed-note">Live preview — interact with it right here</div>
-      </div>
     </div>
   </div>
 </section>
@@ -757,7 +746,7 @@ h1, h2, h3, h4, p { margin: 0; }
         </div>
         <div class="actions">
           <a class="btn btn-primary" href="https://payhip.com/b/9ucFo">Buy NIST Pack <span class="arrow">→</span></a>
-          <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
+          <a class="btn btn-secondary" href="demo.html">Explore Workbooks</a>
         </div>
       </article>
 
@@ -775,7 +764,7 @@ h1, h2, h3, h4, p { margin: 0; }
         </div>
         <div class="actions">
           <a class="btn btn-primary" href="https://payhip.com/b/xCJhD">Buy PCI Pack <span class="arrow">→</span></a>
-          <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
+          <a class="btn btn-secondary" href="demo.html">Explore Workbooks</a>
         </div>
       </article>
 
@@ -794,7 +783,7 @@ h1, h2, h3, h4, p { margin: 0; }
         </div>
         <div class="actions">
           <a class="btn btn-primary" href="https://payhip.com/b/cx1lY">Get Full Vault <span class="arrow">→</span></a>
-          <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
+          <a class="btn btn-secondary" href="demo.html">Explore Workbooks</a>
         </div>
       </article>
     </div>
@@ -1008,7 +997,7 @@ h1, h2, h3, h4, p { margin: 0; }
         <div class="id">Q · 05</div>
         <div>
           <div class="q">What if it isn't what I expected?</div>
-          <div class="a">The Demo lets you walk through every tab before you buy — it's a real workbook, not a screenshot. You'll know exactly what you're getting.</div>
+          <div class="a">The workbook tour lets you walk through every tab before you buy — it's a real workbook, not a screenshot. You'll know exactly what you're getting.</div>
         </div>
       </div>
     </div>
@@ -1028,7 +1017,7 @@ h1, h2, h3, h4, p { margin: 0; }
           <p>Download the workbooks today and put them to work before your next audit cycle.</p>
           <div class="ctas">
             <a class="btn btn-accent" href="https://payhip.com/b/cx1lY">Get the Full Vault <span class="arrow">→</span></a>
-            <a class="btn btn-secondary" href="demo.html">Explore Demo</a>
+            <a class="btn btn-secondary" href="demo.html">Explore Workbooks</a>
           </div>
         </div>
 
@@ -1076,7 +1065,7 @@ h1, h2, h3, h4, p { margin: 0; }
       <div class="footer-col">
         <h4>Company</h4>
         <ul>
-          <li>About</li>
+          <li><a href="about.html">About</a></li>
           <li><a href="#frameworks">Frameworks</a></li>
           <li><a href="mailto:hello@riskforge.tech">Contact</a></li>
           <li>License</li>
@@ -1107,14 +1096,9 @@ h1, h2, h3, h4, p { margin: 0; }
 (function(){
   const tabs = document.querySelectorAll('.tools-tab');
   const panes = document.querySelectorAll('.tool-pane');
-  const frames = document.querySelectorAll('.browser iframe');
-  const url = document.querySelector('[data-url]');
-  const urls = { pci: 'riskforge.tech/tools/saq-selector', nist: 'riskforge.tech/tools/maturity-snapshot' };
   function sel(t){
     tabs.forEach(x => x.classList.toggle('active', x.dataset.tool === t));
     panes.forEach(x => x.classList.toggle('active', x.dataset.tool === t));
-    frames.forEach(x => x.classList.toggle('frame-hidden', x.dataset.frame !== t));
-    if (url) url.textContent = urls[t] || '';
   }
   tabs.forEach(t => t.addEventListener('click', () => sel(t.dataset.tool)));
 })();

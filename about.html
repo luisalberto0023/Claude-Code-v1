@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>About — RiskForge</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="description" content="RiskForge is built by Luis A. Santos — an information security and cyber risk professional (CISM, CRISC) with 10+ years across regulated banking and U.S. defense environments. The deliverables the consulting bill was hiding." />
+<link rel="canonical" href="https://riskforge.tech/about" />
+<!-- Open Graph -->
+<meta property="og:type"        content="website" />
+<meta property="og:url"         content="https://riskforge.tech/about" />
+<meta property="og:title"       content="About — RiskForge" />
+<meta property="og:description" content="RiskForge is built by Luis A. Santos — CISM, CRISC — with 10+ years across regulated banking and U.S. defense. The deliverables the consulting bill was hiding." />
+<meta property="og:site_name"   content="RiskForge" />
+<!-- Twitter -->
+<meta name="twitter:card"        content="summary_large_image" />
+<meta name="twitter:title"       content="About — RiskForge" />
+<meta name="twitter:description" content="RiskForge is built by Luis A. Santos — CISM, CRISC — 10+ years in cyber risk & GRC across banking and defense." />
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230A0A0A'/><text x='16' y='22' font-family='monospace' font-size='14' font-weight='700' fill='%23C8F02D' text-anchor='middle'>RF</text></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+/* =========================================================
+   RISKFORGE · ABOUT PAGES · SHARED BASE
+   ========================================================= */
+:root {
+  --paper:   #FFFFFF;
+  --paper-2: #F6F6F4;
+  --ink:     #0A0A0A;
+  --ink-2:   #1A1A1A;
+  --ink-3:   #3A3A3A;
+  --muted:   #6B6B6B;
+  --rule:    #E5E5E2;
+  --rule-2:  #D6D6D2;
+  --accent:  #C8F02D;
+  --accent-deep: #B8E01A;
+  --ok:      #2C7A3D;
+
+  --s-section: 120px;
+  --s-block:   48px;
+  --s-card:    28px;
+  --s-el-lg:   24px;
+  --s-el:      16px;
+  --s-el-sm:   8px;
+
+  --f-sans: 'Manrope', system-ui, sans-serif;
+  --f-mono: 'JetBrains Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--paper); color: var(--ink); font-family: var(--f-sans); -webkit-font-smoothing: antialiased; }
+img { max-width: 100%; display: block; }
+a { color: inherit; text-decoration: none; }
+ul { list-style: none; padding: 0; margin: 0; }
+h1, h2, h3, h4, p { margin: 0; }
+
+.wrap { max-width: 1280px; margin: 0 auto; padding: 0 56px; }
+.eyebrow { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); display: inline-flex; align-items: center; gap: 10px; }
+.eyebrow::before { content: ''; width: 6px; height: 6px; background: var(--accent); border-radius: 50%; flex-shrink: 0; }
+.eyebrow.light { color: rgba(255,255,255,0.55); }
+.eyebrow.plain::before { display: none; }
+
+/* ---- BUTTON SYSTEM ---- */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-family: var(--f-sans); font-size: 13px; font-weight: 600; padding: 12px 20px; height: 42px; line-height: 1; border: 1px solid transparent; cursor: pointer; transition: 120ms ease; letter-spacing: -0.005em; white-space: nowrap; }
+.btn-primary   { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.btn-primary:hover   { background: var(--ink-2); }
+.btn-secondary { background: transparent; color: var(--ink); border-color: var(--ink); }
+.btn-secondary:hover { background: var(--ink); color: var(--paper); }
+.btn-accent    { background: var(--accent); color: var(--ink); border-color: var(--accent); font-weight: 700; }
+.btn-accent:hover    { background: var(--accent-deep); border-color: var(--accent-deep); }
+.btn-ghost     { background: transparent; color: var(--ink); border-color: transparent; padding-left: 4px; padding-right: 4px; }
+.btn-ghost:hover { color: var(--ink-2); text-decoration: underline; text-underline-offset: 4px; }
+.btn .arrow { font-family: var(--f-mono); font-weight: 400; }
+.btn-primary .arrow { color: var(--accent); }
+.on-dark .btn-secondary { color: var(--paper); border-color: var(--paper); }
+.on-dark .btn-secondary:hover { background: var(--paper); color: var(--ink); }
+
+/* ---- NAV ---- */
+.nav { position: sticky; top: 0; z-index: 50; background: rgba(255,255,255,0.92); backdrop-filter: blur(12px); border-bottom: 1px solid var(--rule); }
+.nav-inner { max-width: 1280px; margin: 0 auto; padding: 16px 56px; display: flex; align-items: center; justify-content: space-between; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 800; font-size: 16px; letter-spacing: -0.02em; }
+.logo .mark { width: 26px; height: 26px; background: var(--ink); color: var(--accent); display: flex; align-items: center; justify-content: center; font-family: var(--f-mono); font-weight: 700; font-size: 11px; letter-spacing: -0.02em; }
+.nav-links { display: flex; gap: 32px; font-size: 13.5px; color: var(--ink-2); }
+.nav-links a { transition: 120ms; }
+.nav-links a:hover { color: var(--ink); }
+.nav-links a.active { color: var(--ink); font-weight: 600; }
+.nav-cta { display: flex; align-items: center; gap: 12px; }
+
+/* ---- FOOTER ---- */
+.footer { background: var(--paper); padding: 72px 0 32px; border-top: 1px solid var(--rule); }
+.footer-grid { display: grid; grid-template-columns: 1.4fr repeat(3, 1fr); gap: var(--s-block); margin-bottom: 56px; }
+.footer-brand p { font-size: 13.5px; line-height: 1.6; color: var(--muted); max-width: 320px; margin-top: 16px; }
+.footer-col h4 { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--muted); margin-bottom: 18px; }
+.footer-col ul { display: flex; flex-direction: column; gap: 10px; }
+.footer-col li { font-size: 13.5px; color: var(--ink-2); }
+.footer-col li:hover { color: var(--ink); }
+.footer-col a { color: inherit; text-decoration: none; }
+.footer-col a:hover { text-decoration: underline; }
+.footer-bottom { padding-top: 28px; border-top: 1px solid var(--rule); display: flex; justify-content: space-between; align-items: center; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+.footer-bottom .links { display: flex; gap: 28px; }
+
+/* =========================================================
+   STYLE A · "LEDGER" — tight, corporate-credible, light
+   ========================================================= */
+
+/* HERO */
+.lg-hero { padding: 88px 0 var(--s-section); border-bottom: 1px solid var(--rule); }
+.lg-hero-grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: var(--s-block); align-items: end; }
+.lg-hero h1 { font-weight: 800; font-size: 68px; letter-spacing: -0.045em; line-height: 1.05; margin: 22px 0 var(--s-el-lg); }
+.lg-hero h1 em { font-style: normal; background: linear-gradient(to bottom, transparent 0 14%, var(--accent) 14% 86%, transparent 86% 100%); padding: 0 8px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.lg-hero .lead { font-size: 17px; line-height: 1.6; color: var(--ink-3); max-width: 540px; }
+.lg-creds { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 8px; }
+.lg-creds .c { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.06em; color: var(--ink-2); border: 1px solid var(--rule-2); background: var(--paper); padding: 7px 12px; }
+.lg-creds .c::before { content: '● '; color: var(--accent-deep); }
+/* Portrait card */
+.lg-portrait { border: 1px solid var(--rule); background: var(--paper); display: flex; flex-direction: column; }
+.lg-portrait .ph { aspect-ratio: 1 / 1; overflow: hidden; background: var(--paper-2); border-bottom: 1px solid var(--rule); }
+.lg-portrait .ph img { width: 100%; height: 100%; object-fit: cover; object-position: center top; display: block; }
+.lg-portrait .cap { padding: 18px; display: flex; flex-direction: column; gap: 7px; }
+.lg-portrait .cap .nm { font-weight: 800; font-size: 19px; letter-spacing: -0.025em; line-height: 1; }
+.lg-portrait .cap .ti { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent-deep); }
+.lg-portrait .cap .loc { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 2px; }
+/* Fact strip */
+.lg-factstrip { padding: 0 0 0; }
+.lg-factstrip-inner { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--ink); margin-top: -1px; }
+.lg-fs-item { padding: 24px 22px; border-right: 1px solid var(--ink); display: flex; flex-direction: column; gap: 8px; }
+.lg-fs-item:last-child { border-right: none; }
+.lg-fs-item .n { font-weight: 800; font-size: 34px; letter-spacing: -0.04em; line-height: 1; }
+.lg-fs-item .n em { font-style: normal; color: var(--muted); font-weight: 600; font-size: 20px; }
+.lg-fs-item .l { font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted); line-height: 1.5; }
+@media (max-width: 760px) { .lg-factstrip-inner { grid-template-columns: 1fr 1fr; } .lg-fs-item:nth-child(2) { border-right: none; } .lg-fs-item:nth-child(-n+2) { border-bottom: 1px solid var(--ink); } }
+
+/* STORY */
+.lg-story { padding: var(--s-section) 0; border-bottom: 1px solid var(--rule); }
+.lg-section-head { display: grid; grid-template-columns: 1.2fr 1fr; gap: var(--s-block); align-items: end; margin-bottom: var(--s-block); }
+.lg-section-head h2 { font-weight: 800; font-size: 46px; letter-spacing: -0.04em; line-height: 1.05; margin-top: 16px; }
+.lg-section-head h2 em { font-style: normal; color: var(--muted); }
+.lg-section-head .sub { font-size: 15px; line-height: 1.6; color: var(--ink-3); max-width: 380px; }
+.lg-story-body { display: grid; grid-template-columns: 1.5fr 1fr; gap: var(--s-block); align-items: start; }
+.lg-prose p { font-size: 16.5px; line-height: 1.68; color: var(--ink-2); max-width: 620px; margin-bottom: var(--s-el); }
+.lg-prose p:last-child { margin-bottom: 0; }
+.lg-prose strong { font-weight: 700; color: var(--ink); }
+.lg-aside { border-left: 1px solid var(--rule); padding-left: var(--s-block); display: flex; flex-direction: column; gap: 28px; }
+.lg-aside .quote { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.3; }
+.lg-aside .quote span { background: linear-gradient(to bottom, transparent 0 12%, var(--accent) 12% 88%, transparent 88% 100%); padding: 0 4px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.lg-aside .meta { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); padding-top: 18px; border-top: 1px solid var(--rule); line-height: 1.7; }
+
+/* TRACK RECORD (dark band) */
+.lg-track { padding: var(--s-section) 0; background: var(--ink); color: var(--paper); }
+.lg-track .eyebrow { color: rgba(255,255,255,0.55); }
+.lg-track-head { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-block); align-items: end; margin-bottom: 56px; }
+.lg-track-head h2 { font-weight: 800; font-size: 42px; letter-spacing: -0.04em; line-height: 1.05; margin-top: 16px; }
+.lg-track-head h2 em { font-style: normal; color: var(--accent); }
+.lg-track-head p { font-size: 15px; line-height: 1.6; color: rgba(255,255,255,0.7); max-width: 380px; }
+.lg-exp { border-top: 1px solid rgba(255,255,255,0.14); }
+.lg-exp-row { display: grid; grid-template-columns: 60px 1.4fr 1fr 150px; gap: 24px; padding: 22px 0; border-bottom: 1px solid rgba(255,255,255,0.14); align-items: baseline; }
+.lg-exp-row .num { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.22em; color: rgba(255,255,255,0.5); }
+.lg-exp-row .role { font-weight: 700; font-size: 17px; letter-spacing: -0.015em; }
+.lg-exp-row .scope { font-size: 13.5px; color: rgba(255,255,255,0.6); line-height: 1.45; }
+.lg-exp-row .industry { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent); text-align: right; }
+
+/* PRINCIPLES */
+.lg-principles { padding: var(--s-section) 0; border-bottom: 1px solid var(--rule); }
+.lg-prin-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.lg-prin-card { border: 1px solid var(--rule); padding: var(--s-card); display: flex; flex-direction: column; gap: 12px; min-height: 230px; }
+.lg-prin-card .id { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: 0.22em; color: var(--muted); }
+.lg-prin-card h3 { font-size: 18px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.25; }
+.lg-prin-card p { font-size: 13.5px; line-height: 1.55; color: var(--ink-3); }
+.lg-prin-card .ind { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--rule); font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+
+/* COVERAGE STRIP */
+.lg-coverage { padding: var(--s-section) 0; background: var(--paper-2); border-bottom: 1px solid var(--rule); }
+.lg-cov-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: var(--s-block); align-items: start; }
+.lg-cov-grid h2 { font-weight: 800; font-size: 38px; letter-spacing: -0.04em; line-height: 1.08; }
+.lg-cov-grid > div > p { font-size: 14.5px; line-height: 1.6; color: var(--ink-3); margin-top: 18px; max-width: 320px; }
+.lg-chips { display: flex; flex-wrap: wrap; gap: 10px; }
+.lg-chip { font-family: var(--f-mono); font-size: 12px; letter-spacing: 0.04em; color: var(--ink-2); border: 1px solid var(--rule-2); background: var(--paper); padding: 9px 14px; }
+.lg-chip.live { border-color: var(--ink); }
+.lg-chip.live::before { content: '● '; color: var(--accent-deep); }
+
+/* SIGNATURE + CTA */
+.lg-sign { padding: var(--s-section) 0; }
+.lg-sign-inner { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-block); align-items: center; }
+.lg-note { border-left: 3px solid var(--accent); padding-left: var(--s-block); }
+.lg-note p { font-size: 18px; line-height: 1.6; color: var(--ink-2); font-weight: 500; letter-spacing: -0.01em; margin-bottom: 22px; }
+.lg-note .by { font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); line-height: 1.7; }
+.lg-note .by b { color: var(--ink); font-weight: 600; }
+.lg-cta { background: var(--ink); color: var(--paper); padding: 44px var(--s-block); }
+.lg-cta h3 { font-weight: 800; font-size: 30px; letter-spacing: -0.03em; line-height: 1.12; margin-bottom: 14px; }
+.lg-cta h3 em { font-style: normal; color: var(--accent); }
+.lg-cta p { font-size: 14.5px; line-height: 1.6; color: rgba(255,255,255,0.72); margin-bottom: 26px; max-width: 360px; }
+.lg-cta .ctas { display: flex; gap: 10px; flex-wrap: wrap; }
+
+/* RESPONSIVE */
+@media (max-width: 960px) {
+  :root { --s-section: 88px; --s-block: 36px; --s-card: 24px; }
+  .wrap { padding: 0 32px; }
+  .nav-inner { padding: 16px 32px; }
+  .nav-links { display: none; }
+  .footer-grid { grid-template-columns: 1fr 1fr; gap: 40px; }
+  .lg-hero-grid, .lg-section-head, .lg-story-body, .lg-track-head, .lg-cov-grid, .lg-sign-inner { grid-template-columns: 1fr; gap: 36px; }
+  .lg-aside { border-left: none; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 28px; }
+  .lg-exp-row { grid-template-columns: 44px 1fr; gap: 14px; }
+  .lg-exp-row .industry { grid-column: 2; text-align: left; }
+  .lg-prin-grid { grid-template-columns: repeat(2, 1fr); }
+  .lg-hero h1 { font-size: 52px; }
+}
+@media (max-width: 640px) {
+  :root { --s-section: 64px; --s-block: 28px; --s-card: 20px; --s-el-lg: 18px; --s-el: 14px; }
+  .wrap { padding: 0 20px; }
+  .nav-inner { padding: 12px 20px; }
+  .nav-cta .btn-ghost { display: none; }
+  .footer { padding: 56px 0 24px; }
+  .footer-grid { grid-template-columns: 1fr; gap: 32px; margin-bottom: 36px; }
+  .footer-bottom { flex-direction: column; gap: 12px; align-items: flex-start; font-size: 9.5px; }
+  .footer-bottom .links { gap: 18px; }
+  .lg-hero h1 { font-size: 38px; }
+  .lg-section-head h2, .lg-track-head h2 { font-size: 32px; }
+  .lg-prin-grid { grid-template-columns: 1fr; }
+  .lg-prin-card { min-height: 0; }
+}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a class="logo" href="index.html"><span class="mark">RF</span> RiskForge</a>
+    <ul class="nav-links">
+      <li><a href="index.html#problem">Problem</a></li>
+      <li><a href="index.html#frameworks">Frameworks</a></li>
+      <li><a href="index.html#tools">Free Tools</a></li>
+      <li><a href="index.html#pricing">Pricing</a></li>
+      <li><a href="about.html" class="active">About</a></li>
+    </ul>
+    <div class="nav-cta">
+      <a class="btn btn-ghost" href="demo.html">Explore Workbooks</a>
+      <a class="btn btn-primary" href="index.html#pricing">Get Templates <span class="arrow">→</span></a>
+    </div>
+  </div>
+</nav>
+
+<!-- HERO -->
+<header class="lg-hero">
+  <div class="wrap">
+    <div class="lg-hero-grid">
+      <div>
+        <div class="eyebrow">About RiskForge · Founder</div>
+        <h1>Built by the people who <em>get audited.</em></h1>
+        <p class="lead">RiskForge is the work of <strong style="color:var(--ink);font-weight:700;">Luis A. Santos</strong> — an information security and cyber risk professional with 10+ years maturing enterprise cybersecurity and GRC programs inside regulated banking and U.S. defense environments. The same workbooks the consulting bill was hiding, built once and priced for sanity.</p>
+        <div class="lg-creds">
+          <span class="c">CISM</span>
+          <span class="c">CRISC</span>
+          <span class="c">CCAK</span>
+          <span class="c">10+ yrs in cyber risk</span>
+        </div>
+      </div>
+      <aside class="lg-portrait">
+        <div class="ph"><img src="founder-luis-santos.png" alt="Luis A. Santos, Founder of RiskForge" /></div>
+        <div class="cap">
+          <div class="nm">Luis A. Santos</div>
+          <div class="ti">Founder · RiskForge</div>
+          <div class="loc">Information Security &amp; Cyber Risk · San Juan, PR</div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</header>
+
+<!-- FACT STRIP -->
+<section class="lg-factstrip">
+  <div class="wrap">
+    <div class="lg-factstrip-inner">
+      <div class="lg-fs-item"><div class="n">10<em>+ yrs</em></div><div class="l">In information security<br>&amp; cyber risk</div></div>
+      <div class="lg-fs-item"><div class="n">500<em>+</em></div><div class="l">Controls &amp; risks<br>assessed</div></div>
+      <div class="lg-fs-item"><div class="n">2</div><div class="l">ISACA certifications<br>CISM · CRISC</div></div>
+      <div class="lg-fs-item"><div class="n">2</div><div class="l">Regulated sectors<br>Banking · Defense</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- STORY -->
+<section class="lg-story">
+  <div class="wrap">
+    <div class="lg-section-head">
+      <div>
+        <div class="eyebrow">01 · Why RiskForge exists</div>
+        <h2>The deliverable was always <em>a spreadsheet.</em></h2>
+      </div>
+      <p class="sub">After enough audit cycles, one pattern is impossible to un-see: teams paying five figures for a workbook they could have owned outright.</p>
+    </div>
+    <div class="lg-story-body">
+      <div class="lg-prose">
+        <p>Spend ten years inside regulated industries and you watch the same scene replay every audit cycle. A consultant arrives, runs a gap assessment, and leaves behind a spreadsheet. The invoice reads <strong>$15K to $50K</strong>. The deliverable could have been built once and reused forever.</p>
+        <p>The workbook was never the hard part. The hard part was knowing what a QSA or an internal-audit reviewer actually wants to see — how evidence should be laid out, which testing procedures belong on the page, where maturity scoring earns its keep. After assessing 500+ controls across banking and U.S. defense — and maturing an enterprise IT &amp; Cyber Risk framework against NIST CSF, FFIEC, PCI DSS, and COBIT — that knowledge stops being research and becomes muscle memory.</p>
+        <p>RiskForge is that muscle memory, packaged. Every tab is structured the way auditors expect evidence presented. <strong>No filler. No theatre.</strong> Just the deliverables the consulting bill was hiding.</p>
+      </div>
+      <aside class="lg-aside">
+        <div class="quote">"Compliance tooling should be <span>owned</span>, not rented."</div>
+        <div class="meta">The founding principle —<br>and the reason every workbook is a one-time purchase, white-label ready, yours to keep.</div>
+      </aside>
+    </div>
+  </div>
+</section>
+
+<!-- TRACK RECORD -->
+<section class="lg-track on-dark">
+  <div class="wrap">
+    <div class="lg-track-head">
+      <div>
+        <div class="eyebrow">02 · Track record</div>
+        <h2>Ten years across the <em>regulated world.</em></h2>
+      </div>
+      <p>Every role added a different lens — and a different set of auditors and examiners to satisfy. The workbooks carry all of it.</p>
+    </div>
+    <div class="lg-exp">
+      <div class="lg-exp-row">
+        <div class="num">01</div>
+        <div class="role">Senior IT &amp; Cyber Risk Analyst</div>
+        <div class="scope">Matured the enterprise IT &amp; Cyber Risk framework; assessed 500+ controls across IAM, cloud, and network security.</div>
+        <div class="industry">Banking</div>
+      </div>
+      <div class="lg-exp-row">
+        <div class="num">02</div>
+        <div class="role">IT Audit Specialist</div>
+        <div class="scope">IT &amp; cyber control audits across multiple countries; system integrity and mission assurance.</div>
+        <div class="industry">Defense &amp; Aerospace</div>
+      </div>
+      <div class="lg-exp-row">
+        <div class="num">03</div>
+        <div class="role">IT Auditor</div>
+        <div class="scope">Audits of data-processing systems and applications; control effectiveness and security of operations.</div>
+        <div class="industry">Banking</div>
+      </div>
+      <div class="lg-exp-row">
+        <div class="num">04</div>
+        <div class="role">Co-Owner / General Manager</div>
+        <div class="scope">Grew one operation into three dealerships; led multi-disciplinary teams and operational accountability.</div>
+        <div class="industry">Operations · Leadership</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- PRINCIPLES -->
+<section class="lg-principles">
+  <div class="wrap">
+    <div class="lg-section-head">
+      <div>
+        <div class="eyebrow">03 · How everything is built</div>
+        <h2>Four rules, <em>no exceptions.</em></h2>
+      </div>
+      <p class="sub">Every workbook ships against the same principles — the conventions GRC reviewers, QSAs, and internal audit expect to see.</p>
+    </div>
+    <div class="lg-prin-grid">
+      <article class="lg-prin-card">
+        <div class="id">01</div>
+        <h3>Evidence-first</h3>
+        <p>Structured the way auditors want proof presented — preparer / reviewer / approver sign-off, tickmark legend, revision history on every tab.</p>
+        <div class="ind">Workpaper hygiene</div>
+      </article>
+      <article class="lg-prin-card">
+        <div class="id">02</div>
+        <h3>Built to current standard</h3>
+        <p>NIST CSF 2.0 and PCI DSS v4.0.1 — not the old versions still floating around in free templates. Updated when the frameworks move.</p>
+        <div class="ind">Always current</div>
+      </article>
+      <article class="lg-prin-card">
+        <div class="id">03</div>
+        <h3>No theatre</h3>
+        <p>No dashboards that impress and don't audit. Every cell earns its place against a real requirement, testing procedure, or artifact.</p>
+        <div class="ind">Substance only</div>
+      </article>
+      <article class="lg-prin-card">
+        <div class="id">04</div>
+        <h3>Yours to keep</h3>
+        <p>One-time purchase, lifetime updates within the major version, hidden branding tab. Rebrand it and ship under your own name.</p>
+        <div class="ind">Owned, not rented</div>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- COVERAGE -->
+<section class="lg-coverage">
+  <div class="wrap">
+    <div class="lg-cov-grid">
+      <div>
+        <h2>Frameworks I know cold.</h2>
+        <p>The standards behind the workbooks — and the cross-walks that tie them together inside every tab.</p>
+      </div>
+      <div class="lg-chips">
+        <span class="lg-chip live">NIST CSF 2.0</span>
+        <span class="lg-chip live">PCI DSS v4.0.1</span>
+        <span class="lg-chip">NIST SP 800-53 Rev. 5</span>
+        <span class="lg-chip">ISO/IEC 27001</span>
+        <span class="lg-chip">CIS Controls v8</span>
+        <span class="lg-chip">COSO 2013</span>
+        <span class="lg-chip">COBIT 2019</span>
+        <span class="lg-chip">CRI Profile 2.0</span>
+        <span class="lg-chip">FFIEC CAT</span>
+        <span class="lg-chip">AICPA AU-C 530</span>
+        <span class="lg-chip">PCAOB AS 2201</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- SIGNATURE + CTA -->
+<section class="lg-sign">
+  <div class="wrap">
+    <div class="lg-sign-inner">
+      <div class="lg-note">
+        <p>If you've ever rebuilt the same tracker from scratch the week before an audit, this was built for you. Put it to work before your next cycle.</p>
+        <div class="by"><b>— Luis A. Santos, Founder · RiskForge</b><br>CISM · CRISC · Information Security &amp; Cyber Risk<br>hello@riskforge.tech</div>
+      </div>
+      <div class="lg-cta">
+        <h3>See what's <em>actually inside.</em></h3>
+        <p>The workbook tour is a real workbook — every tab, not a screenshot. Walk through it before you decide.</p>
+        <div class="ctas">
+          <a class="btn btn-accent" href="index.html#pricing">View Pricing <span class="arrow">→</span></a>
+          <a class="btn btn-secondary" style="color:var(--paper);border-color:var(--paper);" href="demo.html">Explore Workbooks</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="logo" href="index.html"><span class="mark">RF</span> RiskForge</a>
+        <p>Professional-grade compliance workbooks for IT Risk and Audit teams. Built by practitioners, priced for sanity.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Products</h4>
+        <ul>
+          <li><a href="demo.html#nist">NIST CSF 2.0 Workbook</a></li>
+          <li><a href="demo.html#pci">PCI DSS v4.0 Workbook</a></li>
+          <li><a href="demo.html#vault">Full Compliance Vault</a></li>
+          <li>Coming Soon</li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Company</h4>
+        <ul>
+          <li><a href="about.html">About</a></li>
+          <li><a href="index.html#frameworks">Frameworks</a></li>
+          <li><a href="mailto:hello@riskforge.tech">Contact</a></li>
+          <li>License</li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="demo.html">Demo Workbook</a></li>
+          <li><a href="index.html#faq">FAQ</a></li>
+          <li>Terms</li>
+        </ul>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <div>© 2026 RiskForge · All rights reserved</div>
+      <div class="links"><span>Privacy</span><span>Terms</span><span>License</span></div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

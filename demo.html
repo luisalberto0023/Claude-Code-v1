@@ -5,6 +5,19 @@
 <title>RiskForge — Interactive Product Demo (v2.0)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="description" content="Tour the v2.0 PCI DSS v4.0.1 and NIST CSF 2.0 workbooks. Live SAQ Type Selector, interactive tab navigator, every artifact a QSA expects." />
+<link rel="canonical" href="https://riskforge.tech/demo" />
+<!-- Open Graph -->
+<meta property="og:type"        content="website" />
+<meta property="og:url"         content="https://riskforge.tech/demo" />
+<meta property="og:title"       content="RiskForge — Interactive Workbook Tour (v2.0)" />
+<meta property="og:description" content="Tour the PCI DSS v4.0.1 and NIST CSF 2.0 workbooks — every tab, every artifact. Built by practitioners." />
+<meta property="og:site_name"   content="RiskForge" />
+<!-- Twitter -->
+<meta name="twitter:card"        content="summary_large_image" />
+<meta name="twitter:title"       content="RiskForge — Interactive Workbook Tour (v2.0)" />
+<meta name="twitter:description" content="Tour the PCI DSS v4.0.1 and NIST CSF 2.0 workbooks — every tab, every artifact." />
+<!-- Favicon -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' fill='%230A0A0A'/><text x='16' y='22' font-family='monospace' font-size='14' font-weight='700' fill='%23C8F02D' text-anchor='middle'>RF</text></svg>" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -612,7 +625,7 @@ h1, h2, h3, h4, p { margin: 0; }
    ========================================================= */
 .tool-cta { padding: var(--s-section) 0; background: var(--ink); color: var(--paper); border-top: 1px solid var(--ink); }
 .tool-cta .eyebrow { color: rgba(255,255,255,0.55); }
-.tool-cta-grid { display: grid; grid-template-columns: 1fr 1.05fr; gap: var(--s-block); align-items: start; }
+.tool-cta-grid { display: grid; grid-template-columns: 1fr; gap: var(--s-block); align-items: start; max-width: 760px; margin: 0 auto; }
 .tool-cta h2 { font-weight: 800; font-size: 40px; letter-spacing: -0.035em; line-height: 1.05; margin: 16px 0 18px; }
 .tool-cta h2 em { font-style: normal; color: var(--accent); }
 .tool-cta .lead { font-size: 15.5px; line-height: 1.6; color: rgba(255,255,255,0.75); margin-bottom: 26px; max-width: 470px; }
@@ -626,14 +639,6 @@ h1, h2, h3, h4, p { margin: 0; }
 .tool-cta .ctas { display: flex; gap: 10px; flex-wrap: wrap; }
 .tool-cta .btn-secondary { color: var(--paper); border-color: rgba(255,255,255,0.3); background: transparent; }
 .tool-cta .btn-secondary:hover { background: var(--paper); color: var(--ink); border-color: var(--paper); }
-.tool-embed .browser { border: 1px solid rgba(255,255,255,0.2); background: var(--paper); }
-.tool-embed .bar { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--rule); background: var(--paper-2); }
-.tool-embed .bar .dots { display: flex; gap: 6px; }
-.tool-embed .bar .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--rule-2); }
-.tool-embed .bar .url { font-family: var(--f-mono); font-size: 11px; color: var(--muted); flex: 1; padding: 5px 12px; background: var(--paper); border: 1px solid var(--rule); }
-.tool-embed iframe { width: 100%; height: 640px; border: none; display: block; background: #fff; }
-.tool-embed .note { margin-top: 12px; font-family: var(--f-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.5); display: flex; align-items: center; gap: 8px; }
-.tool-embed .note::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 @media (max-width: 960px) { .tool-cta-grid { grid-template-columns: 1fr; gap: 32px; } .tool-cta h2 { font-size: 32px; } }
 </style>
 </head>
@@ -665,7 +670,7 @@ h1, h2, h3, h4, p { margin: 0; }
       <button class="tab" data-view="nist"><span class="num">03</span>NIST CSF 2.0</button>
       <button class="tab" data-view="vault"><span class="num">04</span>Full Vault</button>
     </div>
-    <div class="ext">DEMO · v2.0 · MAY 2026</div>
+    <div class="ext">TOUR · v2.0 · MAY 2026</div>
   </div>
 </div>
 
@@ -1005,13 +1010,6 @@ h1, h2, h3, h4, p { margin: 0; }
             <a class="btn btn-accent" href="pci-saq-selector.html">Open the PCI SAQ Selector <span class="arrow">→</span></a>
             <a class="btn btn-secondary" href="https://payhip.com/b/xCJhD">Buy PCI Pack — $149</a>
           </div>
-        </div>
-        <div class="tool-embed">
-          <div class="browser">
-            <div class="bar"><span class="dots"><span></span><span></span><span></span></span><span class="url">riskforge.tech/tools/saq-selector</span></div>
-            <iframe title="PCI SAQ Selector" src="pci-saq-selector.html?embed=1"></iframe>
-          </div>
-          <div class="note">Live preview — interact with it right here</div>
         </div>
       </div>
     </div>
@@ -1407,13 +1405,6 @@ h1, h2, h3, h4, p { margin: 0; }
             <a class="btn btn-secondary" href="https://payhip.com/b/9ucFo">Buy NIST Pack — $99</a>
           </div>
         </div>
-        <div class="tool-embed">
-          <div class="browser">
-            <div class="bar"><span class="dots"><span></span><span></span><span></span></span><span class="url">riskforge.tech/tools/maturity-snapshot</span></div>
-            <iframe title="NIST Maturity Snapshot" src="nist-maturity-snapshot.html?embed=1"></iframe>
-          </div>
-          <div class="note">Live preview — interact with it right here</div>
-        </div>
       </div>
     </div>
   </section>
@@ -1678,17 +1669,17 @@ h1, h2, h3, h4, p { margin: 0; }
       <div class="footer-col">
         <h4>Company</h4>
         <ul>
-          <li>About</li>
-          <li>Frameworks</li>
-          <li>Contact</li>
+          <li><a href="about.html">About</a></li>
+          <li><a href="index.html#frameworks">Frameworks</a></li>
+          <li><a href="mailto:hello@riskforge.tech">Contact</a></li>
           <li>License</li>
         </ul>
       </div>
       <div class="footer-col">
         <h4>Resources</h4>
         <ul>
-          <li>Interactive Demo</li>
-          <li>FAQ</li>
+          <li><a href="index.html">Main Site</a></li>
+          <li><a href="index.html#faq">FAQ</a></li>
           <li>Terms</li>
         </ul>
       </div>

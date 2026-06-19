@@ -15,6 +15,11 @@
   status = 200
 
 [[redirects]]
+  from = "/about"
+  to = "/about.html"
+  status = 200
+
+[[redirects]]
   from = "/pci-saq-selector"
   to = "/pci-saq-selector.html"
   status = 200
