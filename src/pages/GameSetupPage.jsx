@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { audio } from '../game/audio.js';
 
 const GRID_OPTS = [
   { size: 4, label: '3×3', boxes: 9, desc: 'QUICK', time: '~5m' },
@@ -44,6 +45,9 @@ export default function GameSetupPage({ onStart, onBack }) {
   const [p2Name, setP2Name] = useState('');
 
   function handleStart() {
+    audio.unlock();
+    audio.click();
+    if (!audio.musicMuted) audio.startMusic();
     onStart({
       gridSize, mode, vsAI, aiDifficulty: difficulty,
       playerNames: [

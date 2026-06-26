@@ -3,6 +3,8 @@ import GameBoard from '../components/GameBoard.jsx';
 import { createInitialState, makeMove, applyCascade, applyVoid, skipTurn } from '../game/gameLogic.js';
 import { getAIMove, AI_TAUNTS } from '../game/aiPlayer.js';
 import { useIsMobile } from '../hooks/useIsMobile.js';
+import { audio } from '../game/audio.js';
+import SoundToggle from '../components/SoundToggle.jsx';
 
 const P_COLOR = ['', '#00f5ff', '#ff0055'];
 const P_LABEL = ['', 'CYAN', 'CRIMSON'];
@@ -23,6 +25,7 @@ function TimerBar({ state, onTimeout }) {
     const timer = setInterval(() => {
       setTimeLeft(t => {
         if (t <= 1) { onTimeout(); return 10; }
+        if (t <= 4) audio.tick(true); else audio.tick(false);
         return t - 1;
       });
     }, 1000);
@@ -242,6 +245,9 @@ export default function GamePage({ config, onGameOver, onQuit }) {
   const { vsAI, aiDifficulty } = config;
   const isBoardDisabled = aiThinking || (vsAI && gameState.currentPlayer === 2) || gameState.status !== 'playing';
 
+  // Keep the synthwave loop going on the game screen (no-op if already running).
+  useEffect(() => { audio.unlock(); if (!audio.musicMuted) audio.startMusic(); }, []);
+
   const triggerTaunt = useCallback((type) => {
     const pool = AI_TAUNTS[type] || AI_TAUNTS.neutral;
     setAITaunt(pool[Math.floor(Math.random() * pool.length)]);
@@ -273,6 +279,8 @@ export default function GamePage({ config, onGameOver, onQuit }) {
     if (newState === gameState) return;
 
     const boxesClosed = newState.animatingBoxes.length;
+    audio.lineDraw(gameState.currentPlayer);
+    if (boxesClosed > 0) audio.capture(newState.comboCount || boxesClosed);
     const stayedTurn = newState.currentPlayer === gameState.currentPlayer && newState.status === 'playing';
 
     if (boxesClosed > 1) {
@@ -304,6 +312,7 @@ export default function GamePage({ config, onGameOver, onQuit }) {
     const player = gameState.currentPlayer;
     const charges = gameState.powerUps?.[player]?.[id] || 0;
     if (charges <= 0) return;
+    audio.powerUp(id);
     setActivePowerUp(id);
     const newPowerUps = { ...gameState.powerUps, [player]: { ...gameState.powerUps[player], [id]: charges - 1 } };
     setGameState(s => ({ ...s, powerUps: newPowerUps }));
@@ -327,6 +336,8 @@ export default function GamePage({ config, onGameOver, onQuit }) {
       if (!move) return;
       const newState = makeMove(gameState, move.lineType, move.row, move.col);
       const boxesClosed = newState.animatingBoxes.length;
+      audio.lineDraw(2);
+      if (boxesClosed > 0) audio.capture(newState.comboCount || boxesClosed);
       if (boxesClosed >= 3) triggerTaunt('capturing');
       else if (newState.scores[2] > newState.scores[1] + 4) triggerTaunt('winning');
       else if (newState.scores[1] > newState.scores[2] + 4) triggerTaunt('losing');
@@ -349,7 +360,10 @@ export default function GamePage({ config, onGameOver, onQuit }) {
         <span className={`badge ${gs.mode === 'blitz' ? 'badge-pink' : gs.mode === 'power' ? 'badge-purple' : 'badge-cyan'}`} style={{ fontSize: '0.5rem' }}>{gs.mode.toUpperCase()}</span>
         {vsAI && !isMobile && <span className="badge badge-yellow" style={{ fontSize: '0.5rem' }}>AI: {aiDifficulty.toUpperCase()}</span>}
       </div>
-      <div style={{ fontFamily: 'Orbitron', fontSize: '0.55rem', color: '#303060', letterSpacing: '0.1em' }}>#{gs.moveCount}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <SoundToggle compact />
+        <div style={{ fontFamily: 'Orbitron', fontSize: '0.55rem', color: '#303060', letterSpacing: '0.1em' }}>#{gs.moveCount}</div>
+      </div>
     </nav>
   );
 

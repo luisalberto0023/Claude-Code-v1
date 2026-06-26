@@ -1,7 +1,13 @@
 import { useEffect, useRef } from 'react';
+import { audio } from '../game/audio.js';
+import SoundToggle from '../components/SoundToggle.jsx';
 
 export default function HomePage({ onPlay, onTutorial }) {
   const canvasRef = useRef(null);
+
+  // The first tap is the gesture browsers require to start audio.
+  const handlePlay = () => { audio.unlock(); audio.click(); audio.startMusic(); onPlay(); };
+  const handleTutorial = () => { audio.unlock(); audio.click(); audio.startMusic(); onTutorial(); };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -70,9 +76,9 @@ export default function HomePage({ onPlay, onTutorial }) {
 
       <nav style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem 1.25rem', position: 'relative', zIndex: 1, borderBottom: '1px solid #0a0a20' }}>
         <span style={{ fontFamily: 'Orbitron', fontSize: '0.6rem', color: '#252550', letterSpacing: '0.2em' }}>NEXUS GRID v1.0</span>
-        <div style={{ display: 'flex', gap: '0.4rem' }}>
+        <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           <span className="badge badge-cyan" style={{ fontSize: '0.55rem' }}>DOTS &amp; BOXES</span>
-          <span className="badge badge-pink" style={{ fontSize: '0.55rem' }}>EVOLVED</span>
+          <SoundToggle />
         </div>
       </nav>
 
@@ -98,10 +104,10 @@ export default function HomePage({ onPlay, onTutorial }) {
         </p>
 
         <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center', marginBottom: 'clamp(1.5rem,5vh,3rem)', width: '100%', maxWidth: '400px' }}>
-          <button className="btn btn-primary btn-xl" onClick={onPlay} style={{ flex: '1 1 160px' }}>
+          <button className="btn btn-primary btn-xl" onClick={handlePlay} style={{ flex: '1 1 160px' }}>
             ⚡ PLAY NOW
           </button>
-          <button className="btn btn-ghost btn-xl" onClick={onTutorial} style={{ flex: '1 1 160px' }}>
+          <button className="btn btn-ghost btn-xl" onClick={handleTutorial} style={{ flex: '1 1 160px' }}>
             ◈ HOW TO PLAY
           </button>
         </div>

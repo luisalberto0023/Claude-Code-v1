@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { audio } from '../game/audio.js';
 
 const P_COLOR = ['', '#00f5ff', '#ff0055'];
 const P_GLOW = ['', 'rgba(0,245,255,0.4)', 'rgba(255,0,85,0.4)'];
@@ -43,6 +44,14 @@ export default function ResultsPage({ state, onPlayAgain, onHome }) {
   const winGlow = isDraw ? 'rgba(255,215,0,0.4)' : P_GLOW[winnerNum];
   const p1Pct = Math.round((scores[1] / totalBoxes) * 100);
   const p2Pct = 100 - p1Pct;
+
+  // Outcome stinger. vs AI: P1 win = victory, P2 win = defeat. 2P: any win = victory.
+  useEffect(() => {
+    audio.unlock();
+    if (isDraw) audio.draw();
+    else if (vsAI && winner === 2) audio.lose();
+    else audio.win();
+  }, [isDraw, vsAI, winner]);
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', position: 'relative', overflow: 'hidden' }}>
@@ -130,8 +139,8 @@ export default function ResultsPage({ state, onPlayAgain, onHome }) {
           </div>
 
           <div style={{ display: 'flex', gap: '0.75rem' }}>
-            <button className="btn btn-primary btn-lg" onClick={onPlayAgain} style={{ flex: 1 }}>⚡ PLAY AGAIN</button>
-            <button className="btn btn-ghost btn-lg" onClick={onHome} style={{ flex: 1 }}>◈ MENU</button>
+            <button className="btn btn-primary btn-lg" onClick={() => { audio.click(); onPlayAgain(); }} style={{ flex: 1 }}>⚡ PLAY AGAIN</button>
+            <button className="btn btn-ghost btn-lg" onClick={() => { audio.click(); onHome(); }} style={{ flex: 1 }}>◈ MENU</button>
           </div>
         </div>
       </div>
