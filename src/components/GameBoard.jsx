@@ -3,8 +3,8 @@ import { useState, useEffect, useRef } from 'react';
 const CELL = 80;
 const DOT_R = 6;
 const LINE_W = 7;
-const HIT = 32;
 const PAD = 28;
+const TAP_TOL = CELL * 0.45; // how close (in svg units) a tap must be to a line to select it
 
 const P_COLOR = ['', '#00f5ff', '#ff0055'];
 const P_FILL  = ['', 'rgba(0,245,255,0.12)', 'rgba(255,0,85,0.12)'];
@@ -15,6 +15,7 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
   const [flashBoxes, setFlashBoxes] = useState([]);
   const prevBoxes  = useRef(state.boxes);
   const particleId = useRef(0);
+  const svgRef     = useRef(null);
 
   const { gridSize, hLines, vLines, boxes, currentPlayer } = state;
   const dots = gridSize;
@@ -60,30 +61,77 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
     return (lineType === 'h' ? hLines[row]?.[col] : vLines[row]?.[col]) === voidOpponent;
   }
 
-  /* ── Core move handler — called by onPointerDown ── */
-  function handleLine(lineType, row, col) {
-    if (disabled) return;
-    if (voidMode) {
-      if (isOpponentLine(lineType, row, col)) onMove(lineType, row, col);
-      return;
+  /* ── Coordinate-based hit testing ─────────────────────────
+     A single handler on the <svg> converts the pointer position to SVG
+     coordinates and finds the nearest selectable line. This avoids the
+     fragile per-line invisible <rect> hit zones that don't fire reliably
+     on some mobile browsers. */
+
+  function clientToSvg(clientX, clientY) {
+    const svg = svgRef.current;
+    if (!svg) return null;
+    const rect = svg.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    return {
+      sx: (clientX - rect.left) * (svgW / rect.width),
+      sy: (clientY - rect.top) * (svgW / rect.height),
+    };
+  }
+
+  function segDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    let t = len2 ? ((px - x1) * dx + (py - y1) * dy) / len2 : 0;
+    t = Math.max(0, Math.min(1, t));
+    const cx = x1 + t * dx, cy = y1 + t * dy;
+    return Math.hypot(px - cx, py - cy);
+  }
+
+  // Returns nearest selectable line {t,r,c} within tolerance, or null.
+  function nearestLine(sx, sy) {
+    let best = null, bestD = TAP_TOL;
+
+    for (let r = 0; r < dots; r++) {
+      for (let c = 0; c < dots - 1; c++) {
+        const owner = hLines[r][c];
+        const selectable = voidMode ? owner === voidOpponent : owner === 0;
+        if (!selectable) continue;
+        const { x, y } = dot(r, c);
+        const d = segDist(sx, sy, x + DOT_R, y, x + CELL - DOT_R, y);
+        if (d < bestD) { bestD = d; best = { t: 'h', r, c }; }
+      }
     }
-    const taken = lineType === 'h' ? hLines[row]?.[col] : vLines[row]?.[col];
-    if (taken !== 0) return;
-    onMove(lineType, row, col);
+    for (let r = 0; r < dots - 1; r++) {
+      for (let c = 0; c < dots; c++) {
+        const owner = vLines[r][c];
+        const selectable = voidMode ? owner === voidOpponent : owner === 0;
+        if (!selectable) continue;
+        const { x, y } = dot(r, c);
+        const d = segDist(sx, sy, x, y + DOT_R, x, y + CELL - DOT_R);
+        if (d < bestD) { bestD = d; best = { t: 'v', r, c }; }
+      }
+    }
+    return best;
+  }
+
+  function updateHover(e) {
+    if (disabled) { if (hovered) setHovered(null); return; }
+    const p = clientToSvg(e.clientX, e.clientY);
+    if (!p) return;
+    const line = nearestLine(p.sx, p.sy);
+    setHovered(line);
+  }
+
+  function commitAt(e) {
+    if (disabled) return;
+    const p = clientToSvg(e.clientX, e.clientY);
+    if (!p) return;
+    const line = nearestLine(p.sx, p.sy);
+    if (line) onMove(line.t, line.r, line.c);
     setHovered(null);
   }
 
-  /* Pointer-down handler: works on mouse + touch, fires immediately with no delay */
-  function mkPointerDown(lineType, row, col) {
-    return e => {
-      e.preventDefault();
-      // Release pointer capture so the element doesn't "grab" subsequent events
-      if (e.currentTarget.releasePointerCapture) {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      }
-      handleLine(lineType, row, col);
-    };
-  }
+  function clearHover() { if (hovered) setHovered(null); }
 
   function lineColor(owner, isHov) {
     if (owner) return P_COLOR[owner];
@@ -96,18 +144,19 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
     return 0.25;
   }
 
-  /* Cursor style for hit rects */
-  function hitCursor(isVoidable) {
-    if (disabled) return 'default';
-    if (voidMode && !isVoidable) return 'not-allowed';
-    return 'pointer';
-  }
+  const cursor = disabled ? 'default' : 'pointer';
 
   return (
     <div style={{ position: 'relative', display: 'inline-block', width: '100%', maxWidth: `${svgW}px` }}>
       <svg
+        ref={svgRef}
         viewBox={`0 0 ${svgW} ${svgW}`}
-        style={{ width: '100%', display: 'block', userSelect: 'none', touchAction: 'none' }}
+        style={{ width: '100%', display: 'block', userSelect: 'none', touchAction: 'none', cursor }}
+        onPointerMove={updateHover}
+        onPointerDown={e => { e.preventDefault(); updateHover(e); }}
+        onPointerUp={commitAt}
+        onPointerLeave={clearHover}
+        onPointerCancel={clearHover}
       >
         <defs>
           <filter id="glow1" x="-60%" y="-60%" width="220%" height="220%">
@@ -151,39 +200,23 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
         {/* ── Horizontal lines ── */}
         {Array.from({ length: dots }, (_, r) =>
           Array.from({ length: dots - 1 }, (_, c) => {
-            const owner   = hLines[r][c];
-            const isHov   = hovered?.t === 'h' && hovered?.r === r && hovered?.c === c;
-            const isVoid  = isOpponentLine('h', r, c);
+            const owner  = hLines[r][c];
+            const isHov  = hovered?.t === 'h' && hovered?.r === r && hovered?.c === c;
+            const isVoid = isOpponentLine('h', r, c);
             const { x: x1, y: y1 } = dot(r, c);
             const x2 = PAD + (c + 1) * CELL;
-            const showHit = owner === 0 || (voidMode && isVoid);
-
             return (
-              <g key={`h-${r}-${c}`}>
-                {/* Visual line */}
-                <line
-                  x1={x1 + DOT_R} y1={y1}
-                  x2={x2 - DOT_R} y2={y1}
-                  stroke={isVoid && isHov ? '#ffd700' : lineColor(owner, isHov)}
-                  strokeWidth={LINE_W}
-                  strokeLinecap="round"
-                  opacity={lineOpacity(owner, isHov)}
-                  filter={owner ? (owner === 1 ? 'url(#glow1)' : 'url(#glow2)') : undefined}
-                  style={{ transition: 'opacity 0.15s, stroke 0.1s' }}
-                />
-                {/* Invisible hit area — rgba(0,0,0,0) + pointerEvents:all is the key fix */}
-                {showHit && (
-                  <rect
-                    x={x1 + DOT_R} y={y1 - HIT / 2}
-                    width={CELL - DOT_R * 2} height={HIT}
-                    fill="rgba(0,0,0,0)"
-                    style={{ pointerEvents: 'all', cursor: hitCursor(isVoid) }}
-                    onPointerEnter={() => !disabled && setHovered({ t: 'h', r, c })}
-                    onPointerLeave={() => setHovered(null)}
-                    onPointerDown={mkPointerDown('h', r, c)}
-                  />
-                )}
-              </g>
+              <line
+                key={`h-${r}-${c}`}
+                x1={x1 + DOT_R} y1={y1}
+                x2={x2 - DOT_R} y2={y1}
+                stroke={isVoid && isHov ? '#ffd700' : lineColor(owner, isHov)}
+                strokeWidth={LINE_W}
+                strokeLinecap="round"
+                opacity={lineOpacity(owner, isHov)}
+                filter={owner ? (owner === 1 ? 'url(#glow1)' : 'url(#glow2)') : undefined}
+                style={{ transition: 'opacity 0.15s, stroke 0.1s', pointerEvents: 'none' }}
+              />
             );
           })
         )}
@@ -191,37 +224,23 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
         {/* ── Vertical lines ── */}
         {Array.from({ length: dots - 1 }, (_, r) =>
           Array.from({ length: dots }, (_, c) => {
-            const owner   = vLines[r][c];
-            const isHov   = hovered?.t === 'v' && hovered?.r === r && hovered?.c === c;
-            const isVoid  = isOpponentLine('v', r, c);
+            const owner  = vLines[r][c];
+            const isHov  = hovered?.t === 'v' && hovered?.r === r && hovered?.c === c;
+            const isVoid = isOpponentLine('v', r, c);
             const { x: x1, y: y1 } = dot(r, c);
             const y2 = PAD + (r + 1) * CELL;
-            const showHit = owner === 0 || (voidMode && isVoid);
-
             return (
-              <g key={`v-${r}-${c}`}>
-                <line
-                  x1={x1} y1={y1 + DOT_R}
-                  x2={x1} y2={y2 - DOT_R}
-                  stroke={isVoid && isHov ? '#ffd700' : lineColor(owner, isHov)}
-                  strokeWidth={LINE_W}
-                  strokeLinecap="round"
-                  opacity={lineOpacity(owner, isHov)}
-                  filter={owner ? (owner === 1 ? 'url(#glow1)' : 'url(#glow2)') : undefined}
-                  style={{ transition: 'opacity 0.15s, stroke 0.1s' }}
-                />
-                {showHit && (
-                  <rect
-                    x={x1 - HIT / 2} y={y1 + DOT_R}
-                    width={HIT} height={CELL - DOT_R * 2}
-                    fill="rgba(0,0,0,0)"
-                    style={{ pointerEvents: 'all', cursor: hitCursor(isVoid) }}
-                    onPointerEnter={() => !disabled && setHovered({ t: 'v', r, c })}
-                    onPointerLeave={() => setHovered(null)}
-                    onPointerDown={mkPointerDown('v', r, c)}
-                  />
-                )}
-              </g>
+              <line
+                key={`v-${r}-${c}`}
+                x1={x1} y1={y1 + DOT_R}
+                x2={x1} y2={y2 - DOT_R}
+                stroke={isVoid && isHov ? '#ffd700' : lineColor(owner, isHov)}
+                strokeWidth={LINE_W}
+                strokeLinecap="round"
+                opacity={lineOpacity(owner, isHov)}
+                filter={owner ? (owner === 1 ? 'url(#glow1)' : 'url(#glow2)') : undefined}
+                style={{ transition: 'opacity 0.15s, stroke 0.1s', pointerEvents: 'none' }}
+              />
             );
           })
         )}
@@ -233,6 +252,7 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
             return (
               <circle key={`d-${r}-${c}`} cx={x} cy={y} r={DOT_R}
                 fill="#c0c0ff" opacity={0.9} filter="url(#glow1)"
+                style={{ pointerEvents: 'none' }}
               />
             );
           })
@@ -241,7 +261,7 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
         {/* ── Particles ── */}
         {particles.map(p => (
           <circle key={p.id} cx={p.x} cy={p.y} r={p.size} fill={p.color} opacity={0}
-            style={{ animation: 'particle-fly 0.8s ease-out both', '--dx': `${p.dx}px`, '--dy': `${p.dy}px` }}
+            style={{ animation: 'particle-fly 0.8s ease-out both', pointerEvents: 'none', '--dx': `${p.dx}px`, '--dy': `${p.dy}px` }}
           />
         ))}
       </svg>
