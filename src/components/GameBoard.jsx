@@ -204,18 +204,26 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
             const isVoid = isOpponentLine('h', r, c);
             const { x: x1, y: y1 } = dot(r, c);
             const x2 = PAD + (c + 1) * CELL;
+            const stroke = isVoid && isHov ? '#ffd700' : lineColor(owner, isHov);
+            const showGlow = !!owner || (isVoid && isHov);
             return (
-              <line
-                key={`h-${r}-${c}`}
-                x1={x1 + DOT_R} y1={y1}
-                x2={x2 - DOT_R} y2={y1}
-                stroke={isVoid && isHov ? '#ffd700' : lineColor(owner, isHov)}
-                strokeWidth={LINE_W}
-                strokeLinecap="round"
-                opacity={lineOpacity(owner, isHov)}
-                filter={owner ? (owner === 1 ? 'url(#glow1)' : 'url(#glow2)') : undefined}
-                style={{ transition: 'opacity 0.15s, stroke 0.1s', pointerEvents: 'none' }}
-              />
+              <g key={`h-${r}-${c}`}>
+                {/* Halo (glow) — drawn with geometry, not an SVG filter, so it
+                    survives mobile browsers that collapse zero-height bboxes. */}
+                {showGlow && (
+                  <line
+                    x1={x1 + DOT_R} y1={y1} x2={x2 - DOT_R} y2={y1}
+                    stroke={stroke} strokeWidth={LINE_W + 9} strokeLinecap="round"
+                    opacity={0.22} style={{ pointerEvents: 'none' }}
+                  />
+                )}
+                <line
+                  x1={x1 + DOT_R} y1={y1} x2={x2 - DOT_R} y2={y1}
+                  stroke={stroke} strokeWidth={LINE_W} strokeLinecap="round"
+                  opacity={lineOpacity(owner, isHov)}
+                  style={{ transition: 'opacity 0.15s, stroke 0.1s', pointerEvents: 'none' }}
+                />
+              </g>
             );
           })
         )}
@@ -228,18 +236,24 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
             const isVoid = isOpponentLine('v', r, c);
             const { x: x1, y: y1 } = dot(r, c);
             const y2 = PAD + (r + 1) * CELL;
+            const stroke = isVoid && isHov ? '#ffd700' : lineColor(owner, isHov);
+            const showGlow = !!owner || (isVoid && isHov);
             return (
-              <line
-                key={`v-${r}-${c}`}
-                x1={x1} y1={y1 + DOT_R}
-                x2={x1} y2={y2 - DOT_R}
-                stroke={isVoid && isHov ? '#ffd700' : lineColor(owner, isHov)}
-                strokeWidth={LINE_W}
-                strokeLinecap="round"
-                opacity={lineOpacity(owner, isHov)}
-                filter={owner ? (owner === 1 ? 'url(#glow1)' : 'url(#glow2)') : undefined}
-                style={{ transition: 'opacity 0.15s, stroke 0.1s', pointerEvents: 'none' }}
-              />
+              <g key={`v-${r}-${c}`}>
+                {showGlow && (
+                  <line
+                    x1={x1} y1={y1 + DOT_R} x2={x1} y2={y2 - DOT_R}
+                    stroke={stroke} strokeWidth={LINE_W + 9} strokeLinecap="round"
+                    opacity={0.22} style={{ pointerEvents: 'none' }}
+                  />
+                )}
+                <line
+                  x1={x1} y1={y1 + DOT_R} x2={x1} y2={y2 - DOT_R}
+                  stroke={stroke} strokeWidth={LINE_W} strokeLinecap="round"
+                  opacity={lineOpacity(owner, isHov)}
+                  style={{ transition: 'opacity 0.15s, stroke 0.1s', pointerEvents: 'none' }}
+                />
+              </g>
             );
           })
         )}
