@@ -153,8 +153,7 @@ export default function GameBoard({ state, onMove, disabled, voidMode, voidOppon
         viewBox={`0 0 ${svgW} ${svgW}`}
         style={{ width: '100%', display: 'block', userSelect: 'none', touchAction: 'none', cursor }}
         onPointerMove={updateHover}
-        onPointerDown={e => { e.preventDefault(); updateHover(e); }}
-        onPointerUp={commitAt}
+        onPointerDown={e => { e.preventDefault(); commitAt(e); }}
         onPointerLeave={clearHover}
         onPointerCancel={clearHover}
       >
