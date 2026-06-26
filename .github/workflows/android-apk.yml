@@ -1,13 +1,18 @@
 name: Build Android APK
 
 # Builds an installable debug APK on every push to the game branch, and on
-# demand. Download it from the run's "Artifacts" section and share the .apk
-# with testers (they enable "Install unknown apps" for their browser/files app).
+# demand. The APK is uploaded as a run artifact AND published to a stable
+# "android-debug" GitHub Release, giving a public direct-download link to
+# share with testers (they enable "Install unknown apps" for their browser/
+# files app).
 on:
   push:
     branches: [ "dots-and-boxes-mini-game-app" ]
     paths-ignore: [ "**/*.md" ]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   apk:
@@ -58,3 +63,16 @@ jobs:
           name: nexus-grid-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # Publish to a stable release so testers get a public, login-free link:
+      # https://github.com/<owner>/<repo>/releases/download/android-debug/nexus-grid-debug.apk
+      - name: Publish APK to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/debug/app-debug.apk nexus-grid-debug.apk
+          gh release delete android-debug --yes --cleanup-tag || true
+          gh release create android-debug nexus-grid-debug.apk \
+            --target "$GITHUB_SHA" \
+            --title "Nexus Grid — debug APK" \
+            --notes "Latest debug build (commit ${GITHUB_SHA:0:7}). Android only. Enable 'Install unknown apps' for your browser/Files app, then open the APK to install."
