@@ -1,0 +1,9 @@
+{
+  "appId": "com.nexusgrid.app",
+  "appName": "Nexus Grid",
+  "webDir": "dist",
+  "backgroundColor": "#030712",
+  "android": {
+    "backgroundColor": "#030712"
+  }
+}

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; }
+  #icon {
+    width: 512px; height: 512px;
+    background: radial-gradient(circle at 50% 40%, #0a0a28 0%, #030712 70%);
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  /* faint grid backdrop */
+  #icon::before {
+    content: '';
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(0,245,255,0.06) 2px, transparent 2px),
+      linear-gradient(90deg, rgba(0,245,255,0.06) 2px, transparent 2px);
+    background-size: 64px 64px;
+  }
+  svg { position: relative; z-index: 1; }
+  .dot { fill: #c0c0ff; filter: drop-shadow(0 0 6px #c0c0ff); }
+  .cyan { stroke: #00f5ff; filter: drop-shadow(0 0 8px #00f5ff); }
+  .pink { stroke: #ff0055; filter: drop-shadow(0 0 8px #ff0055); }
+  line { stroke-width: 14; stroke-linecap: round; }
+</style>
+</head>
+<body>
+  <div id="icon">
+    <svg width="300" height="300" viewBox="0 0 300 300">
+      <!-- 3x3 dots -->
+      <!-- top edge cyan, right edge pink, forming a partial claimed box motif -->
+      <line class="cyan" x1="60" y1="60"  x2="150" y2="60"/>
+      <line class="cyan" x1="150" y1="60" x2="240" y2="60"/>
+      <line class="pink" x1="240" y1="60" x2="240" y2="150"/>
+      <line class="cyan" x1="60" y1="60"  x2="60" y2="150"/>
+      <line class="pink" x1="60" y1="150" x2="150" y2="150"/>
+      <line class="cyan" x1="150" y1="150" x2="150" y2="240"/>
+      <line class="pink" x1="150" y1="240" x2="240" y2="240"/>
+      <line class="cyan" x1="240" y1="150" x2="240" y2="240"/>
+      <!-- 9 dots -->
+      <circle class="dot" cx="60"  cy="60"  r="13"/>
+      <circle class="dot" cx="150" cy="60"  r="13"/>
+      <circle class="dot" cx="240" cy="60"  r="13"/>
+      <circle class="dot" cx="60"  cy="150" r="13"/>
+      <circle class="dot" cx="150" cy="150" r="13"/>
+      <circle class="dot" cx="240" cy="150" r="13"/>
+      <circle class="dot" cx="60"  cy="240" r="13"/>
+      <circle class="dot" cx="150" cy="240" r="13"/>
+      <circle class="dot" cx="240" cy="240" r="13"/>
+    </svg>
+  </div>
+</body>
+</html>
