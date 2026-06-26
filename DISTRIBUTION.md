@@ -17,11 +17,16 @@ Good for: quick "try it now" feedback. Not an install.
 
 ---
 
-## 2. Installable PWA (recommended for tester rounds)
+## 2. Installable PWA — live on GitHub Pages (recommended for tester rounds)
 
-Host the normal build and let testers **Add to Home Screen**. It installs an
-icon, launches full-screen, and works offline — like an app, on Android *and*
-iOS. No APK, no signing, no store.
+**Live URL:** https://luisalberto0023.github.io/Claude-Code-v1/
+
+Every push to the game branch auto-deploys this via
+`.github/workflows/pages.yml`. Share the link — it works in any browser,
+including **iOS Safari**, where testers can add it to the Home Screen for an
+app-like, offline experience (the interim iOS solution until a native build).
+
+To host it elsewhere instead, build and deploy `dist/`:
 
 ```bash
 npm run build      # outputs dist/ with manifest + service worker
