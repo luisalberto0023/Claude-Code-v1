@@ -279,3 +279,23 @@ h1, h2, h3 { font-family: var(--font-title); letter-spacing: 0.08em; }
 ::-webkit-scrollbar { width: 4px; }
 ::-webkit-scrollbar-track { background: var(--bg-deep); }
 ::-webkit-scrollbar-thumb { background: var(--border-bright); border-radius: 2px; }
+
+/* ── Mobile overrides ── */
+@media (max-width: 480px) {
+  .btn-xl { font-size: 0.78rem; padding: 0.85rem 1.5rem; }
+  .btn-lg  { font-size: 0.7rem;  padding: 0.7rem 1.2rem; }
+  .card { padding: 1rem; }
+}
+
+@media (max-width: 768px) {
+  /* Prevent body scroll bounce on iOS during game */
+  body.game-active { overflow: hidden; height: 100dvh; }
+  /* Ensure tap targets are accessible */
+  button { min-height: 36px; }
+  input { font-size: 16px !important; } /* prevents iOS zoom on focus */
+}
+
+/* iOS safe area support */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .safe-bottom { padding-bottom: max(0.6rem, env(safe-area-inset-bottom)); }
+}
