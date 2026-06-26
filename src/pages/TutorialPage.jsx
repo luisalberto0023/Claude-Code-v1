@@ -224,7 +224,7 @@ export default function TutorialPage({ onPlay, onBack }) {
   const Demo = current.Demo;
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}>
       {/* Header */}
       <nav style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '1.25rem 2rem', borderBottom: '1px solid #0f0f2a' }}>
         <button className="btn btn-ghost btn-sm" onClick={onBack}>← BACK</button>

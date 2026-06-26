@@ -409,7 +409,7 @@ export default function GamePage({ config, onGameOver, onQuit }) {
   /* ── MOBILE LAYOUT ── */
   if (isMobile) {
     return (
-      <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      <div style={{ height: '100dvh', display: 'flex', flexDirection: 'column', overflow: 'hidden', paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}>
         {navBar}
         <MobileScoreBar state={gs} aiThinking={aiThinking && vsAI} />
         <TimerBar state={gs} onTimeout={handleTimeout} />
@@ -452,7 +452,7 @@ export default function GamePage({ config, onGameOver, onQuit }) {
 
   /* ── DESKTOP LAYOUT ── */
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)', paddingLeft: 'env(safe-area-inset-left)', paddingRight: 'env(safe-area-inset-right)' }}>
       {navBar}
       {voidBanner}
       {tauntBar}
