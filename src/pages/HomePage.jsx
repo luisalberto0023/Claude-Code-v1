@@ -2,12 +2,13 @@ import { useEffect, useRef } from 'react';
 import { audio } from '../game/audio.js';
 import SoundToggle from '../components/SoundToggle.jsx';
 
-export default function HomePage({ onPlay, onTutorial }) {
+export default function HomePage({ onPlay, onTutorial, onOnline }) {
   const canvasRef = useRef(null);
 
   // The first tap is the gesture browsers require to start audio.
   const handlePlay = () => { audio.unlock(); audio.click(); audio.startMusic(); onPlay(); };
   const handleTutorial = () => { audio.unlock(); audio.click(); audio.startMusic(); onTutorial(); };
+  const handleOnline = () => { audio.unlock(); audio.click(); audio.startMusic(); onOnline(); };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -110,6 +111,11 @@ export default function HomePage({ onPlay, onTutorial }) {
           <button className="btn btn-ghost btn-xl" onClick={handleTutorial} style={{ flex: '1 1 160px' }}>
             ◈ HOW TO PLAY
           </button>
+          {typeof location !== 'undefined' && location.protocol !== 'file:' && (
+            <button className="btn btn-secondary btn-xl" onClick={handleOnline} style={{ flex: '1 1 100%' }}>
+              🌐 PLAY ONLINE
+            </button>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', justifyContent: 'center' }}>

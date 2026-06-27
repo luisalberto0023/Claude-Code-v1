@@ -4,11 +4,14 @@ import TutorialPage from './pages/TutorialPage.jsx';
 import GameSetupPage from './pages/GameSetupPage.jsx';
 import GamePage from './pages/GamePage.jsx';
 import ResultsPage from './pages/ResultsPage.jsx';
+import OnlineLobbyPage from './pages/OnlineLobbyPage.jsx';
+import OnlineGamePage from './pages/OnlineGamePage.jsx';
 
 export default function App() {
   const [page, setPage] = useState('home');
   const [gameConfig, setGameConfig] = useState(null);
   const [finalState, setFinalState] = useState(null);
+  const [roomCode, setRoomCode] = useState(null);
 
   function handleStartGame(config) {
     setGameConfig(config);
@@ -25,12 +28,18 @@ export default function App() {
     setFinalState(null);
   }
 
+  function handleEnterOnlineGame(code) {
+    setRoomCode(code);
+    setPage('online-game');
+  }
+
   return (
     <>
       {page === 'home' && (
         <HomePage
           onPlay={() => setPage('setup')}
           onTutorial={() => setPage('tutorial')}
+          onOnline={() => setPage('online-lobby')}
         />
       )}
       {page === 'tutorial' && (
@@ -58,6 +67,19 @@ export default function App() {
           state={finalState}
           onPlayAgain={handlePlayAgain}
           onHome={() => setPage('home')}
+        />
+      )}
+      {page === 'online-lobby' && (
+        <OnlineLobbyPage
+          onStart={handleEnterOnlineGame}
+          onBack={() => setPage('home')}
+        />
+      )}
+      {page === 'online-game' && roomCode && (
+        <OnlineGamePage
+          key={roomCode}
+          code={roomCode}
+          onQuit={() => { setRoomCode(null); setPage('home'); }}
         />
       )}
     </>
