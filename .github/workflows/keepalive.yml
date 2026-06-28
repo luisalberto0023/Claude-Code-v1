@@ -23,9 +23,6 @@ jobs:
       - name: Ping /health
         run: |
           URL="${{ vars.GAME_SERVER_URL }}"
-          if [ -z "$URL" ]; then
-            echo "GAME_SERVER_URL repo variable not set — skipping."
-            exit 0
-          fi
+          if [ -z "$URL" ]; then URL="https://nexus-grid-server.onrender.com"; fi
           echo "Pinging $URL/health"
           curl -fsS --max-time 60 "$URL/health" && echo " — ok"

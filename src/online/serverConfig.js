@@ -9,7 +9,7 @@
    Until a real URL is set, the "Play Online" screen shows a setup notice and
    never tries to connect, so the rest of the game is unaffected. */
 
-const FALLBACK = 'REPLACE_ME_SERVER_URL';
+const FALLBACK = 'https://nexus-grid-server.onrender.com';
 
 export function serverUrl() {
   const u = (import.meta.env?.VITE_SERVER_URL || FALLBACK || '').trim();
