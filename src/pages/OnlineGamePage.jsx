@@ -12,6 +12,7 @@ const insets = {
 export default function OnlineGamePage({ room, onQuit }) {
   const [you, setYou] = useState(0);          // player number from "welcome"
   const [data, setData] = useState(null);     // latest "sync" payload
+  const [rankedResult, setRankedResult] = useState(null); // { winner, ratings, deltas }
   const [connError, setConnError] = useState('');
   const prevMC = useRef(0);
   const prevScore = useRef(0);
@@ -23,6 +24,7 @@ export default function OnlineGamePage({ room, onQuit }) {
     if (!room) return;
     room.onMessage('welcome', m => setYou(m.you));
     room.onMessage('sync', p => setData(p));
+    room.onMessage('ranked_result', r => setRankedResult(r));
     room.onMessage('rejected', () => { pendingMine.current = false; audio.invalid(); });
     room.onError?.((c, m) => setConnError(m || 'Connection error.'));
     room.onLeave?.(() => { if (!left.current) setConnError('Disconnected from server.'); });
@@ -41,6 +43,7 @@ export default function OnlineGamePage({ room, onQuit }) {
       else audio.lineDraw(gameState.currentPlayer);             // opponent moved
       if (score > prevScore.current) audio.capture(score - prevScore.current);
     }
+    if (gameState.status === 'playing' && mc === 0) setRankedResult(null); // rematch started
     prevMC.current = mc;
     prevScore.current = score;
   }, [gameState]);
@@ -91,7 +94,12 @@ export default function OnlineGamePage({ room, onQuit }) {
             }}>
               <div style={{ fontFamily: 'Orbitron', fontSize: '0.5rem', color: '#404070', letterSpacing: '0.1em' }}>P{p} {you === p ? '· YOU' : ''}</div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontFamily: 'Orbitron', fontSize: '0.65rem', color: active ? color : '#8080b0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '110px' }}>{names[p - 1]}</span>
+                <div style={{ overflow: 'hidden' }}>
+                  <span style={{ display: 'block', fontFamily: 'Orbitron', fontSize: '0.65rem', color: active ? color : '#8080b0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '110px' }}>{names[p - 1]}</span>
+                  {data.ranked && data.ratings?.[p] != null && (
+                    <span style={{ fontFamily: 'Orbitron', fontSize: '0.5rem', color: '#ffd700' }}>★ {data.ratings[p]}</span>
+                  )}
+                </div>
                 <span style={{ fontFamily: 'Orbitron', fontSize: '1.4rem', color, fontWeight: 900, lineHeight: 1 }}>{gameState.scores[p]}</span>
               </div>
             </div>
@@ -116,8 +124,9 @@ export default function OnlineGamePage({ room, onQuit }) {
           color={gameState.winner === 'draw' ? '#ffd700' : P_COLOR[gameState.winner]}
           sub={gameState.winner === you ? '◆ You dominated the grid!' : gameState.winner === 'draw' ? 'Grid synchronized.' : 'Better luck next match.'}
           onQuit={quit}
-          onRematch={you === 1 ? () => { audio.click(); room.send('rematch'); } : null}
-          rematchHint={you === 2 ? 'Waiting for host to start a rematch…' : null}
+          onRematch={you === 1 && !data.ranked ? () => { audio.click(); room.send('rematch'); } : null}
+          rematchHint={you === 2 && !data.ranked ? 'Waiting for host to start a rematch…' : null}
+          elo={data.ranked && rankedResult ? { rating: rankedResult.ratings[you], delta: rankedResult.deltas[you] } : null}
         />
       )}
     </div>
@@ -154,11 +163,19 @@ function WaitingOverlay({ code }) {
   );
 }
 
-function ResultOverlay({ title, color, sub, onQuit, onRematch, rematchHint }) {
+function ResultOverlay({ title, color, sub, onQuit, onRematch, rematchHint, elo }) {
   return (
     <Overlay>
       <div style={{ fontFamily: 'Orbitron', fontSize: 'clamp(1.4rem,7vw,2.4rem)', fontWeight: 900, color, textShadow: `0 0 24px ${color}`, letterSpacing: '0.06em', marginBottom: '0.5rem', textAlign: 'center' }}>{title}</div>
-      <div style={{ fontSize: '0.85rem', color: '#8080c0', marginBottom: '1.5rem' }}>{sub}</div>
+      <div style={{ fontSize: '0.85rem', color: '#8080c0', marginBottom: elo ? '0.75rem' : '1.5rem' }}>{sub}</div>
+      {elo && (
+        <div style={{ marginBottom: '1.5rem', textAlign: 'center' }}>
+          <span style={{ fontFamily: 'Orbitron', fontSize: '1.1rem', color: '#ffd700', fontWeight: 700 }}>★ {elo.rating}</span>
+          <span style={{ fontFamily: 'Orbitron', fontSize: '0.9rem', marginLeft: '0.5rem', color: elo.delta >= 0 ? '#00ff88' : '#ff0055' }}>
+            {elo.delta >= 0 ? `▲ +${elo.delta}` : `▼ ${elo.delta}`}
+          </span>
+        </div>
+      )}
       <div style={{ display: 'flex', gap: '0.75rem' }}>
         {onRematch && <button className="btn btn-primary btn-lg" onClick={onRematch}>⚡ REMATCH</button>}
         <button className="btn btn-ghost btn-lg" onClick={onQuit}>◈ LEAVE</button>

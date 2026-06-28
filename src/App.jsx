@@ -6,6 +6,7 @@ import GamePage from './pages/GamePage.jsx';
 import ResultsPage from './pages/ResultsPage.jsx';
 import OnlineLobbyPage from './pages/OnlineLobbyPage.jsx';
 import OnlineGamePage from './pages/OnlineGamePage.jsx';
+import OnlineLeaderboardPage from './pages/OnlineLeaderboardPage.jsx';
 
 export default function App() {
   const [page, setPage] = useState('home');
@@ -73,7 +74,11 @@ export default function App() {
         <OnlineLobbyPage
           onStart={handleEnterOnlineGame}
           onBack={() => setPage('home')}
+          onLeaderboard={() => setPage('online-leaderboard')}
         />
+      )}
+      {page === 'online-leaderboard' && (
+        <OnlineLeaderboardPage onBack={() => setPage('online-lobby')} />
       )}
       {page === 'online-game' && onlineRoom && (
         <OnlineGamePage

@@ -21,10 +21,16 @@ export async function createPrivate(config, name) {
   return c.create('game', { mode: 'private', gridSize: config.gridSize, name });
 }
 
-// Auto-pair with another waiting player.
+// Auto-pair with another waiting player (casual).
 export async function quickMatch(name) {
   const c = await getClient();
   return c.joinOrCreate('game', { mode: 'quick', name });
+}
+
+// Ranked queue — ELO + leaderboard. Requires an account token.
+export async function rankedMatch(token, name) {
+  const c = await getClient();
+  return c.joinOrCreate('ranked', { token, name });
 }
 
 // Join a private match by its 4-character code.

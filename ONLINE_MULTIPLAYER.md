@@ -46,6 +46,21 @@ So matchmaking isn't stuck behind a 30–60s cold start:
 - **Recommended also:** a free monitor like **UptimeRobot** or **cron-job.org**
   hitting `<URL>/health` every 5 minutes (more reliable than GitHub's scheduler).
 
+## Enable ranked + leaderboard (free Postgres) — Phase 2
+
+Ranked play and the leaderboard need a database. Without one the server still
+runs and ranked "works", but ratings reset on restart (in-memory fallback).
+
+1. Create a free Postgres at **https://neon.tech** (or Supabase). Copy the
+   connection string (looks like `postgresql://user:pass@host/db?sslmode=require`).
+2. In **Render → your service → Environment**, add:
+   `DATABASE_URL = <that connection string>`
+3. Save → Render redeploys. On boot the server logs `[db] Postgres connected`
+   and auto-creates the `players` and `matches` tables. Ratings now persist.
+
+That's it — **Ranked** matches update ELO and the **Leaderboard** shows the
+global Top 100 (and your rank).
+
 ## How to play
 
 - **Quick match:** auto-pairs you with another waiting player (standard 4×4).
