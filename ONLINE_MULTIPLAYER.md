@@ -1,71 +1,87 @@
-# Online multiplayer setup (≈5 minutes)
+# Online multiplayer — setup
 
-Nexus Grid online play uses **Firebase Firestore** as a tiny serverless relay.
-The app stays static (GitHub Pages / APK) — Firebase is the only backend, and
-there's no server to run. Until you add your Firebase keys, the **Play Online**
-button shows a "needs setup" message and the rest of the game is unaffected.
+Online play uses a small **authoritative game server** (Node + Colyseus). The
+server owns each match's state and validates **every move** with the same
+`gameLogic.js` the client uses, so illegal/out-of-turn moves are impossible —
+the foundation for ranked play and anti-cheat.
 
-## 1. Create a Firebase project
+```
+ phone ─┐                         ┌─ validates moves (gameLogic.js)
+ phone ─┤── WebSocket ──► server ─┤── private rooms + quick match
+        │   (Colyseus)            └─ broadcasts authoritative state
+```
 
-1. Go to https://console.firebase.google.com → **Add project** (any name).
-   The free **Spark** plan is plenty for testers.
-2. In the project, open **Build → Firestore Database → Create database**.
-   Start in **production mode** (we'll add rules in step 3), pick a region.
+Everything below is **free**. The only later costs are store fees when you
+publish (Google Play $25 one-time, Apple $99/year).
 
-## 2. Register a Web App and copy the config
+## 1. Deploy the server to Render (free)
 
-1. Project Overview → the **`</>` (Web)** icon → register an app (nickname any).
-2. Firebase shows a `firebaseConfig` object. Copy those values into
-   **`src/online/firebaseConfig.js`**, replacing each `REPLACE_ME_*`:
+1. Go to https://render.com → sign up (free) → **New → Blueprint**.
+2. Connect this GitHub repo. Render reads **`render.yaml`** and creates the
+   `nexus-grid-server` web service (root dir `server/`, free plan).
+3. Deploy. When it's live you'll get a URL like
+   `https://nexus-grid-server.onrender.com`.
+4. Sanity check: open `<that URL>/health` → should return `{"ok":true,...}`.
 
-   ```js
-   export const firebaseConfig = {
-     apiKey: '…',
-     authDomain: '….firebaseapp.com',
-     projectId: '…',
-     storageBucket: '….appspot.com',
-     messagingSenderId: '…',
-     appId: '…',
-   };
-   ```
+> Free instances sleep after ~15 min idle. Step 3 below keeps it warm.
 
-   > These keys are **not secrets** — a Firebase web config is meant to be
-   > public. Access is controlled by the rules in step 3.
+## 2. Point the app at the server
 
-## 3. Deploy the security rules
+Set the URL in **`src/online/serverConfig.js`**:
 
-In the console: **Firestore Database → Rules**, paste the contents of
-**`firestore.rules`** from this repo, and **Publish**.
+```js
+const FALLBACK = 'https://nexus-grid-server.onrender.com';
+```
 
-(v1 rules allow open read/write to the `rooms` collection — fine for friendly
-play. The file includes a commented hardened version that requires Anonymous
-Auth once you want it.)
+(or set `VITE_SERVER_URL` at build time). Commit + push — CI rebuilds the web
+site and the APK, and **Play Online** activates.
 
-## 4. Ship it
+## 3. Keep the free server warm (zero cost)
 
-Commit the edited `firebaseConfig.js` and push. CI rebuilds:
+So matchmaking isn't stuck behind a 30–60s cold start:
 
-- the **web** site (https://luisalberto0023.github.io/Claude-Code-v1/)
-- the **APK** (release `android-debug`)
+- **Built in:** `.github/workflows/keepalive.yml` pings `/health` every ~10 min.
+  Add a repo **variable** `GAME_SERVER_URL` = your Render URL
+  (Settings → Secrets and variables → Actions → **Variables**).
+- **Recommended also:** a free monitor like **UptimeRobot** or **cron-job.org**
+  hitting `<URL>/health` every 5 minutes (more reliable than GitHub's scheduler).
 
-Now **Play Online → Create match** gives a 4-letter room code; your opponent
-picks **Join** and enters it. Moves sync in real time.
+## How to play
 
-## How it works
+- **Quick match:** auto-pairs you with another waiting player (standard 4×4).
+- **Create:** pick a grid, get a 4-letter code, share it.
+- **Join:** enter a friend's code.
 
-- One Firestore document per match in `rooms/{CODE}`.
-- The full game state is stored as a JSON string and rewritten on each move
-  (the game is turn-based, so this is tiny and simple).
-- Both devices subscribe with `onSnapshot` and render from the synced state.
-- Host = Player 1 (cyan), guest = Player 2 (crimson). The board only accepts
-  input on your turn.
+Host is Player 1 (cyan), guest is Player 2 (crimson). The board only accepts
+input on your turn; the server rejects anything else.
 
-## Scope / limitations (v1)
+## Local development
 
-- **Classic mode**, 2 human players, **private room codes**.
-- Blitz timer, power-ups, and random matchmaking are not yet wired for online
-  (they have extra sync edge cases) — natural next additions.
-- Client-authoritative: good for friendly play, not cheat-proof. Add the
-  hardened rules + server validation for competitive use.
-- Online play requires the **hosted site or the APK** — not the single-file
-  `nexus-grid.html` (which is for offline local play).
+```bash
+cd server && npm install && npm start      # server on :2567
+# in serverConfig.js set FALLBACK = 'http://localhost:2567'
+npm run dev                                 # web client (repo root)
+```
+
+Integration test (server must be running):
+
+```bash
+node server/test-playtest.mjs
+```
+
+## Scope / roadmap
+
+- **Phase 1 (done):** authoritative server, private rooms + quick match,
+  server-side validation. *Classic mode, 2 players.*
+- **Phase 2 (next):** accounts, ELO ranked queue, leaderboard (Postgres on a
+  free tier such as Neon/Supabase).
+- **Phase 3:** Play Store (signed AAB) + iOS App Store (Capacitor iOS via a
+  cloud-Mac build + TestFlight).
+
+## Notes / limits
+
+- v1 is **client-account-less** (display name only). Real sign-in comes with
+  ranked in Phase 2 to keep the leaderboard honest.
+- Online needs the **hosted site or the APK** — not the single-file
+  `nexus-grid.html` (which is for offline local play; its online button is
+  hidden).

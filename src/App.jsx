@@ -11,7 +11,7 @@ export default function App() {
   const [page, setPage] = useState('home');
   const [gameConfig, setGameConfig] = useState(null);
   const [finalState, setFinalState] = useState(null);
-  const [roomCode, setRoomCode] = useState(null);
+  const [onlineRoom, setOnlineRoom] = useState(null);
 
   function handleStartGame(config) {
     setGameConfig(config);
@@ -28,8 +28,8 @@ export default function App() {
     setFinalState(null);
   }
 
-  function handleEnterOnlineGame(code) {
-    setRoomCode(code);
+  function handleEnterOnlineGame(room) {
+    setOnlineRoom(room);
     setPage('online-game');
   }
 
@@ -75,11 +75,10 @@ export default function App() {
           onBack={() => setPage('home')}
         />
       )}
-      {page === 'online-game' && roomCode && (
+      {page === 'online-game' && onlineRoom && (
         <OnlineGamePage
-          key={roomCode}
-          code={roomCode}
-          onQuit={() => { setRoomCode(null); setPage('home'); }}
+          room={onlineRoom}
+          onQuit={() => { setOnlineRoom(null); setPage('home'); }}
         />
       )}
     </>

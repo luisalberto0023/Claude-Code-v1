@@ -1,0 +1,31 @@
+name: Keep server warm
+
+# Render's free tier sleeps after ~15 min idle (≈30–60s cold start). This pings
+# the server's /health endpoint so matchmaking is responsive — at zero cost.
+#
+# Setup: add a repository variable GAME_SERVER_URL with your deployed server URL
+# (Settings → Secrets and variables → Actions → Variables), e.g.
+#   https://nexus-grid-server.onrender.com
+# Until it's set, this workflow is a no-op.
+#
+# Note: GitHub may throttle/delay scheduled runs and disables schedules after
+# ~60 days of repo inactivity. For rock-solid uptime, also point a free monitor
+# (UptimeRobot / cron-job.org) at <server>/health every 5 minutes.
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: |
+          URL="${{ vars.GAME_SERVER_URL }}"
+          if [ -z "$URL" ]; then
+            echo "GAME_SERVER_URL repo variable not set — skipping."
+            exit 0
+          fi
+          echo "Pinging $URL/health"
+          curl -fsS --max-time 60 "$URL/health" && echo " — ok"

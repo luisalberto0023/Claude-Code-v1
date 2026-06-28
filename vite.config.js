@@ -11,6 +11,12 @@ export default defineConfig({
   // Relative base so the build works whether served from a domain root,
   // a GitHub Pages subpath, or bundled inside the Capacitor APK.
   base: './',
+  // The standalone single-file build can't load split chunks over file://,
+  // so collapse everything (incl. the lazy online code) into one bundle.
+  // The normal web/APK build keeps code-splitting (online stays a lazy chunk).
+  build: standalone
+    ? { rollupOptions: { output: { inlineDynamicImports: true } } }
+    : {},
   plugins: [
     react(),
     VitePWA({

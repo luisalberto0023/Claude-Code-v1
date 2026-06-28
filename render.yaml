@@ -1,0 +1,18 @@
+# Render Blueprint for the Nexus Grid game server (free tier).
+# In Render: New → Blueprint → connect this repo. It reads this file.
+#
+# The free plan sleeps after ~15 min idle; the keep-warm workflow
+# (.github/workflows/keepalive.yml) pings /health to keep it awake.
+services:
+  - type: web
+    name: nexus-grid-server
+    runtime: node
+    plan: free
+    rootDir: server
+    buildCommand: npm install
+    startCommand: node index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
