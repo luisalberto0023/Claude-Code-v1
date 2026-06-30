@@ -413,6 +413,65 @@ function hashDist(a, b) {
   return Math.sqrt(sum / 64);
 }
 
+// ── Click grid overlay ────────────────────────────────────────────────────────
+// NitroGen finding: predicting a discrete grid cell beats regressing raw
+// coordinates. We draw a faint labeled grid (columns A.., rows 1..) on the frame
+// the model sees, and offer a click_grid tool so it can target a cell instead of
+// guessing exact pixels — improving click reliability (esp. under DPI scaling).
+const GRID_COLS = 12;
+const GRID_ROWS = 8;
+const GRID_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
+function drawGrid(canvasEl, cols = GRID_COLS, rows = GRID_ROWS) {
+  if (!canvasEl || !canvasEl.width) return;
+  const ctx = canvasEl.getContext("2d");
+  const w = canvasEl.width, h = canvasEl.height;
+  const cw = w / cols, ch = h / rows;
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(255,70,70,0.30)";
+  for (let c = 1; c < cols; c++) {
+    const x = Math.round(c * cw);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+  }
+  for (let r = 1; r < rows; r++) {
+    const y = Math.round(r * ch);
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+  }
+  // Edge labels only (keeps the playfield readable): letters along the top,
+  // numbers down the left.
+  const fontPx = Math.max(9, Math.round(Math.min(cw, ch) * 0.22));
+  ctx.font = `bold ${fontPx}px monospace`;
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "rgba(255,235,0,0.9)";
+  ctx.strokeStyle = "rgba(0,0,0,0.6)";
+  ctx.lineWidth = 2;
+  for (let c = 0; c < cols; c++) {
+    const label = GRID_LETTERS[c] ?? "?";
+    const x = c * cw + cw / 2 - fontPx * 0.3, y = 1;
+    ctx.strokeText(label, x, y); ctx.fillText(label, x, y);
+  }
+  for (let r = 0; r < rows; r++) {
+    const label = String(r + 1);
+    const x = 1, y = r * ch + ch / 2 - fontPx * 0.5;
+    ctx.strokeText(label, x, y); ctx.fillText(label, x, y);
+  }
+  ctx.restore();
+}
+
+// Parse a cell reference like "C4" → { col: 2, row: 3 } (0-based), or null.
+function parseGridCell(cell, cols = GRID_COLS, rows = GRID_ROWS) {
+  if (typeof cell !== "string") return null;
+  const m = cell.trim().toUpperCase().match(/^([A-Z]+)\s*([0-9]+)$/);
+  if (!m) return null;
+  let col = 0;
+  for (const ch of m[1]) col = col * 26 + (ch.charCodeAt(0) - 64);
+  col -= 1;
+  const row = parseInt(m[2], 10) - 1;
+  if (col < 0 || col >= cols || row < 0 || row >= rows) return null;
+  return { col, row };
+}
+
 // ── Wait for screen change ────────────────────────────────────────────────────
 // `grab` is an async function that refreshes the canvas with the current frame
 // (works for both browser screen-share and backend native capture).
@@ -432,7 +491,9 @@ async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 4.0) {
 // ── Conversation window management ────────────────────────────────────────────
 const WINDOW_TURNS = 20;
 const CHECKPOINT_EVERY = 15;
-const MAX_IMAGES = 3;
+// NitroGen finding: a single recent frame carries enough context — keep fewer
+// images in the window to cut vision tokens (was 3).
+const MAX_IMAGES = 2;
 
 function pruneImages(messages) {
   const imageIndices = [];
@@ -571,6 +632,21 @@ const TOOLS = [
         clicks: { type: "integer", description: "1 = single click, 2 = double click" },
       },
       required: ["x", "y"],
+    },
+  },
+  {
+    name: "click_grid",
+    description: "Click using the on-screen grid (more reliable than raw pixels). 'cell' is a column letter + row number like 'C4' (columns A-L left→right, rows 1-8 top→bottom). Optional dx,dy (0..1) pick a point inside the cell; default 0.5,0.5 = centre. Prefer this over click when a labeled grid is visible.",
+    input_schema: {
+      type: "object",
+      properties: {
+        cell: { type: "string", description: "Grid cell, e.g. 'C4' (col letter + row number)" },
+        dx: { type: "number", description: "Horizontal position inside the cell, 0=left .. 1=right (default 0.5)" },
+        dy: { type: "number", description: "Vertical position inside the cell, 0=top .. 1=bottom (default 0.5)" },
+        button: { type: "string", enum: ["left", "right", "middle"] },
+        clicks: { type: "integer", description: "1 = single click, 2 = double click" },
+      },
+      required: ["cell"],
     },
   },
   {
@@ -782,24 +858,28 @@ const SHARED_TOOL_NAMES = new Set([
   "observe_screen", "read_screen_text", "analyse_game_state", "set_goals",
   "update_memory", "report_progress", "signal_game_end", "execute_sequence",
 ]);
-const KBM_TOOL_NAMES = new Set(["move_mouse", "click", "drag", "scroll", "press_key", "hold_key", "type_text"]);
+const KBM_TOOL_NAMES = new Set(["move_mouse", "click", "click_grid", "drag", "scroll", "press_key", "hold_key", "type_text"]);
 
 // Assemble the tool list the LLM sees for a given scheme (token-efficient: the
 // model only gets the inputs that actually apply to this game).
-function buildActiveTools(scheme) {
+function buildActiveTools(scheme, gridEnabled = true) {
   const cfg = CONTROL_SCHEMES[scheme] ?? CONTROL_SCHEMES["browser-kbm"];
   const shared = TOOLS.filter(t => SHARED_TOOL_NAMES.has(t.name));
-  const kbm = cfg.inputs.includes("kbm") ? TOOLS.filter(t => KBM_TOOL_NAMES.has(t.name)) : [];
+  let kbm = cfg.inputs.includes("kbm") ? TOOLS.filter(t => KBM_TOOL_NAMES.has(t.name)) : [];
+  if (!gridEnabled) kbm = kbm.filter(t => t.name !== "click_grid");
   const pad = cfg.inputs.includes("gamepad") ? GAMEPAD_TOOLS : [];
   return [...shared, ...kbm, ...pad];
 }
 
 // Human-readable control description injected into the system prompt.
-function controlSchemeDescription(scheme, pauseToThink) {
+function controlSchemeDescription(scheme, pauseToThink, gridEnabled = false) {
   const cfg = CONTROL_SCHEMES[scheme] ?? CONTROL_SCHEMES["browser-kbm"];
   const lines = [];
   if (cfg.inputs.includes("kbm")) {
     lines.push("- Keyboard/mouse: click, drag, scroll, move_mouse, press_key, hold_key, type_text (coordinates are image-space pixels; the backend scales to the real screen)");
+    if (gridEnabled) {
+      lines.push(`- A labeled grid (columns A-${GRID_LETTERS[GRID_COLS - 1]}, rows 1-${GRID_ROWS}) is drawn on every screenshot. To click, PREFER click_grid with a cell like "C4" (optionally dx,dy 0..1 inside the cell) — it is more reliable than guessing raw pixels.`);
+    }
   }
   if (cfg.inputs.includes("gamepad")) {
     lines.push("- Gamepad (virtual Xbox controller): gamepad_button (a/b/x/y/lb/rb/ls/rs/start/back/guide/d-pad), gamepad_stick (analog movement), gamepad_trigger (analog squeeze). Prefer the gamepad for movement/combat in this game.");
@@ -876,6 +956,7 @@ export default function GameAgent() {
 
   // Control scheme / input method (play any game: browser, native, KB/mouse, gamepad)
   const [controlScheme, setControlScheme] = useState("browser-kbm");
+  const [gridEnabled, setGridEnabled] = useState(true); // labeled click-grid overlay
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -935,6 +1016,7 @@ export default function GameAgent() {
   const captureSourceRef = useRef("browser"); // "browser" | "native"
   const pauseToThinkRef = useRef(false);
   const attachedRef = useRef(false);
+  const gridEnabledRef = useRef(true);
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -963,7 +1045,8 @@ export default function GameAgent() {
   }, [addLog]);
 
   // Keep refs in sync with control-scheme / native-capture / pause-to-think state
-  useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme); }, [controlScheme]);
+  useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled); }, [controlScheme, gridEnabled]);
+  useEffect(() => { gridEnabledRef.current = gridEnabled; }, [gridEnabled]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -1051,6 +1134,7 @@ export default function GameAgent() {
 
   // ── Unified frame grab (browser screen-share OR backend native capture) ──────
   const grabFrame = useCallback(async () => {
+    let base;
     if (captureSourceRef.current === "native") {
       const r = await backend("/capture/frame");
       if (!r || !r.ok || !r.image || !canvasRef.current) return null;
@@ -1063,9 +1147,17 @@ export default function GameAgent() {
         offsetX: r.real_left ?? 0,
         offsetY: r.real_top ?? 0,
       };
-      return { data: r.image, imgW, imgH, realW, realH };
+      base = { data: r.image, imgW, imgH, realW, realH };
+    } else {
+      base = captureFrame(videoRef.current, canvasRef.current, scaleRef);
+      if (!base) return null;
     }
-    return captureFrame(videoRef.current, canvasRef.current, scaleRef);
+    // Overlay the labeled click-grid on the frame the model sees, then re-encode.
+    if (gridEnabledRef.current && canvasRef.current?.width) {
+      drawGrid(canvasRef.current);
+      base = { ...base, data: canvasRef.current.toDataURL("image/jpeg", 0.85).split(",")[1] };
+    }
+    return base;
   }, []);
 
   // ── Game speed control (pause-to-think). No-op unless enabled AND attached. ──
@@ -1171,6 +1263,33 @@ export default function GameAgent() {
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
         ? `Clicked. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
+        : `Error: ${res.error}`);
+    }
+
+    if (toolName === "click_grid") {
+      const parsed = parseGridCell(toolInput.cell);
+      if (!parsed) return toolResult(`Invalid cell "${toolInput.cell}". Use a column letter + row number like "C4" (columns A-${GRID_LETTERS[GRID_COLS - 1]}, rows 1-${GRID_ROWS}).`);
+      const s = scaleRef.current;
+      const imgW = s.imgW || canvasRef.current?.width || 0;
+      const imgH = s.imgH || canvasRef.current?.height || 0;
+      if (!imgW || !imgH) return toolResult("Screen not available — capture a frame first.");
+      const clamp01 = (v, d) => { const n = typeof v === "number" ? v : d; return Math.max(0, Math.min(1, n)); };
+      const cw = imgW / GRID_COLS, ch = imgH / GRID_ROWS;
+      const imgX = Math.round((parsed.col + clamp01(toolInput.dx, 0.5)) * cw);
+      const imgY = Math.round((parsed.row + clamp01(toolInput.dy, 0.5)) * ch);
+      const { x, y } = scaled(imgX, imgY);
+      const res = await backend("/mouse/click", {
+        x, y,
+        button: toolInput.button ?? "left",
+        clicks: toolInput.clicks ?? 1,
+        move_duration: timing.mouseSpeed,
+      });
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      setLastConfirm(confirm);
+      addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
+      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      return toolResult(res.ok
+        ? `Clicked cell ${toolInput.cell.toUpperCase()} (image ${imgX},${imgY}). Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
         : `Error: ${res.error}`);
     }
 
@@ -1519,7 +1638,7 @@ export default function GameAgent() {
     }
 
     // Lock in the chosen control scheme for this run
-    activeToolsRef.current = buildActiveTools(controlScheme);
+    activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled);
     captureSourceRef.current = nativeMode ? "native" : "browser";
     const schemeCfg = CONTROL_SCHEMES[controlScheme] ?? CONTROL_SCHEMES["browser-kbm"];
     const pauseActive = pauseToThink && schemeCfg.native && attachedRef.current;
@@ -1583,7 +1702,7 @@ export default function GameAgent() {
 
     const researchCtx = research ? `\n\nRESEARCH FINDINGS:\n${research}` : "";
 
-    const controlDesc = controlSchemeDescription(controlScheme, pauseActive);
+    const controlDesc = controlSchemeDescription(controlScheme, pauseActive, gridEnabled);
 
     const systemPrompt = `You are an autonomous AI game-playing agent playing "${gameDesc}" on the user's screen.
 
@@ -1770,7 +1889,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setRunning(false);
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
-  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, pauseToThink,
+  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
@@ -2019,6 +2138,13 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase
               </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={gridEnabled} onChange={e => setGridEnabled(e.target.checked)} />
+                Click-grid overlay
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
+                Draws a labeled A1-style grid on screenshots and enables the click_grid tool for reliable mouse targeting. Turn off for pure-keyboard games.
+              </div>
               <div>
                 <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
                   Token budget cap (0 = no cap)
