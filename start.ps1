@@ -37,7 +37,12 @@ Write-Host "  OK: venv active" -ForegroundColor Green
 
 # Python packages
 python -m pip install --quiet fastapi uvicorn pyautogui pillow pyperclip 2>$null
-Write-Host "  OK: Python packages ready" -ForegroundColor Green
+Write-Host "  OK: Core Python packages ready" -ForegroundColor Green
+# Optional capability packages (gamepad / native capture / pause-to-think).
+# Best-effort: failures do not stop the agent — the backend degrades gracefully.
+python -m pip install --quiet psutil pygetwindow 2>$null
+python -m pip install --quiet vgamepad dxcam xspeedhack 2>$null
+Write-Host "  OK: Optional packages checked (gamepad also needs the ViGEmBus driver)" -ForegroundColor Green
 
 # Node
 try { node --version | Out-Null } catch {

@@ -357,12 +357,32 @@ function captureFrame(videoEl, canvasEl, scaleRef) {
   canvasEl.height = imgH;
   const ctx = canvasEl.getContext("2d");
   ctx.drawImage(videoEl, 0, 0, imgW, imgH);
-  scaleRef.current = { imgW, imgH, realW, realH, scale: realW / imgW };
+  scaleRef.current = { imgW, imgH, realW, realH, scale: realW / imgW, offsetX: 0, offsetY: 0 };
 
   return {
     data: canvasEl.toDataURL("image/jpeg", 0.85).split(",")[1],
     imgW, imgH, realW, realH,
   };
+}
+
+// Draw a base64 JPEG (from the backend's native capture) onto the canvas so the
+// perceptual-hash / change-detection code can run on it just like a browser frame.
+async function drawDataURLToCanvas(dataURL, canvasEl) {
+  const img = new Image();
+  await new Promise((resolve, reject) => {
+    img.onload = resolve;
+    img.onerror = reject;
+    img.src = dataURL;
+  });
+  let imgW = img.width, imgH = img.height;
+  if (imgW > MAX_FRAME_W) {
+    imgH = Math.round(imgH * MAX_FRAME_W / imgW);
+    imgW = MAX_FRAME_W;
+  }
+  canvasEl.width = imgW;
+  canvasEl.height = imgH;
+  canvasEl.getContext("2d").drawImage(img, 0, 0, imgW, imgH);
+  return { imgW, imgH };
 }
 
 // ── Perceptual hash (8×8 grid) ────────────────────────────────────────────────
@@ -394,13 +414,15 @@ function hashDist(a, b) {
 }
 
 // ── Wait for screen change ────────────────────────────────────────────────────
-async function waitChange(videoEl, canvasEl, scaleRef, maxMs = 2000, threshold = 4.0) {
+// `grab` is an async function that refreshes the canvas with the current frame
+// (works for both browser screen-share and backend native capture).
+async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 4.0) {
   const t0 = Date.now();
-  captureFrame(videoEl, canvasEl, scaleRef);
+  await grab();
   const baseline = frameHash(canvasEl);
   while (Date.now() - t0 < maxMs) {
     await new Promise(r => setTimeout(r, 150));
-    captureFrame(videoEl, canvasEl, scaleRef);
+    await grab();
     const dist = hashDist(baseline, frameHash(canvasEl));
     if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
   }
@@ -640,7 +662,7 @@ const TOOLS = [
   },
   {
     name: "execute_sequence",
-    description: "Execute a batch of up to 15 simple actions in one tool call (saves tokens). Aborts early if 2 consecutive actions produce no screen change. Supported action tools: press_key, type_text, click. Use this for repetitive moves like multiple arrow keys in 2048.",
+    description: "Execute a batch of up to 15 simple actions in one tool call (saves tokens). Aborts early if 2 consecutive actions produce no screen change. Supported action tools: press_key, type_text, click, gamepad_button. Use this for repetitive moves like multiple arrow keys in 2048 or repeated gamepad presses.",
     input_schema: {
       type: "object",
       properties: {
@@ -650,7 +672,7 @@ const TOOLS = [
           items: {
             type: "object",
             properties: {
-              tool: { type: "string", enum: ["press_key", "type_text", "click"] },
+              tool: { type: "string", enum: ["press_key", "type_text", "click", "gamepad_button"] },
               input: { type: "object", description: "Arguments for that tool" },
             },
             required: ["tool", "input"],
@@ -701,6 +723,92 @@ const TOOLS = [
     },
   },
 ];
+
+// ── Gamepad tools (used when the control scheme includes a gamepad) ───────────
+const GAMEPAD_BUTTONS = ["a", "b", "x", "y", "lb", "rb", "ls", "rs", "start", "back", "guide", "up", "down", "left", "right"];
+const GAMEPAD_TOOLS = [
+  {
+    name: "gamepad_button",
+    description: "Press a virtual Xbox controller button. Face: a,b,x,y. Shoulders: lb,rb. Stick clicks: ls,rs. System: start,back,guide. D-pad: up,down,left,right.",
+    input_schema: {
+      type: "object",
+      properties: {
+        button: { type: "string", enum: GAMEPAD_BUTTONS },
+        hold: { type: "number", description: "Seconds to hold the button (default 0.08; use larger for charged actions)" },
+      },
+      required: ["button"],
+    },
+  },
+  {
+    name: "gamepad_stick",
+    description: "Move an analog stick. x,y range -1..1. y: +1 = up/forward, -1 = down/back. x: +1 = right, -1 = left. duration = seconds to hold before recentering (0 = leave it held until changed).",
+    input_schema: {
+      type: "object",
+      properties: {
+        stick: { type: "string", enum: ["left", "right"] },
+        x: { type: "number", description: "-1..1 (left/right)" },
+        y: { type: "number", description: "-1..1 (down/up)" },
+        duration: { type: "number", description: "Seconds to hold before recentering (0 = stay)" },
+      },
+      required: ["stick", "x", "y"],
+    },
+  },
+  {
+    name: "gamepad_trigger",
+    description: "Squeeze an analog trigger (e.g. accelerate / shoot). value 0..1. duration = seconds to hold before releasing (0 = stay held).",
+    input_schema: {
+      type: "object",
+      properties: {
+        trigger: { type: "string", enum: ["left", "right"] },
+        value: { type: "number", description: "0..1 squeeze amount" },
+        duration: { type: "number", description: "Seconds to hold before releasing (0 = stay)" },
+      },
+      required: ["trigger", "value"],
+    },
+  },
+];
+
+// ── Control schemes (user picks one in the UI) ────────────────────────────────
+// Defines which input tools the agent gets, and whether native-only features
+// (DirectX capture, pause-to-think) are applicable.
+const CONTROL_SCHEMES = {
+  "browser-kbm":    { label: "🌐 Browser · KB/Mouse", inputs: ["kbm"], native: false },
+  "native-kbm":     { label: "🖥️ Native · KB/Mouse",  inputs: ["kbm"], native: true },
+  "native-gamepad": { label: "🎮 Native · Gamepad",    inputs: ["gamepad"], native: true },
+  "native-all":     { label: "🎮 Native · Pad+KB/Mouse", inputs: ["kbm", "gamepad"], native: true },
+};
+
+const SHARED_TOOL_NAMES = new Set([
+  "observe_screen", "read_screen_text", "analyse_game_state", "set_goals",
+  "update_memory", "report_progress", "signal_game_end", "execute_sequence",
+]);
+const KBM_TOOL_NAMES = new Set(["move_mouse", "click", "drag", "scroll", "press_key", "hold_key", "type_text"]);
+
+// Assemble the tool list the LLM sees for a given scheme (token-efficient: the
+// model only gets the inputs that actually apply to this game).
+function buildActiveTools(scheme) {
+  const cfg = CONTROL_SCHEMES[scheme] ?? CONTROL_SCHEMES["browser-kbm"];
+  const shared = TOOLS.filter(t => SHARED_TOOL_NAMES.has(t.name));
+  const kbm = cfg.inputs.includes("kbm") ? TOOLS.filter(t => KBM_TOOL_NAMES.has(t.name)) : [];
+  const pad = cfg.inputs.includes("gamepad") ? GAMEPAD_TOOLS : [];
+  return [...shared, ...kbm, ...pad];
+}
+
+// Human-readable control description injected into the system prompt.
+function controlSchemeDescription(scheme, pauseToThink) {
+  const cfg = CONTROL_SCHEMES[scheme] ?? CONTROL_SCHEMES["browser-kbm"];
+  const lines = [];
+  if (cfg.inputs.includes("kbm")) {
+    lines.push("- Keyboard/mouse: click, drag, scroll, move_mouse, press_key, hold_key, type_text (coordinates are image-space pixels; the backend scales to the real screen)");
+  }
+  if (cfg.inputs.includes("gamepad")) {
+    lines.push("- Gamepad (virtual Xbox controller): gamepad_button (a/b/x/y/lb/rb/ls/rs/start/back/guide/d-pad), gamepad_stick (analog movement), gamepad_trigger (analog squeeze). Prefer the gamepad for movement/combat in this game.");
+  }
+  if (pauseToThink && cfg.native) {
+    lines.push("- NOTE: the game is automatically FROZEN while you reason and RESUMED right before your action runs, so take your time thinking — but expect your action to execute in real time once issued.");
+  }
+  return lines.join("\n");
+}
 
 // ── UI theme & helpers ────────────────────────────────────────────────────────
 const C = {
@@ -766,6 +874,18 @@ export default function GameAgent() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [maxTokens, setMaxTokens] = useState(150000);
 
+  // Control scheme / input method (play any game: browser, native, KB/mouse, gamepad)
+  const [controlScheme, setControlScheme] = useState("browser-kbm");
+  const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
+  // Native-only options
+  const [useNativeCapture, setUseNativeCapture] = useState(false);
+  const [nativeWindows, setNativeWindows] = useState([]);
+  const [selectedWindowTitle, setSelectedWindowTitle] = useState("");
+  const [nativeRegionSet, setNativeRegionSet] = useState(false);
+  const [pauseToThink, setPauseToThink] = useState(false);
+  const [gameProcess, setGameProcess] = useState("");
+  const [attached, setAttached] = useState(false);
+
   // Runtime state
   const [running, setRunning] = useState(false);
   const [paused, setPaused] = useState(false);
@@ -811,6 +931,10 @@ export default function GameAgent() {
   const streamRef = useRef(null);
   const logEndRef = useRef(null);
   const gameEndRef = useRef(null); // set by signal_game_end tool
+  const activeToolsRef = useRef(buildActiveTools("browser-kbm")); // tools for the chosen scheme
+  const captureSourceRef = useRef("browser"); // "browser" | "native"
+  const pauseToThinkRef = useRef(false);
+  const attachedRef = useRef(false);
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -830,12 +954,27 @@ export default function GameAgent() {
       if (r.status === "ok") {
         setBackendOk(true);
         setScreenInfo({ width: r.screen_width, height: r.screen_height });
+        if (r.capabilities) setCapabilities(r.capabilities);
         addLog(`Backend online — ${r.platform} ${r.screen_width}×${r.screen_height}`, "success");
       } else {
         addLog("Backend offline — start agent_server.py first", "error");
       }
     });
   }, [addLog]);
+
+  // Keep refs in sync with control-scheme / native-capture / pause-to-think state
+  useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme); }, [controlScheme]);
+  // Reset native-only options when a non-native (browser) scheme is selected
+  useEffect(() => {
+    if (!CONTROL_SCHEMES[controlScheme]?.native) {
+      setUseNativeCapture(false);
+      setPauseToThink(false);
+      setNativeRegionSet(false);
+    }
+  }, [controlScheme]);
+  useEffect(() => { captureSourceRef.current = useNativeCapture ? "native" : "browser"; }, [useNativeCapture]);
+  useEffect(() => { pauseToThinkRef.current = pauseToThink; }, [pauseToThink]);
+  useEffect(() => { attachedRef.current = attached; }, [attached]);
 
   // B4: Continuous backend watchdog — pings every 10s, auto-pauses on 2 consecutive failures
   useEffect(() => {
@@ -910,14 +1049,83 @@ export default function GameAgent() {
     setCapturing(false);
   }, []);
 
+  // ── Unified frame grab (browser screen-share OR backend native capture) ──────
+  const grabFrame = useCallback(async () => {
+    if (captureSourceRef.current === "native") {
+      const r = await backend("/capture/frame");
+      if (!r || !r.ok || !r.image || !canvasRef.current) return null;
+      await drawDataURLToCanvas(`data:image/jpeg;base64,${r.image}`, canvasRef.current);
+      const imgW = canvasRef.current.width, imgH = canvasRef.current.height;
+      const realW = r.real_width ?? imgW, realH = r.real_height ?? imgH;
+      scaleRef.current = {
+        imgW, imgH, realW, realH,
+        scale: imgW ? realW / imgW : 1,
+        offsetX: r.real_left ?? 0,
+        offsetY: r.real_top ?? 0,
+      };
+      return { data: r.image, imgW, imgH, realW, realH };
+    }
+    return captureFrame(videoRef.current, canvasRef.current, scaleRef);
+  }, []);
+
+  // ── Game speed control (pause-to-think). No-op unless enabled AND attached. ──
+  const setGameSpeed = useCallback(async (speed) => {
+    if (!pauseToThinkRef.current || !attachedRef.current) return;
+    await backend("/game/speed", { speed });
+  }, []);
+
+  // ── Native window listing / region selection ─────────────────────────────────
+  const listNativeWindows = useCallback(async () => {
+    const r = await backend("/capture/windows");
+    if (r.ok) {
+      setNativeWindows(r.windows ?? []);
+      addLog(`Found ${r.windows?.length ?? 0} windows.`, "info");
+    } else {
+      addLog(`Window list failed: ${r.error}`, "error");
+    }
+  }, [addLog]);
+
+  const selectNativeWindow = useCallback(async (title) => {
+    setSelectedWindowTitle(title);
+    if (!title) { setNativeRegionSet(false); return; }
+    const r = await backend("/capture/select", { title });
+    if (r.ok) {
+      setNativeRegionSet(true);
+      addLog(`Capture region set to "${title}" (${r.region.width}×${r.region.height}).`, "success");
+    } else {
+      setNativeRegionSet(false);
+      addLog(`Region select failed: ${r.error}`, "error");
+    }
+  }, [addLog]);
+
+  // ── Attach / detach the speed hack to a running game process ─────────────────
+  const attachGame = useCallback(async () => {
+    if (!gameProcess.trim()) { addLog("Enter the game's process name (e.g. game.exe).", "warn"); return; }
+    const r = await backend("/game/attach", { process: gameProcess.trim() });
+    if (r.ok) {
+      setAttached(true);
+      addLog(`Attached to ${gameProcess} (pid ${r.pid}). Pause-to-think ready.`, "success");
+    } else {
+      setAttached(false);
+      addLog(`Attach failed: ${r.error}`, "error");
+    }
+  }, [gameProcess, addLog]);
+
+  const detachGame = useCallback(async () => {
+    await backend("/game/detach");
+    setAttached(false);
+    addLog("Detached from game.", "info");
+  }, [addLog]);
+
   // ── executeTool ──────────────────────────────────────────────────────────────
   const executeTool = useCallback(async (toolName, toolInput, toolId) => {
     const timing = getTiming();
 
     const scaled = (x, y) => {
       const s = scaleRef.current;
-      if (!s.scale || s.scale <= 1) return { x, y };
-      return { x: Math.round(x * s.scale), y: Math.round(y * s.scale) };
+      const ox = s.offsetX ?? 0, oy = s.offsetY ?? 0;
+      const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
+      return { x: Math.round(ox + x * sc), y: Math.round(oy + y * sc) };
     };
 
     const toolResult = (text) => ({
@@ -928,7 +1136,7 @@ export default function GameAgent() {
 
     // ── Screen observation ───────────────────────────────────────────────────
     if (toolName === "observe_screen" || toolName === "read_screen_text") {
-      const frame = captureFrame(videoRef.current, canvasRef.current, scaleRef);
+      const frame = await grabFrame();
       if (!frame) return toolResult("Screen not available — ensure screen capture is active.");
       return {
         type: "tool_result",
@@ -957,7 +1165,7 @@ export default function GameAgent() {
         clicks: toolInput.clicks ?? 1,
         move_duration: timing.mouseSpeed,
       });
-      const confirm = await waitChange(videoRef.current, canvasRef.current, scaleRef, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -970,7 +1178,7 @@ export default function GameAgent() {
       const s1 = scaled(toolInput.x1, toolInput.y1);
       const s2 = scaled(toolInput.x2, toolInput.y2);
       const res = await backend("/mouse/drag", { x1: s1.x, y1: s1.y, x2: s2.x, y2: s2.y, duration: timing.mouseSpeed * 2, button: toolInput.button ?? "left" });
-      const confirm = await waitChange(videoRef.current, canvasRef.current, scaleRef, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -980,7 +1188,7 @@ export default function GameAgent() {
     if (toolName === "scroll") {
       const { x, y } = scaled(toolInput.x, toolInput.y);
       const res = await backend("/mouse/scroll", { x, y, amount: toolInput.amount });
-      await waitChange(videoRef.current, canvasRef.current, scaleRef, Math.min(timing.confirmDelay, 1000));
+      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1000));
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? "Scrolled." : `Error: ${res.error}`);
@@ -989,7 +1197,7 @@ export default function GameAgent() {
     // ── Keyboard actions ─────────────────────────────────────────────────────
     if (toolName === "press_key") {
       const res = await backend("/keyboard/press", { key: toolInput.key });
-      const confirm = await waitChange(videoRef.current, canvasRef.current, scaleRef, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1000,7 +1208,7 @@ export default function GameAgent() {
 
     if (toolName === "hold_key") {
       const res = await backend("/keyboard/hold", { key: toolInput.key, duration: toolInput.duration });
-      await waitChange(videoRef.current, canvasRef.current, scaleRef, Math.min(timing.confirmDelay, 1500));
+      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500));
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? `Key held for ${toolInput.duration}s.` : `Error: ${res.error}`);
@@ -1008,10 +1216,52 @@ export default function GameAgent() {
 
     if (toolName === "type_text") {
       const res = await backend("/keyboard/type", { text: toolInput.text, interval: timing.typingInterval });
-      await waitChange(videoRef.current, canvasRef.current, scaleRef, Math.min(timing.confirmDelay, 1500));
+      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500));
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? "Text typed." : `Error: ${res.error}`);
+    }
+
+    // ── Gamepad actions ──────────────────────────────────────────────────────
+    if (toolName === "gamepad_button") {
+      const res = await backend("/gamepad/button", { button: toolInput.button, hold: toolInput.hold ?? 0.08 });
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      setLastConfirm(confirm);
+      addAction(toolName, toolInput, { ...res, ...confirm });
+      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      return toolResult(res.ok
+        ? `Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
+        : `Error: ${res.error}${res.available === false ? " (install vgamepad + ViGEmBus on Windows)" : ""}`);
+    }
+
+    if (toolName === "gamepad_stick") {
+      const res = await backend("/gamepad/stick", {
+        stick: toolInput.stick ?? "left",
+        x: toolInput.x ?? 0, y: toolInput.y ?? 0,
+        duration: toolInput.duration ?? 0,
+      });
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      setLastConfirm(confirm);
+      addAction(toolName, toolInput, { ...res, ...confirm });
+      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      return toolResult(res.ok
+        ? `Stick ${toolInput.stick} → (${toolInput.x}, ${toolInput.y}). Screen ${confirm.changed ? "changed" : "unchanged"}.`
+        : `Error: ${res.error}`);
+    }
+
+    if (toolName === "gamepad_trigger") {
+      const res = await backend("/gamepad/trigger", {
+        trigger: toolInput.trigger ?? "right",
+        value: toolInput.value ?? 1,
+        duration: toolInput.duration ?? 0.1,
+      });
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      setLastConfirm(confirm);
+      addAction(toolName, toolInput, { ...res, ...confirm });
+      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      return toolResult(res.ok
+        ? `Trigger ${toolInput.trigger} → ${toolInput.value}. Screen ${confirm.changed ? "changed" : "unchanged"}.`
+        : `Error: ${res.error}`);
     }
 
     // ── Meta tools ───────────────────────────────────────────────────────────
@@ -1061,12 +1311,14 @@ export default function GameAgent() {
             clicks: inp.clicks ?? 1,
             move_duration: timing.mouseSpeed,
           });
+        } else if (t === "gamepad_button") {
+          r = await backend("/gamepad/button", { button: inp.button, hold: inp.hold ?? 0.08 });
         } else {
           summary.push(`${executed + 1}: unsupported tool "${t}" — skipped`);
           continue;
         }
 
-        const confirm = await waitChange(videoRef.current, canvasRef.current, scaleRef, timing.confirmDelay);
+        const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
         executed++;
         lastConfirmInfo = confirm;
         addAction(`seq.${t}`, inp, { ok: r?.ok ?? false, ...confirm });
@@ -1119,7 +1371,7 @@ export default function GameAgent() {
     }
 
     return toolResult(`Unknown tool: ${toolName}`);
-  }, [gameDesc, getTiming, addLog, addAction]);
+  }, [gameDesc, getTiming, addLog, addAction, grabFrame]);
 
   // ── agentTurn ────────────────────────────────────────────────────────────────
   const agentTurn = useCallback(async (systemPrompt, apiKey) => {
@@ -1141,8 +1393,11 @@ export default function GameAgent() {
       : "";
     const turnText = `Turn ${turnCountRef.current}.${goalLine}\nFirst call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.`;
 
+    // Pause-to-think: freeze the game while we capture + reason (no-op unless enabled)
+    await setGameSpeed(0);
+
     // A1: skip image when screen is effectively unchanged from previous turn
-    const frame = captureFrame(videoRef.current, canvasRef.current, scaleRef);
+    const frame = await grabFrame();
     const currentHash = frame ? frameHash(canvasRef.current) : null;
     const distFromLast = (currentHash && lastTurnHashRef.current) ? hashDist(lastTurnHashRef.current, currentHash) : 999;
     const skipImage = turnCountRef.current > 1 && distFromLast < 2.0;
@@ -1170,11 +1425,15 @@ export default function GameAgent() {
 
     let resp;
     try {
-      resp = await callAI(providerKey, model, systemPrompt, convRef.current, TOOLS, apiKey, msg => addLog(msg, "warn"));
+      resp = await callAI(providerKey, model, systemPrompt, convRef.current, activeToolsRef.current, apiKey, msg => addLog(msg, "warn"));
     } catch (e) {
+      await setGameSpeed(1); // always resume the game on the way out
       addLog(`API error: ${e.message}`, "error");
       return { stop: true, reason: "api-error" };
     }
+
+    // Reasoning done — resume the game so the action below executes in real time
+    await setGameSpeed(1);
 
     // Accumulate tokens
     if (resp.usage) {
@@ -1224,7 +1483,7 @@ export default function GameAgent() {
     }
 
     return { stop: false };
-  }, [providerKey, model, addLog, executeTool, maxTokens]);
+  }, [providerKey, model, addLog, executeTool, maxTokens, grabFrame, setGameSpeed]);
 
   // ── runResearch ──────────────────────────────────────────────────────────────
   const runResearch = useCallback(async (apiKey) => {
@@ -1251,7 +1510,24 @@ export default function GameAgent() {
   // ── startAgent ───────────────────────────────────────────────────────────────
   const startAgent = useCallback(async () => {
     if (running) return;
-    if (!capturing) { addLog("Start screen capture first.", "error"); return; }
+
+    const nativeMode = useNativeCapture;
+    const captureReady = nativeMode ? nativeRegionSet : capturing;
+    if (!captureReady) {
+      addLog(nativeMode ? "Select a game window to capture first." : "Start screen capture first.", "error");
+      return;
+    }
+
+    // Lock in the chosen control scheme for this run
+    activeToolsRef.current = buildActiveTools(controlScheme);
+    captureSourceRef.current = nativeMode ? "native" : "browser";
+    const schemeCfg = CONTROL_SCHEMES[controlScheme] ?? CONTROL_SCHEMES["browser-kbm"];
+    const pauseActive = pauseToThink && schemeCfg.native && attachedRef.current;
+    pauseToThinkRef.current = pauseActive;
+    if (pauseToThink && schemeCfg.native && !attachedRef.current) {
+      addLog("Pause-to-think is on but no game is attached — running without it.", "warn");
+    }
+    addLog(`Control scheme: ${schemeCfg.label}${pauseActive ? " · pause-to-think ON" : ""}`, "info");
 
     const prov = PROVIDERS[providerKey];
     const apiKey = apiKeyInput || getEnv(prov.envKey ?? "");
@@ -1307,15 +1583,18 @@ export default function GameAgent() {
 
     const researchCtx = research ? `\n\nRESEARCH FINDINGS:\n${research}` : "";
 
+    const controlDesc = controlSchemeDescription(controlScheme, pauseActive);
+
     const systemPrompt = `You are an autonomous AI game-playing agent playing "${gameDesc}" on the user's screen.
 
 Your goal: Play as well as possible — maximize score and try to win.
 
-TOOLS AVAILABLE:
+INPUT CONTROLS FOR THIS GAME (${schemeCfg.label}) — use ONLY these input tools:
+${controlDesc}
+
+OTHER TOOLS AVAILABLE:
 - observe_screen / read_screen_text: See the current screen
-- click, drag, scroll, move_mouse: Mouse control (use image-space pixel coordinates)
-- press_key, hold_key, type_text: Keyboard control
-- execute_sequence: Batch up to 15 actions in ONE tool call — strongly preferred for repetitive moves (e.g. multiple arrow keys in 2048). Saves significant tokens.
+- execute_sequence: Batch up to 15 actions in ONE tool call — strongly preferred for repetitive moves (e.g. multiple arrow keys in 2048, or repeated gamepad presses). Saves significant tokens.
 - analyse_game_state: REQUIRED reasoning step before every physical action
 - set_goals: Define and track your ordered sub-goals toward the main objective
 - update_memory: Save discoveries and strategies for future sessions
@@ -1349,7 +1628,7 @@ REASONING STYLE (for analyse_game_state):
 
     for (let i = 0; i < 3 && !stopRef.current; i++) {
       while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 500));
-      const frame = captureFrame(videoRef.current, canvasRef.current, scaleRef);
+      const frame = await grabFrame();
       const turnMsg = i === 0
         ? "Study the game board carefully. Identify the game type, current state, score if visible, and controls. Do NOT take any action yet."
         : `Study turn ${i + 1}/3 — continue observing. Note any additional details.`;
@@ -1485,10 +1764,14 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       addLog(`Memory save failed: ${e.message}`, "warn");
     }
 
+    // Ensure the game is never left frozen
+    if (pauseToThinkRef.current) { await backend("/game/speed", { speed: 1 }); }
+
     setRunning(false);
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
-  }, [running, capturing, providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, addLog]);
+  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, pauseToThink,
+      providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -1523,7 +1806,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   // ── Checklist ────────────────────────────────────────────────────────────────
   const checklist = [
     { label: "Backend online",   done: backendOk },
-    { label: "Screen captured",  done: capturing },
+    { label: "Screen captured",  done: useNativeCapture ? nativeRegionSet : capturing },
     { label: "API key set",      done: !!(apiKeyInput || getEnv(PROVIDERS[providerKey].envKey ?? "")) || providerKey === "ollama" },
     { label: "Game name set",    done: gameDesc.trim().length > 0 },
   ];
@@ -1561,16 +1844,20 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <div style={{ position: "relative", background: "#000", borderRadius: 4, overflow: "hidden", aspectRatio: "16/9" }}>
             <video ref={videoRef} style={{ width: "100%", height: "100%", objectFit: "contain", display: capturing ? "block" : "none" }} muted onMouseMove={handleVideoMouseMove} />
             {!capturing && (
-              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.dim, fontSize: 11 }}>
-                No capture
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: C.dim, fontSize: 11, textAlign: "center", padding: 8 }}>
+                {useNativeCapture
+                  ? (nativeRegionSet ? "DirectX capture · region set" : "DirectX capture · pick a window below")
+                  : "No capture"}
               </div>
             )}
           </div>
           <canvas ref={canvasRef} style={{ display: "none" }} />
           <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
-            {!capturing
-              ? <button onClick={startCapture} style={btnStyle(C.accent)}>Share Screen</button>
-              : <button onClick={stopCapture} style={btnStyle(C.red)}>Stop Capture</button>
+            {useNativeCapture
+              ? <span style={{ fontSize: 10, color: C.textDim }}>Using backend capture (configured under Control Scheme)</span>
+              : (!capturing
+                  ? <button onClick={startCapture} style={btnStyle(C.accent)}>Share Screen</button>
+                  : <button onClick={stopCapture} style={btnStyle(C.red)}>Stop Capture</button>)
             }
             {screenInfo && <span style={{ fontSize: 10, color: C.dim }}>{screenInfo.width}×{screenInfo.height}</span>}
           </div>
@@ -1611,6 +1898,84 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>GAME</div>
           <input placeholder="Game name (e.g. 2048)" value={gameDesc} onChange={e => setGameDesc(e.target.value)} style={inputStyle()} />
           <input placeholder="URL (optional)" value={gameUrl} onChange={e => setGameUrl(e.target.value)} style={inputStyle({ marginTop: 4 })} />
+        </div>
+
+        {/* Control scheme */}
+        <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>CONTROL SCHEME</div>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {Object.entries(CONTROL_SCHEMES).map(([key, s]) => (
+              <button key={key} onClick={() => setControlScheme(key)}
+                disabled={running}
+                style={{ ...btnStyle(controlScheme === key ? C.accent : C.border, running), fontSize: 10, padding: "3px 7px" }}>
+                {s.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Gamepad capability hint */}
+          {CONTROL_SCHEMES[controlScheme]?.inputs.includes("gamepad") && !capabilities.gamepad && (
+            <div style={{ fontSize: 10, color: C.yellow, marginTop: 5 }}>
+              ⚠ Gamepad needs <b>vgamepad</b> + the free <b>ViGEmBus</b> driver on Windows.
+            </div>
+          )}
+
+          {/* Native-only options */}
+          {CONTROL_SCHEMES[controlScheme]?.native && (
+            <div style={{ marginTop: 8, padding: "7px 8px", background: "#0a0a18", borderRadius: 4, border: `1px solid ${C.border}` }}>
+              <div style={{ fontSize: 10, color: C.textDim, marginBottom: 5 }}>NATIVE GAME OPTIONS</div>
+
+              {/* DirectX capture */}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={useNativeCapture} disabled={running}
+                  onChange={e => { setUseNativeCapture(e.target.checked); if (!e.target.checked) setNativeRegionSet(false); }} />
+                Capture via DirectX (dxcam){!capabilities.capture && <span style={{ color: C.yellow }}> — needs dxcam</span>}
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "2px 0 0 22px" }}>
+                Off = share the game window with the browser instead.
+              </div>
+
+              {useNativeCapture && (
+                <div style={{ marginTop: 6 }}>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    <button onClick={listNativeWindows} disabled={running} style={{ ...btnStyle(C.border, running), fontSize: 10 }}>↻ List windows</button>
+                    {nativeRegionSet && <span style={{ fontSize: 10, color: C.green, alignSelf: "center" }}>● region set</span>}
+                  </div>
+                  {nativeWindows.length > 0 && (
+                    <select value={selectedWindowTitle} disabled={running}
+                      onChange={e => selectNativeWindow(e.target.value)}
+                      style={{ ...inputStyle(), marginTop: 5 }}>
+                      <option value="">— pick game window —</option>
+                      {nativeWindows.map((w, i) => (
+                        <option key={i} value={w.title}>{w.title.slice(0, 40)} ({w.width}×{w.height})</option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+
+              {/* Pause-to-think */}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", color: C.text, marginTop: 8 }}>
+                <input type="checkbox" checked={pauseToThink} disabled={running}
+                  onChange={e => setPauseToThink(e.target.checked)} />
+                Pause game while thinking{!capabilities.speedhack && <span style={{ color: C.yellow }}> — needs xspeedhack</span>}
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "2px 0 0 22px" }}>
+                Freezes a single-player game while the AI reasons. Never use online/anti-cheat games.
+              </div>
+
+              {pauseToThink && (
+                <div style={{ marginTop: 6, display: "flex", gap: 5 }}>
+                  <input placeholder="process e.g. game.exe" value={gameProcess} disabled={running}
+                    onChange={e => setGameProcess(e.target.value)} style={inputStyle({ flex: 1 })} />
+                  {!attached
+                    ? <button onClick={attachGame} disabled={running} style={{ ...btnStyle(C.accent, running), fontSize: 10 }}>Attach</button>
+                    : <button onClick={detachGame} style={{ ...btnStyle(C.green), fontSize: 10 }}>● attached</button>
+                  }
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Timing profiles */}

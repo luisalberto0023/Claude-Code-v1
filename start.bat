@@ -44,7 +44,13 @@ echo   OK: Virtual environment active
 :: ── Install Python packages ───────────────────────────────────────────────────
 echo   Checking Python packages...
 python -m pip install --quiet fastapi uvicorn pyautogui pillow pyperclip 2>nul
-echo   OK: Python packages ready
+echo   OK: Core Python packages ready
+:: Optional capability packages (gamepad / native capture / pause-to-think).
+:: Best-effort: failures here do not stop the agent — the backend degrades gracefully.
+echo   Checking optional packages (gamepad, capture, windows)...
+python -m pip install --quiet psutil pygetwindow 2>nul
+python -m pip install --quiet vgamepad dxcam xspeedhack 2>nul
+echo   OK: Optional packages checked (gamepad needs the ViGEmBus driver too)
 
 :: ── Check Node ────────────────────────────────────────────────────────────────
 node --version >nul 2>&1
