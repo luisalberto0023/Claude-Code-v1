@@ -844,11 +844,14 @@ const TOOLS = [
 ];
 
 // ── Gamepad tools (used when the control scheme includes a gamepad) ───────────
-const GAMEPAD_BUTTONS = ["a", "b", "x", "y", "lb", "rb", "ls", "rs", "start", "back", "guide", "up", "down", "left", "right"];
+const GAMEPAD_BUTTONS = [
+  "a", "b", "x", "y", "lb", "rb", "ls", "rs", "start", "back", "guide", "up", "down", "left", "right",
+  "south", "east", "west", "north", // SDL/cross-platform aliases (south=a, east=b, west=x, north=y)
+];
 const GAMEPAD_TOOLS = [
   {
     name: "gamepad_button",
-    description: "Press a virtual Xbox controller button. Face: a,b,x,y. Shoulders: lb,rb. Stick clicks: ls,rs. System: start,back,guide. D-pad: up,down,left,right.",
+    description: "Press a virtual Xbox controller button. Face: a,b,x,y (aka south,east,west,north). Shoulders: lb,rb. Stick clicks: ls,rs. System: start,back,guide. D-pad: up,down,left,right.",
     input_schema: {
       type: "object",
       properties: {

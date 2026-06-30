@@ -404,11 +404,17 @@ def memory_clear(game_key: str):
 # ViGEmBus driver (https://github.com/ViGEm/ViGEmBus/releases) on Windows.
 
 _BTN_MAP = {
+    # Xbox-style names
     "a": "A", "b": "B", "x": "X", "y": "Y",
     "lb": "LEFT_SHOULDER", "rb": "RIGHT_SHOULDER",
     "ls": "LEFT_THUMB", "rs": "RIGHT_THUMB",
     "start": "START", "back": "BACK", "guide": "GUIDE",
     "up": "DPAD_UP", "down": "DPAD_DOWN", "left": "DPAD_LEFT", "right": "DPAD_RIGHT",
+    # Cross-platform / SDL names (as used by the NitroGen dataset) — aliases
+    "south": "A", "east": "B", "west": "X", "north": "Y",
+    "left_shoulder": "LEFT_SHOULDER", "right_shoulder": "RIGHT_SHOULDER",
+    "left_thumb": "LEFT_THUMB", "right_thumb": "RIGHT_THUMB",
+    "dpad_up": "DPAD_UP", "dpad_down": "DPAD_DOWN", "dpad_left": "DPAD_LEFT", "dpad_right": "DPAD_RIGHT",
 }
 
 
