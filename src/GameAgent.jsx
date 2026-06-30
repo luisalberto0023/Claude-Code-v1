@@ -1003,6 +1003,7 @@ export default function GameAgent() {
   const [cropEnabled, setCropEnabled] = useState(false); // HUD crop to game area
   const [cropMargins, setCropMargins] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
   const [previewSrc, setPreviewSrc] = useState(null);
+  const [strategyInterval, setStrategyInterval] = useState(1); // B2: vision every N turns (1 = every turn)
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1064,6 +1065,8 @@ export default function GameAgent() {
   const attachedRef = useRef(false);
   const gridEnabledRef = useRef(true);
   const cropRef = useRef({ enabled: false, top: 0, right: 0, bottom: 0, left: 0 });
+  const strategyIntervalRef = useRef(1);
+  const forceStrategyRef = useRef(false); // force a vision turn (e.g. after stuck)
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1095,6 +1098,7 @@ export default function GameAgent() {
   useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled); }, [controlScheme, gridEnabled]);
   useEffect(() => { gridEnabledRef.current = gridEnabled; }, [gridEnabled]);
   useEffect(() => { cropRef.current = { enabled: cropEnabled, ...cropMargins }; }, [cropEnabled, cropMargins]);
+  useEffect(() => { strategyIntervalRef.current = Math.max(1, strategyInterval || 1); }, [strategyInterval]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -1581,35 +1585,51 @@ export default function GameAgent() {
     const goalLine = goalsRef.current.length > 0
       ? `\nCurrent goal (${currentGoalIndexRef.current + 1}/${goalsRef.current.length}): ${goalsRef.current[currentGoalIndexRef.current] ?? "n/a"}`
       : "";
-    const turnText = `Turn ${turnCountRef.current}.${goalLine}\nFirst call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.`;
+    const baseLine = `Turn ${turnCountRef.current}.${goalLine}`;
+
+    // B2: strategy-interval slow loop. Vision (image) turns run every N turns for
+    // high-level planning; the turns in between are cheaper text-only "tactical"
+    // turns where the model acts on its plan + the textual action feedback. The
+    // first play turn and any stuck-triggered turn are forced to be strategy turns.
+    const strategyInterval = Math.max(1, strategyIntervalRef.current || 1);
+    const forced = forceStrategyRef.current;
+    forceStrategyRef.current = false;
+    const isStrategyTurn = forced || strategyInterval <= 1 || ((turnCountRef.current - 1) % strategyInterval === 0);
 
     // Pause-to-think: freeze the game while we capture + reason (no-op unless enabled)
     await setGameSpeed(0);
 
-    // A1: skip image when screen is effectively unchanged from previous turn
+    // Always grab a frame for hashing / stuck-detection (local, no token cost)
     const frame = await grabFrame();
     const currentHash = frame ? frameHash(canvasRef.current) : null;
     const distFromLast = (currentHash && lastTurnHashRef.current) ? hashDist(lastTurnHashRef.current, currentHash) : 999;
-    const skipImage = turnCountRef.current > 1 && distFromLast < 2.0;
+    // A1: even on a strategy turn, skip the image if the screen is unchanged
+    const a1Skip = turnCountRef.current > 1 && distFromLast < 2.0;
+    const sendImage = !!frame && isStrategyTurn && !a1Skip;
 
-    if (frame && !skipImage) {
+    if (sendImage) {
       convRef.current.push({
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
-          { type: "text", text: turnText },
+          { type: "text", text: `${baseLine}\nStrategy turn — reassess the screen and plan. First call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.` },
         ],
       });
-    } else if (frame && skipImage) {
+    } else if (isStrategyTurn) {
+      // Strategy turn but no fresh image (unchanged screen or capture unavailable)
       convRef.current.push({
         role: "user",
-        content: `${turnText}\n[Screen unchanged since last action — image omitted to save tokens. Continue based on prior observations.]`,
+        content: frame
+          ? `${baseLine}\n[Screen unchanged since last action — image omitted to save tokens.] First call analyse_game_state, then act.`
+          : `${baseLine} (screen unavailable) First call analyse_game_state, then act.`,
       });
     } else {
+      // Tactical turn — deliberately text-only to save tokens
       convRef.current.push({
         role: "user",
-        content: `${turnText} (screen unavailable)`,
+        content: `${baseLine}\nTACTICAL turn (no screenshot, saving tokens). Act on your current plan and the latest action results. Call observe_screen ONLY if you genuinely need to see the screen again; otherwise take your next action directly.`,
       });
+      addLog(`Tactical turn ${turnCountRef.current} (text-only)`, "info");
     }
     lastTurnHashRef.current = currentHash;
 
@@ -1737,6 +1757,8 @@ export default function GameAgent() {
     goalsRef.current = [];
     currentGoalIndexRef.current = 0;
     lastTurnHashRef.current = null;
+    strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
+    forceStrategyRef.current = true; // first play turn is always a vision turn
 
     setRunning(true);
     setGameResult(null);
@@ -1887,6 +1909,7 @@ REASONING STYLE (for analyse_game_state):
             role: "user",
             content: "The screen has not changed in several turns. Try a completely different approach, check if the game ended, or use observe_screen to reassess.",
           });
+          forceStrategyRef.current = true; // give the model a fresh look next turn
         }
       }
     }
@@ -1960,7 +1983,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setRunning(false);
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
-  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink,
+  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
@@ -2257,6 +2280,23 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   onChange={e => setMaxTokens(Math.max(0, Number(e.target.value) || 0))}
                   style={inputStyle()}
                 />
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
+                  Vision every N turns (1 = every turn)
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  step="1"
+                  value={strategyInterval}
+                  onChange={e => setStrategyInterval(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+                  style={inputStyle()}
+                />
+                <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
+                  &gt;1 = slow loop: send a screenshot only every N turns; the turns between are cheaper text-only tactical turns. Big token saver for fast/repetitive games.
+                </div>
               </div>
             </div>
           )}
