@@ -459,6 +459,49 @@ function drawGrid(canvasEl, cols = GRID_COLS, rows = GRID_ROWS) {
   ctx.restore();
 }
 
+// ── HUD crop ──────────────────────────────────────────────────────────────────
+// NitroGen masks distractor UI (streamer chrome, HUDs) so the model focuses on
+// the game. We crop the captured frame to the game area by margin percentages.
+// A crop is a pure cut (no rescale), so we fold the crop offset into
+// scaleRef.offsetX/offsetY and leave scale unchanged — click + click_grid keep
+// mapping to the correct real-screen pixels with no other changes.
+let _cropTmp = null;
+function _tmpCanvas() {
+  if (!_cropTmp) _cropTmp = document.createElement("canvas");
+  return _cropTmp;
+}
+
+// Crops canvasEl in place by {top,right,bottom,left} percentages and updates
+// scaleRef so downstream coordinate scaling stays correct. Returns true if applied.
+function applyCrop(canvasEl, scaleRef, m) {
+  if (!canvasEl || !canvasEl.width) return false;
+  const w = canvasEl.width, h = canvasEl.height;
+  const left = Math.round((Math.max(0, m.left ?? 0) / 100) * w);
+  const top = Math.round((Math.max(0, m.top ?? 0) / 100) * h);
+  const right = Math.round((Math.max(0, m.right ?? 0) / 100) * w);
+  const bottom = Math.round((Math.max(0, m.bottom ?? 0) / 100) * h);
+  const cw = w - left - right, ch = h - top - bottom;
+  if (cw < 16 || ch < 16) return false; // too aggressive — skip rather than break
+  if (left === 0 && top === 0 && right === 0 && bottom === 0) return false;
+
+  const tmp = _tmpCanvas();
+  tmp.width = cw; tmp.height = ch;
+  tmp.getContext("2d").drawImage(canvasEl, left, top, cw, ch, 0, 0, cw, ch);
+  canvasEl.width = cw; canvasEl.height = ch;
+  canvasEl.getContext("2d").drawImage(tmp, 0, 0);
+
+  const s = scaleRef.current;
+  const scale = (!s.scale || s.scale <= 0) ? 1 : s.scale;
+  scaleRef.current = {
+    imgW: cw, imgH: ch,
+    realW: Math.round(cw * scale), realH: Math.round(ch * scale),
+    scale,
+    offsetX: (s.offsetX ?? 0) + left * scale,
+    offsetY: (s.offsetY ?? 0) + top * scale,
+  };
+  return true;
+}
+
 // Parse a cell reference like "C4" → { col: 2, row: 3 } (0-based), or null.
 function parseGridCell(cell, cols = GRID_COLS, rows = GRID_ROWS) {
   if (typeof cell !== "string") return null;
@@ -957,6 +1000,9 @@ export default function GameAgent() {
   // Control scheme / input method (play any game: browser, native, KB/mouse, gamepad)
   const [controlScheme, setControlScheme] = useState("browser-kbm");
   const [gridEnabled, setGridEnabled] = useState(true); // labeled click-grid overlay
+  const [cropEnabled, setCropEnabled] = useState(false); // HUD crop to game area
+  const [cropMargins, setCropMargins] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
+  const [previewSrc, setPreviewSrc] = useState(null);
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1017,6 +1063,7 @@ export default function GameAgent() {
   const pauseToThinkRef = useRef(false);
   const attachedRef = useRef(false);
   const gridEnabledRef = useRef(true);
+  const cropRef = useRef({ enabled: false, top: 0, right: 0, bottom: 0, left: 0 });
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1047,6 +1094,7 @@ export default function GameAgent() {
   // Keep refs in sync with control-scheme / native-capture / pause-to-think state
   useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled); }, [controlScheme, gridEnabled]);
   useEffect(() => { gridEnabledRef.current = gridEnabled; }, [gridEnabled]);
+  useEffect(() => { cropRef.current = { enabled: cropEnabled, ...cropMargins }; }, [cropEnabled, cropMargins]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -1152,13 +1200,36 @@ export default function GameAgent() {
       base = captureFrame(videoRef.current, canvasRef.current, scaleRef);
       if (!base) return null;
     }
-    // Overlay the labeled click-grid on the frame the model sees, then re-encode.
+
+    let mutated = false;
+    // HUD crop first (changes dimensions + scaleRef offsets) ...
+    if (cropRef.current?.enabled && canvasRef.current?.width) {
+      if (applyCrop(canvasRef.current, scaleRef, cropRef.current)) {
+        base = {
+          ...base,
+          imgW: canvasRef.current.width, imgH: canvasRef.current.height,
+          realW: scaleRef.current.realW, realH: scaleRef.current.realH,
+        };
+        mutated = true;
+      }
+    }
+    // ... then the labeled click-grid on top of the (possibly cropped) frame.
     if (gridEnabledRef.current && canvasRef.current?.width) {
       drawGrid(canvasRef.current);
+      mutated = true;
+    }
+    if (mutated && canvasRef.current?.width) {
       base = { ...base, data: canvasRef.current.toDataURL("image/jpeg", 0.85).split(",")[1] };
     }
     return base;
   }, []);
+
+  // Grab one frame and show it (with crop + grid applied) so margins can be tuned.
+  const previewCrop = useCallback(async () => {
+    const f = await grabFrame();
+    if (f?.data) setPreviewSrc(`data:image/jpeg;base64,${f.data}`);
+    else addLog("Preview unavailable — start capture / select a window first.", "warn");
+  }, [grabFrame, addLog]);
 
   // ── Game speed control (pause-to-think). No-op unless enabled AND attached. ──
   const setGameSpeed = useCallback(async (speed) => {
@@ -2145,6 +2216,35 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
                 Draws a labeled A1-style grid on screenshots and enables the click_grid tool for reliable mouse targeting. Turn off for pure-keyboard games.
               </div>
+
+              {/* HUD crop */}
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={cropEnabled} onChange={e => setCropEnabled(e.target.checked)} />
+                Crop to game area (HUD mask)
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
+                Trims browser chrome / HUD so the model focuses on the game. Margins are % of the captured frame.
+              </div>
+              {cropEnabled && (
+                <div style={{ marginLeft: 22, marginTop: 2 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
+                    {["top", "right", "bottom", "left"].map(side => (
+                      <div key={side} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: C.textDim }}>
+                        <span style={{ width: 44 }}>{side}</span>
+                        <input type="number" min="0" max="45" value={cropMargins[side]}
+                          onChange={e => setCropMargins(m => ({ ...m, [side]: Math.max(0, Math.min(45, Number(e.target.value) || 0)) }))}
+                          style={inputStyle({ width: 52 })} />
+                        <span>%</span>
+                      </div>
+                    ))}
+                  </div>
+                  <button onClick={previewCrop} style={{ ...btnStyle(C.border), fontSize: 10, marginTop: 5 }}>Preview</button>
+                  {previewSrc && (
+                    <img src={previewSrc} alt="crop preview"
+                      style={{ display: "block", width: "100%", marginTop: 5, border: `1px solid ${C.border}`, borderRadius: 3 }} />
+                  )}
+                </div>
+              )}
               <div>
                 <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
                   Token budget cap (0 = no cap)
