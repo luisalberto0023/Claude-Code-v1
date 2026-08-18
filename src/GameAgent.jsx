@@ -316,7 +316,9 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         body: JSON.stringify(body),
       });
       if (!res.ok) {
-        const error = new Error(`HTTP ${res.status}`);
+        let detail = "";
+        try { detail = (await res.text() || "").slice(0, 300); } catch {}
+        const error = new Error(detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`);
         error.status = res.status;
         throw error;
       }
@@ -946,6 +948,65 @@ function controlSchemeDescription(scheme, pauseToThink, gridEnabled = false) {
   return lines.join("\n");
 }
 
+// ── No-tools / JSON-action mode (for small local models that can't tool-call) ──
+// Many local vision models (e.g. qwen2.5vl in Ollama) reject the `tools` param
+// with HTTP 400. In that case we send NO tools and instead ask the model to
+// reply with a JSON array of actions, which we parse and execute ourselves.
+
+function buildActionReference(tools) {
+  return tools.map(t => {
+    const props = t.input_schema?.properties ?? {};
+    const req = t.input_schema?.required ?? [];
+    const keys = Object.keys(props);
+    const args = keys.length
+      ? `{ ${keys.map(k => `"${k}"${req.includes(k) ? "" : "?"}`).join(", ")} }`
+      : "{ }";
+    return `- ${t.name} ${args}`;
+  }).join("\n");
+}
+
+function buildJsonProtocol(tools) {
+  return `
+
+=== RESPONSE FORMAT (CRITICAL) ===
+You CANNOT call functions. Respond with ONLY a JSON array of one or more actions — no prose, no markdown fences, nothing else.
+Each action is an object: {"tool":"<name>","input":{ ...args }}
+Do analyse_game_state first, then exactly ONE game action.
+Example: [{"tool":"analyse_game_state","input":{"analysis":"Merge tiles to the left."}},{"tool":"press_key","input":{"key":"left"}}]
+
+Available actions (?=optional arg):
+${buildActionReference(tools)}
+
+Output ONLY the JSON array.`;
+}
+
+// Extract a list of {tool, input} from a model's free-text reply.
+function parseJsonActions(text) {
+  if (!text) return [];
+  let s = String(text).replace(/```(?:json)?/gi, "").trim();
+  const tryParse = (str) => { try { return JSON.parse(str); } catch { return null; } };
+  let data = tryParse(s);
+  if (!data) {
+    const arr = s.match(/\[[\s\S]*\]/);
+    const obj = s.match(/\{[\s\S]*\}/);
+    data = (arr && tryParse(arr[0])) || (obj && tryParse(obj[0])) || null;
+  }
+  if (!data) return [];
+  let items = Array.isArray(data) ? data : (Array.isArray(data.actions) ? data.actions : [data]);
+  return items.map(it => {
+    if (!it || typeof it !== "object") return null;
+    const tool = it.tool || it.action || it.name;
+    if (!tool) return null;
+    let input = it.input || it.args || it.arguments;
+    if (!input || typeof input !== "object") {
+      // flattened form e.g. {"tool":"press_key","key":"up"}
+      const { tool: _t, action: _a, name: _n, ...rest } = it;
+      input = rest;
+    }
+    return { tool, input: input || {} };
+  }).filter(Boolean);
+}
+
 // ── UI theme & helpers ────────────────────────────────────────────────────────
 const C = {
   bg:      "#07070f",
@@ -1018,6 +1079,7 @@ export default function GameAgent() {
   const [cropMargins, setCropMargins] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
   const [previewSrc, setPreviewSrc] = useState(null);
   const [strategyInterval, setStrategyInterval] = useState(1); // B2: vision every N turns (1 = every turn)
+  const [noToolsMode, setNoToolsMode] = useState(false); // JSON-action mode for small local models
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1081,6 +1143,7 @@ export default function GameAgent() {
   const cropRef = useRef({ enabled: false, top: 0, right: 0, bottom: 0, left: 0 });
   const strategyIntervalRef = useRef(1);
   const forceStrategyRef = useRef(false); // force a vision turn (e.g. after stuck)
+  const noToolsRef = useRef(false);
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1114,6 +1177,7 @@ export default function GameAgent() {
   useEffect(() => { cropRef.current = { enabled: cropEnabled, ...cropMargins }; }, [cropEnabled, cropMargins]);
   useEffect(() => { strategyIntervalRef.current = Math.max(1, strategyInterval || 1); }, [strategyInterval]);
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
+  useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -1650,7 +1714,8 @@ export default function GameAgent() {
 
     let resp;
     try {
-      resp = await callAI(providerKey, model, systemPrompt, convRef.current, activeToolsRef.current, apiKey, msg => addLog(msg, "warn"));
+      const toolsArg = noToolsRef.current ? [] : activeToolsRef.current;
+      resp = await callAI(providerKey, model, systemPrompt, convRef.current, toolsArg, apiKey, msg => addLog(msg, "warn"));
     } catch (e) {
       await setGameSpeed(1); // always resume the game on the way out
       addLog(`API error: ${e.message}`, "error");
@@ -1680,27 +1745,51 @@ export default function GameAgent() {
     const hash = frameHash(canvasRef.current);
     stuckRingRef.current = [...stuckRingRef.current.slice(-6), hash];
 
-    // Add assistant message to history
-    convRef.current.push({ role: "assistant", content: resp.content ?? [] });
+    if (noToolsRef.current) {
+      // ── JSON-action mode (small local models): plain-text history, parse actions ──
+      const text = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
+      convRef.current.push({ role: "assistant", content: text || "(no output)" });
+      if (text) addLog(text.slice(0, 300), "assistant");
 
-    // Log text content
-    for (const c of resp.content ?? []) {
-      if (c.type === "text") addLog(c.text, "assistant");
-    }
+      const actions = parseJsonActions(text);
+      if (!actions.length) {
+        addLog("No parseable JSON action — nudging model.", "warn");
+        convRef.current.push({
+          role: "user",
+          content: 'Reply with ONLY a JSON array of actions, e.g. [{"tool":"press_key","input":{"key":"up"}}]. No other text.',
+        });
+      }
 
-    // Execute tool calls
-    const toolUses = (resp.content ?? []).filter(c => c.type === "tool_use");
-    const toolResults = [];
-    for (const tu of toolUses) {
-      if (stopRef.current) break;
-      addLog(`→ ${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`, "tool");
-      const result = await executeTool(tu.name, tu.input, tu.id);
-      toolResults.push(result);
-      if (gameEndRef.current) break;
-    }
-
-    if (toolResults.length > 0) {
-      convRef.current.push({ role: "user", content: toolResults });
+      const feedback = [];
+      for (const a of actions) {
+        if (stopRef.current) break;
+        addLog(`→ ${a.tool}(${JSON.stringify(a.input).slice(0, 100)})`, "tool");
+        const result = await executeTool(a.tool, a.input, `${a.tool}__json`);
+        for (const c of (result?.content ?? [])) {
+          if (c.type === "image") feedback.push(c);
+          else if (c.type === "text") feedback.push({ type: "text", text: `${a.tool}: ${c.text}` });
+        }
+        if (gameEndRef.current) break;
+      }
+      if (feedback.length) convRef.current.push({ role: "user", content: feedback });
+    } else {
+      // ── Native tool-calling path ──
+      convRef.current.push({ role: "assistant", content: resp.content ?? [] });
+      for (const c of resp.content ?? []) {
+        if (c.type === "text") addLog(c.text, "assistant");
+      }
+      const toolUses = (resp.content ?? []).filter(c => c.type === "tool_use");
+      const toolResults = [];
+      for (const tu of toolUses) {
+        if (stopRef.current) break;
+        addLog(`→ ${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`, "tool");
+        const result = await executeTool(tu.name, tu.input, tu.id);
+        toolResults.push(result);
+        if (gameEndRef.current) break;
+      }
+      if (toolResults.length > 0) {
+        convRef.current.push({ role: "user", content: toolResults });
+      }
     }
 
     if (gameEndRef.current) {
@@ -1774,6 +1863,7 @@ export default function GameAgent() {
     lastTurnHashRef.current = null;
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
+    noToolsRef.current = noToolsMode;
 
     setRunning(true);
     setGameResult(null);
@@ -1846,7 +1936,7 @@ COORDINATE SYSTEM:
 
 REASONING STYLE (for analyse_game_state):
 - Be concise: 1-3 sentences max
-- State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}`;
+- State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
 
     // Study phase — 3 observe-only turns to understand the game state
     setPhase("study");
@@ -1871,17 +1961,24 @@ REASONING STYLE (for analyse_game_state):
       });
 
       try {
-        const studyTools = TOOLS.filter(t => studyToolNames.has(t.name));
+        const studyTools = noToolsMode ? [] : TOOLS.filter(t => studyToolNames.has(t.name));
         const resp = await callAI(providerKey, model, systemPrompt, convRef.current, studyTools, apiKey, msg => addLog(msg, "warn"));
         const content = resp.content ?? [];
-        convRef.current.push({ role: "assistant", content });
-        const toolResults = [];
-        for (const tu of content.filter(c => c.type === "tool_use")) {
-          toolResults.push(await executeTool(tu.name, tu.input, tu.id));
+        if (noToolsMode) {
+          // No-tools study: just observe in plain text (no action parsing/execution)
+          const text = content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
+          convRef.current.push({ role: "assistant", content: text || "(observing)" });
+          if (text) addLog(`Study ${i + 1}/3: ${text.slice(0, 200)}`, "info");
+        } else {
+          convRef.current.push({ role: "assistant", content });
+          const toolResults = [];
+          for (const tu of content.filter(c => c.type === "tool_use")) {
+            toolResults.push(await executeTool(tu.name, tu.input, tu.id));
+          }
+          if (toolResults.length) convRef.current.push({ role: "user", content: toolResults });
+          const text = content.find(c => c.type === "text")?.text ?? "";
+          if (text) addLog(`Study ${i + 1}/3: ${text.slice(0, 200)}`, "info");
         }
-        if (toolResults.length) convRef.current.push({ role: "user", content: toolResults });
-        const text = content.find(c => c.type === "text")?.text ?? "";
-        if (text) addLog(`Study ${i + 1}/3: ${text.slice(0, 200)}`, "info");
       } catch (e) {
         addLog(`Study turn error: ${e.message}`, "warn");
       }
@@ -1998,7 +2095,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setRunning(false);
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
-  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval,
+  }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
@@ -2023,6 +2120,8 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setProviderKey(key);
     setModel(PROVIDERS[key].defaultModel);
     setApiKeyInput("");
+    // Local models usually can't tool-call — default them to JSON-action mode.
+    setNoToolsMode(key === "ollama");
   }, []);
 
   const handleApiKeyChange = useCallback((val) => {
@@ -2264,6 +2363,13 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase
               </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={noToolsMode} onChange={e => setNoToolsMode(e.target.checked)} />
+                Small-model mode (JSON actions)
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
+                For local models that can't do tool-calling (fixes Ollama HTTP 400). The model replies with JSON actions we parse. Auto-on for Ollama.
+              </div>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={gridEnabled} onChange={e => setGridEnabled(e.target.checked)} />
                 Click-grid overlay
