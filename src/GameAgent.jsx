@@ -62,18 +62,28 @@ const PROVIDERS = {
   },
   ollama: {
     label: "Ollama (local)", icon: "🖥️", free: true,
-    notes: "100% free, runs locally. Needs Ollama + vision model.",
+    notes: "100% free & unlimited, runs on your own GPU. Needs Ollama + a vision model pulled.",
     envKey: null,
     baseURL: "http://localhost:11434/v1/chat/completions",
     supportsSearch: false,
-    defaultModel: "llava",
+    defaultModel: "qwen2.5vl:3b",
     models: [
-      { id: "llava", label: "LLaVA (recommended)" },
-      { id: "qwen2-vl", label: "Qwen2-VL (better quality)" },
-      { id: "minicpm-v", label: "MiniCPM-V (lightweight)" },
+      { id: "qwen2.5vl:3b", label: "Qwen2.5-VL 3B (best for 6GB)" },
+      { id: "gemma3:4b", label: "Gemma 3 4B (vision)" },
+      { id: "moondream", label: "Moondream 2 (tiny, ~2GB)" },
+      { id: "llava:7b", label: "LLaVA 7B (tight on 6GB)" },
+      { id: "minicpm-v", label: "MiniCPM-V (best OCR, tight)" },
+      { id: "qwen2.5vl:7b", label: "Qwen2.5-VL 7B (needs ~8GB+)" },
     ],
   },
 };
+
+// Ollama server address — configurable so the model can live on a separate PC.
+let _ollamaBase = "http://localhost:11434";
+function setOllamaBase(url) {
+  const u = (url || "").trim().replace(/\/+$/, "");
+  _ollamaBase = u || "http://localhost:11434";
+}
 
 // ── Format converters ─────────────────────────────────────────────────────────
 
@@ -300,7 +310,7 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         tools: tools.length ? toOpenAITools(tools) : undefined,
         stream: false,
       };
-      const res = await fetch(prov.baseURL, {
+      const res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -986,6 +996,7 @@ export default function GameAgent() {
   const [providerKey, setProviderKey] = useState("gemini");
   const [model, setModel] = useState(PROVIDERS.gemini.defaultModel);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  const [ollamaHost, setOllamaHost] = useState("http://localhost:11434");
 
   // Game config
   const [gameDesc, setGameDesc] = useState("2048");
@@ -1102,6 +1113,7 @@ export default function GameAgent() {
   useEffect(() => { gridEnabledRef.current = gridEnabled; }, [gridEnabled]);
   useEffect(() => { cropRef.current = { enabled: cropEnabled, ...cropMargins }; }, [cropEnabled, cropMargins]);
   useEffect(() => { strategyIntervalRef.current = Math.max(1, strategyInterval || 1); }, [strategyInterval]);
+  useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -2106,6 +2118,20 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               onChange={e => handleApiKeyChange(e.target.value)}
               style={{ ...inputStyle(), marginTop: 6 }}
             />
+          )}
+          {providerKey === "ollama" && (
+            <>
+              <input
+                type="text"
+                placeholder="Ollama server (e.g. http://192.168.1.50:11434)"
+                value={ollamaHost}
+                onChange={e => setOllamaHost(e.target.value)}
+                style={{ ...inputStyle(), marginTop: 6 }}
+              />
+              <div style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>
+                localhost = model on this PC. For a separate GPU box, use its IP — and start Ollama there with OLLAMA_HOST=0.0.0.0 and OLLAMA_ORIGINS=* so the browser can reach it.
+              </div>
+            </>
           )}
         </div>
 
