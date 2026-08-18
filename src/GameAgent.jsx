@@ -351,7 +351,10 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
 }
 
 // ── Screen capture ─────────────────────────────────────────────────────────────
-const MAX_FRAME_W = 1280;
+// Mutable so we can send smaller frames to local models (fewer image tokens →
+// fits their small context window). Cloud models keep the full 1280px.
+let MAX_FRAME_W = 1280;
+function setMaxFrameW(w) { MAX_FRAME_W = Math.max(320, Math.min(1280, w | 0)) || 1280; }
 
 function captureFrame(videoEl, canvasEl, scaleRef) {
   if (!videoEl || !canvasEl || videoEl.readyState < 2) return null;
@@ -1178,6 +1181,8 @@ export default function GameAgent() {
   useEffect(() => { strategyIntervalRef.current = Math.max(1, strategyInterval || 1); }, [strategyInterval]);
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
+  // Local models have tiny context windows — send smaller screenshots to fit.
+  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? 768 : 1280); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
