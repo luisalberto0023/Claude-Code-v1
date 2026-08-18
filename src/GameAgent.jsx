@@ -68,8 +68,8 @@ const PROVIDERS = {
     supportsSearch: false,
     defaultModel: "qwen2.5vl:3b",
     models: [
-      { id: "qwen2.5vl:3b", label: "Qwen2.5-VL 3B (best for 6GB)" },
-      { id: "gemma3:4b", label: "Gemma 3 4B (vision)" },
+      { id: "qwen2.5vl:3b", label: "Qwen2.5-VL 3B (light, strong grounding)" },
+      { id: "gemma3:4b", label: "Gemma 3 4B (strong screen/OCR)" },
       { id: "moondream", label: "Moondream 2 (tiny, ~2GB)" },
       { id: "llava:7b", label: "LLaVA 7B (tight on 6GB)" },
       { id: "minicpm-v", label: "MiniCPM-V (best OCR, tight)" },
