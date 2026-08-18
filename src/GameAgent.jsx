@@ -68,12 +68,12 @@ const PROVIDERS = {
     supportsSearch: false,
     defaultModel: "qwen2.5vl:3b",
     models: [
-      { id: "qwen2.5vl:3b", label: "Qwen2.5-VL 3B (light, strong grounding)" },
-      { id: "gemma3:4b", label: "Gemma 3 4B (strong screen/OCR)" },
-      { id: "moondream", label: "Moondream 2 (tiny, ~2GB)" },
-      { id: "llava:7b", label: "LLaVA 7B (tight on 6GB)" },
-      { id: "minicpm-v", label: "MiniCPM-V (best OCR, tight)" },
-      { id: "qwen2.5vl:7b", label: "Qwen2.5-VL 7B (needs ~8GB+)" },
+      { id: "qwen2.5vl:3b", label: "Qwen2.5-VL 3B · qwen2.5vl:3b (light, grounding)" },
+      { id: "gemma3:4b", label: "Gemma 3 4B · gemma3:4b (screen/OCR)" },
+      { id: "moondream", label: "Moondream 2 · moondream (tiny, ~2GB)" },
+      { id: "llava:7b", label: "LLaVA 7B · llava:7b (tight on 6GB)" },
+      { id: "minicpm-v", label: "MiniCPM-V · minicpm-v (OCR, tight)" },
+      { id: "qwen2.5vl:7b", label: "Qwen2.5-VL 7B · qwen2.5vl:7b (needs ~8GB+)" },
     ],
   },
 };
@@ -2121,12 +2121,15 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           )}
           {providerKey === "ollama" && (
             <>
+              <div style={{ fontSize: 11, color: C.accentL, marginTop: 8, marginBottom: 2, fontWeight: 700 }}>
+                OLLAMA SERVER
+              </div>
               <input
                 type="text"
                 placeholder="Ollama server (e.g. http://192.168.1.50:11434)"
                 value={ollamaHost}
                 onChange={e => setOllamaHost(e.target.value)}
-                style={{ ...inputStyle(), marginTop: 6 }}
+                style={{ ...inputStyle(), border: `1px solid ${C.accent}` }}
               />
               <div style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>
                 localhost = model on this PC. For a separate GPU box, use its IP — and start Ollama there with OLLAMA_HOST=0.0.0.0 and OLLAMA_ORIGINS=* so the browser can reach it.
