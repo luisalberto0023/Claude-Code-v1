@@ -219,17 +219,52 @@ def _parse_key(key: str):
     return [k.strip().lower() for k in key.split("+") if k.strip()]
 
 
+def _active_window_title() -> str:
+    """Best-effort title of the window that currently has keyboard focus.
+    Used for diagnostics: synthetic keys go to whatever is focused."""
+    try:
+        if platform.system() == "Windows":
+            import ctypes
+            hwnd = ctypes.windll.user32.GetForegroundWindow()
+            n = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(n + 1)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, n + 1)
+            return buf.value or ""
+    except Exception:
+        pass
+    return ""
+
+
+class KeyPressBody(BaseModel):
+    key: str
+    # Hold the key down briefly. A 0ms down/up is often missed by browsers and
+    # games, which sample input per frame — hold long enough to be seen.
+    hold: float = 0.08
+
+
 @app.post("/keyboard/press")
-def key_press(b: KeyBody):
+def key_press(b: KeyPressBody):
     try:
         keys = _parse_key(b.key)
+        focus = _active_window_title()
+        hold = max(0.0, min(b.hold, 2.0))
         if len(keys) > 1:
-            pyautogui.hotkey(*keys)
+            # Modifier combo: hold modifiers, tap the final key.
+            *mods, last = keys
+            for m in mods:
+                pyautogui.keyDown(m)
+            pyautogui.keyDown(last)
+            time.sleep(hold)
+            pyautogui.keyUp(last)
+            for m in reversed(mods):
+                pyautogui.keyUp(m)
         else:
-            pyautogui.press(keys[0])
-        return {"ok": True}
+            pyautogui.keyDown(keys[0])
+            time.sleep(hold)
+            pyautogui.keyUp(keys[0])
+        return {"ok": True, "focus": focus, "held": hold}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "focus": _active_window_title()}
 
 
 @app.post("/keyboard/hold")

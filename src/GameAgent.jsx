@@ -1480,6 +1480,12 @@ export default function GameAgent() {
     // ── Keyboard actions ─────────────────────────────────────────────────────
     if (toolName === "press_key") {
       const res = await backend("/keyboard/press", { key: toolInput.key });
+      if (!res.ok) {
+        addLog(`⚠ Backend key error: ${res.error}`, "error");
+      } else if (res.focus) {
+        // Synthetic keys land on whatever window has OS focus — surface it.
+        addLog(`   key "${toolInput.key}" sent to focused window: "${res.focus}"`, "info");
+      }
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
@@ -1792,7 +1798,11 @@ export default function GameAgent() {
         const result = await executeTool(a.tool, a.input, `${a.tool}__json`);
         for (const c of (result?.content ?? [])) {
           if (c.type === "image") feedback.push(c);
-          else if (c.type === "text") feedback.push({ type: "text", text: `${a.tool}: ${c.text}` });
+          else if (c.type === "text") {
+            feedback.push({ type: "text", text: `${a.tool}: ${c.text}` });
+            // Surface the outcome so failures aren't invisible in JSON mode
+            addLog(`   ↳ ${c.text.slice(0, 160)}`, c.text.startsWith("Error") ? "error" : "info");
+          }
         }
         if (gameEndRef.current) break;
       }
@@ -2476,6 +2486,20 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   <button onClick={restartAgent} style={btnStyle(C.border)}>↺ Restart</button>
                 </>
             }
+            {!running && (
+              <button
+                onClick={async () => {
+                  addLog("Test key in 3s — click your GAME window NOW…", "warn");
+                  await new Promise(r => setTimeout(r, 3000));
+                  const res = await backend("/keyboard/press", { key: "left" });
+                  if (res.ok) {
+                    addLog(`Test: sent "left" to focused window: "${res.focus || "unknown"}" (held ${res.held ?? "?"}s). Did the game move?`, "success");
+                  } else {
+                    addLog(`Test FAILED: ${res.error}`, "error");
+                  }
+                }}
+                style={{ ...btnStyle(C.yellow), fontSize: 11 }}>⌨ Test Key</button>
+            )}
             {!running && gameDesc.trim() && (
               <button onClick={async () => { await clearMemory(slugify(gameDesc)); setMemoryData(null); addLog("Memory cleared.", "warn"); }}
                 style={{ ...btnStyle(C.border), fontSize: 11 }}>Clear Memory</button>
