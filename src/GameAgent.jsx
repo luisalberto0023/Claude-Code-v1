@@ -971,16 +971,21 @@ function buildActionReference(tools) {
 function buildJsonProtocol(tools) {
   return `
 
-=== RESPONSE FORMAT (CRITICAL) ===
-You CANNOT call functions. Respond with ONLY a JSON array of one or more actions — no prose, no markdown fences, nothing else.
-Each action is an object: {"tool":"<name>","input":{ ...args }}
-Do analyse_game_state first, then exactly ONE game action.
-Example: [{"tool":"analyse_game_state","input":{"analysis":"Merge tiles to the left."}},{"tool":"press_key","input":{"key":"left"}}]
+=== HOW YOU CONTROL THE GAME (CRITICAL — this overrides any earlier tool instructions) ===
+You cannot call functions. Each turn, reply with ONLY ONE JSON object — no prose, no markdown, no code fences:
+{"tool":"<name>","input":{ ...args },"why":"<one short sentence>"}
 
-Available actions (?=optional arg):
+You MUST choose an action that CHANGES the screen (usually press_key). Analysing alone does NOTHING and wastes the turn — never respond with only analyse_game_state.
+For 2048 and most keyboard games this means a move every turn, e.g.:
+{"tool":"press_key","input":{"key":"up"},"why":"stack tiles upward"}   (keys: up, down, left, right)
+
+Available tools (?=optional arg):
 ${buildActionReference(tools)}
 
-Output ONLY the JSON array.`;
+RULES:
+- Output ONE JSON object only. No arrays, no extra text, no code fences.
+- Put your brief reasoning inside "why" — do NOT send a separate analyse_game_state turn.
+- Every single turn must contain a real game action (press_key / click / gamepad_button …), never just analysis.`;
 }
 
 // Extract a list of {tool, input} from a model's free-text reply.
@@ -1691,12 +1696,17 @@ export default function GameAgent() {
     const a1Skip = turnCountRef.current > 1 && distFromLast < 2.0;
     const sendImage = !!frame && isStrategyTurn && !a1Skip;
 
+    // Mode-appropriate nudge: small models must be pushed to ACT, not just analyse.
+    const actNudge = noToolsRef.current
+      ? 'Reply with ONE JSON action that MOVES the game now, e.g. {"tool":"press_key","input":{"key":"up"}}.'
+      : "First call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.";
+
     if (sendImage) {
       convRef.current.push({
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
-          { type: "text", text: `${baseLine}\nStrategy turn — reassess the screen and plan. First call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.` },
+          { type: "text", text: `${baseLine}\nLook at the screen and make your move. ${actNudge}` },
         ],
       });
     } else if (isStrategyTurn) {
@@ -1704,14 +1714,14 @@ export default function GameAgent() {
       convRef.current.push({
         role: "user",
         content: frame
-          ? `${baseLine}\n[Screen unchanged since last action — image omitted to save tokens.] First call analyse_game_state, then act.`
-          : `${baseLine} (screen unavailable) First call analyse_game_state, then act.`,
+          ? `${baseLine}\n[Screen unchanged since last action — image omitted to save tokens.] ${actNudge}`
+          : `${baseLine} (screen unavailable) ${actNudge}`,
       });
     } else {
       // Tactical turn — deliberately text-only to save tokens
       convRef.current.push({
         role: "user",
-        content: `${baseLine}\nTACTICAL turn (no screenshot, saving tokens). Act on your current plan and the latest action results. Call observe_screen ONLY if you genuinely need to see the screen again; otherwise take your next action directly.`,
+        content: `${baseLine}\nTACTICAL turn (no screenshot, saving tokens). ${actNudge}`,
       });
       addLog(`Tactical turn ${turnCountRef.current} (text-only)`, "info");
     }
@@ -1757,11 +1767,21 @@ export default function GameAgent() {
       if (text) addLog(text.slice(0, 300), "assistant");
 
       const actions = parseJsonActions(text);
+      const PASSIVE = new Set(["analyse_game_state", "observe_screen", "read_screen_text"]);
+      const hasRealAction = actions.some(a => !PASSIVE.has(a.tool));
+
       if (!actions.length) {
         addLog("No parseable JSON action — nudging model.", "warn");
         convRef.current.push({
           role: "user",
-          content: 'Reply with ONLY a JSON array of actions, e.g. [{"tool":"press_key","input":{"key":"up"}}]. No other text.',
+          content: 'Reply with ONLY one JSON object, e.g. {"tool":"press_key","input":{"key":"up"}}. No other text.',
+        });
+      } else if (!hasRealAction) {
+        // Model only analysed/observed — force it to actually move next turn
+        addLog("Model only analysed (no move) — pushing it to act.", "warn");
+        convRef.current.push({
+          role: "user",
+          content: 'You only analysed — that does NOTHING. You MUST move now. Reply with ONE JSON object like {"tool":"press_key","input":{"key":"up"}} (up/down/left/right).',
         });
       }
 
