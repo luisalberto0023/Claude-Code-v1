@@ -856,6 +856,33 @@ const TOOLS = [
       required: ["outcome"],
     },
   },
+  {
+    name: "report_screen_state",
+    description: "During SETUP only: report what is currently on screen so you can decide how to reach a playable game. Use this to note dialogs, menus, tutorial prompts, or a start/new-game button.",
+    input_schema: {
+      type: "object",
+      properties: {
+        state: {
+          type: "string",
+          enum: ["playable", "needs_new_game", "dialog_blocking", "tutorial_offer", "menu", "loading", "unknown"],
+          description: "Your best classification of the current screen",
+        },
+        detail: { type: "string", description: "What you see (button labels, dialog text) and what you plan to do about it" },
+      },
+      required: ["state"],
+    },
+  },
+  {
+    name: "signal_ready_to_play",
+    description: "During SETUP only: call this when the game is actually playable — the board/level is live, no dialog or menu is blocking input, and a new game has been started if one was needed. This ends setup and begins autonomous play.",
+    input_schema: {
+      type: "object",
+      properties: {
+        note: { type: "string", description: "Short note on how the game was started / what you cleared" },
+      },
+      required: [],
+    },
+  },
 ];
 
 // ── Gamepad tools (used when the control scheme includes a gamepad) ───────────
@@ -918,6 +945,7 @@ const CONTROL_SCHEMES = {
 const SHARED_TOOL_NAMES = new Set([
   "observe_screen", "read_screen_text", "analyse_game_state", "set_goals",
   "update_memory", "report_progress", "signal_game_end", "execute_sequence",
+  "report_screen_state", "signal_ready_to_play",
 ]);
 const KBM_TOOL_NAMES = new Set(["move_mouse", "click", "click_grid", "drag", "scroll", "press_key", "hold_key", "type_text"]);
 
@@ -1088,6 +1116,9 @@ export default function GameAgent() {
   const [previewSrc, setPreviewSrc] = useState(null);
   const [strategyInterval, setStrategyInterval] = useState(1); // B2: vision every N turns (1 = every turn)
   const [noToolsMode, setNoToolsMode] = useState(false); // JSON-action mode for small local models
+  const [autoSetup, setAutoSetup] = useState(true);   // let the agent get the game ready before playing
+  const [doTutorial, setDoTutorial] = useState(false); // take the tutorial if the game offers one
+  const [screenState, setScreenState] = useState(null);
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1152,6 +1183,7 @@ export default function GameAgent() {
   const strategyIntervalRef = useRef(1);
   const forceStrategyRef = useRef(false); // force a vision turn (e.g. after stuck)
   const noToolsRef = useRef(false);
+  const readyRef = useRef(false); // set by signal_ready_to_play during setup
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1659,6 +1691,23 @@ export default function GameAgent() {
       return toolResult(`Game end recorded: ${toolInput.outcome}`);
     }
 
+    if (toolName === "report_screen_state") {
+      setScreenState(toolInput.state ?? "unknown");
+      addLog(`Screen state: ${toolInput.state}${toolInput.detail ? ` — ${toolInput.detail.slice(0, 160)}` : ""}`, "info");
+      return toolResult(
+        toolInput.state === "playable"
+          ? "Noted. If the game is truly playable, call signal_ready_to_play now."
+          : "Noted. Take the action needed to reach a playable game (click the button, dismiss the dialog, start a new game), then re-check."
+      );
+    }
+
+    if (toolName === "signal_ready_to_play") {
+      readyRef.current = true;
+      setScreenState("playable");
+      addLog(`✓ Game ready to play${toolInput.note ? ` — ${toolInput.note}` : ""}`, "success");
+      return toolResult("Game marked ready. Autonomous play will begin.");
+    }
+
     return toolResult(`Unknown tool: ${toolName}`);
   }, [gameDesc, getTiming, addLog, addAction, grabFrame]);
 
@@ -1899,6 +1948,8 @@ export default function GameAgent() {
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
     noToolsRef.current = noToolsMode;
+    readyRef.current = false;
+    setScreenState(null);
 
     setRunning(true);
     setGameResult(null);
@@ -1952,6 +2003,11 @@ OTHER TOOLS AVAILABLE:
 - update_memory: Save discoveries and strategies for future sessions
 - report_progress: Report scores and milestones
 - signal_game_end: Call when the game is over
+- report_screen_state / signal_ready_to_play: SETUP-phase only — classify the screen (dialog, tutorial offer, needs new game, playable) and declare the game ready once it is genuinely playable
+
+GETTING THE GAME STARTED:
+- Do not assume the game is already running. A menu, popup, cookie banner, tutorial offer, or "New Game" button may block input.
+- If your inputs produce no screen change, suspect the game has not started — look for and click a start/new-game button rather than repeating the same input.${doTutorial ? "\n- If a tutorial is offered, take it, learn the rules/controls, and save what you learn with update_memory." : "\n- If a tutorial is offered, skip or decline it."}
 
 CRITICAL WORKFLOW RULES (follow every turn):
 1. ALWAYS call analyse_game_state FIRST before any physical action (click, press_key, drag, scroll, type_text, move_mouse, hold_key, execute_sequence). State what you see, what you intend to do, and why. This is non-negotiable.
@@ -2017,6 +2073,102 @@ REASONING STYLE (for analyse_game_state):
       } catch (e) {
         addLog(`Study turn error: ${e.message}`, "warn");
       }
+    }
+
+    if (stopRef.current) { setRunning(false); setPhase("idle"); return; }
+
+    // ── Setup phase — get the game into a playable state ─────────────────────
+    // Handles: blocking dialogs, cookie/consent banners, tutorial offers, and
+    // games that need "New Game" clicked before input does anything.
+    if (autoSetup && !stopRef.current) {
+      setPhase("setup");
+      addLog("Setup phase — checking whether the game is ready to play...", "info");
+      const SETUP_MAX_TURNS = 8;
+      const setupToolNames = new Set([
+        "observe_screen", "read_screen_text", "report_screen_state", "signal_ready_to_play",
+        "click", "click_grid", "press_key", "type_text", "move_mouse", "gamepad_button",
+      ]);
+      const setupTools = noToolsMode
+        ? []
+        : activeToolsRef.current.filter(t => setupToolNames.has(t.name));
+
+      for (let i = 0; i < SETUP_MAX_TURNS && !stopRef.current && !readyRef.current; i++) {
+        while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 500));
+        if (stopRef.current) break;
+
+        const frame = await grabFrame();
+        const instruction = [
+          `SETUP turn ${i + 1}/${SETUP_MAX_TURNS}. The game may NOT be ready to play yet.`,
+          `Decide what is on screen and get to a playable game:`,
+          `- If a dialog, cookie banner, or popup blocks the game → close/accept it.`,
+          doTutorial
+            ? `- If a TUTORIAL is offered → ACCEPT it and play through it, learning the rules and controls. Save what you learn with update_memory. Only then start the real game.`
+            : `- If a TUTORIAL is offered → decline/skip it (choose "No thanks"/"Skip"/close).`,
+          `- If the game has not started or is on a menu/game-over screen → click "New Game"/"Play"/"Start".`,
+          `- If the board is live and nothing blocks input → you are done.`,
+          `Call report_screen_state to classify the screen, act as needed, and call signal_ready_to_play as soon as the game is genuinely playable.`,
+        ].join("\n");
+
+        convRef.current.push({
+          role: "user",
+          content: frame
+            ? [
+                { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
+                { type: "text", text: instruction },
+              ]
+            : `${instruction} (screen unavailable)`,
+        });
+
+        try {
+          const resp = await callAI(providerKey, model, systemPrompt, convRef.current, setupTools, apiKey, msg => addLog(msg, "warn"));
+          const content = resp.content ?? [];
+          if (resp.usage) {
+            tokenRef.current.input += resp.usage.input_tokens ?? 0;
+            tokenRef.current.output += resp.usage.output_tokens ?? 0;
+            setTokenCount({ ...tokenRef.current });
+          }
+
+          if (noToolsMode) {
+            const text = content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
+            convRef.current.push({ role: "assistant", content: text || "(setup)" });
+            if (text) addLog(`Setup ${i + 1}: ${text.slice(0, 200)}`, "info");
+            const feedback = [];
+            for (const a of parseJsonActions(text)) {
+              if (stopRef.current) break;
+              addLog(`→ ${a.tool}(${JSON.stringify(a.input).slice(0, 100)})`, "tool");
+              const r = await executeTool(a.tool, a.input, `${a.tool}__json`);
+              for (const c of (r?.content ?? [])) {
+                if (c.type === "image") feedback.push(c);
+                else if (c.type === "text") feedback.push({ type: "text", text: `${a.tool}: ${c.text}` });
+              }
+              if (readyRef.current) break;
+            }
+            if (feedback.length) convRef.current.push({ role: "user", content: feedback });
+          } else {
+            convRef.current.push({ role: "assistant", content });
+            const text = content.find(c => c.type === "text")?.text ?? "";
+            if (text) addLog(`Setup ${i + 1}: ${text.slice(0, 200)}`, "info");
+            const toolResults = [];
+            for (const tu of content.filter(c => c.type === "tool_use")) {
+              if (stopRef.current) break;
+              addLog(`→ ${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`, "tool");
+              toolResults.push(await executeTool(tu.name, tu.input, tu.id));
+              if (readyRef.current) break;
+            }
+            if (toolResults.length) convRef.current.push({ role: "user", content: toolResults });
+          }
+        } catch (e) {
+          addLog(`Setup turn error: ${e.message}`, "warn");
+        }
+      }
+
+      if (!readyRef.current) {
+        addLog("Setup did not confirm readiness — starting play anyway.", "warn");
+      }
+      // Reset stuck tracking so setup screens don't count toward being stuck
+      stuckRingRef.current = [];
+      stuckTriggerRef.current = 0;
+      lastTurnHashRef.current = null;
     }
 
     if (stopRef.current) { setRunning(false); setPhase("idle"); return; }
@@ -2131,7 +2283,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
-      providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
+      autoSetup, doTutorial, providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -2174,7 +2326,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   ];
   const readyToPlay = checklist.every(c => c.done);
 
-  const phaseColor = { idle: C.dim, research: C.yellow, study: C.accentL, playing: C.green, ended: C.textDim }[phase] ?? C.dim;
+  const phaseColor = { idle: C.dim, research: C.yellow, study: C.accentL, setup: C.yellow, playing: C.green, ended: C.textDim }[phase] ?? C.dim;
   const logColors  = { info: C.text, assistant: C.accentL, tool: C.yellow, error: C.red, warn: C.yellow, success: C.green };
   const outcomeColors = { won: C.green, lost: C.red, stuck: C.yellow, ended: C.textDim };
 
@@ -2398,6 +2550,20 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase
               </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={autoSetup} onChange={e => setAutoSetup(e.target.checked)} />
+                Auto-setup game before playing
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
+                Agent clears popups/cookie banners and clicks "New Game" if the game isn't already playable.
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={doTutorial} onChange={e => setDoTutorial(e.target.checked)} disabled={!autoSetup} />
+                Take the tutorial if offered
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
+                Off = skip tutorials. On = play through them to learn the rules and save them to memory (uses extra turns).
+              </div>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={noToolsMode} onChange={e => setNoToolsMode(e.target.checked)} />
                 Small-model mode (JSON actions)
@@ -2630,6 +2796,9 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <HudRow label="Mouse"   value={`${mousePos.x}, ${mousePos.y}`} />
           <HudRow label="Scale"   value={scaleRef.current.scale > 0 ? `${scaleRef.current.scale.toFixed(2)}x` : "—"} />
           <HudRow label="Turns"   value={turnCount} />
+          {screenState && (
+            <HudRow label="Screen" value={screenState} color={screenState === "playable" ? C.green : C.yellow} />
+          )}
           <HudRow label="In tok"  value={tokenCount.input.toLocaleString()} />
           <HudRow label="Out tok" value={tokenCount.output.toLocaleString()} />
           {maxTokens > 0 && (
