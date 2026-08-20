@@ -311,21 +311,35 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         stream: false,
       };
       const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image"));
+      const imgCount = messages.reduce((n, m) => n + (Array.isArray(m.content) ? m.content.filter(c => c.type === "image").length : 0), 0);
       let res;
+      const t0 = Date.now();
+      // Fail fast instead of hanging for minutes when the runner is thrashing.
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 180000);
       try {
         res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: ctrl.signal,
         });
       } catch (netErr) {
         // "Failed to fetch" = the connection died, not an HTTP error. On a small
         // GPU this usually means the Ollama runner crashed (out of VRAM) while
-        // processing the request — most often the first one containing an image.
-        const hint = hasImage
-          ? "connection to Ollama dropped while sending an IMAGE — the model runner likely ran out of VRAM. Try a smaller model, lower OLLAMA_CONTEXT_LENGTH, or close other GPU apps. Check the Ollama window for a crash."
-          : "cannot reach Ollama — is it running and reachable at the configured server address?";
+        // processing the request — most often one containing an image.
+        const secs = Math.round((Date.now() - t0) / 1000);
+        const slow = secs > 45
+          ? ` It ran ${secs}s before dying — that is CPU-offload slow, which means the model does NOT fit in VRAM. Run 'ollama ps' on the GPU box: if PROCESSOR shows any CPU, lower OLLAMA_CONTEXT_LENGTH (try 4096) or use a smaller model.`
+          : "";
+        const hint = netErr.name === "AbortError"
+          ? `request timed out after ${secs}s${slow}`
+          : hasImage
+            ? `connection to Ollama dropped while sending ${imgCount} image(s) after ${secs}s — the model runner likely ran out of VRAM.${slow}`
+            : "cannot reach Ollama — is it running and reachable at the configured server address?";
         throw new Error(`${netErr.message} (${hint})`);
+      } finally {
+        clearTimeout(timer);
       }
       if (!res.ok) {
         let detail = "";
@@ -562,8 +576,10 @@ async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 4.0) {
 const WINDOW_TURNS = 20;
 const CHECKPOINT_EVERY = 15;
 // NitroGen finding: a single recent frame carries enough context — keep fewer
-// images in the window to cut vision tokens (was 3).
-const MAX_IMAGES = 2;
+// images in the window to cut vision tokens (was 3). Mutable so local models on
+// small GPUs can be held to a single image.
+let MAX_IMAGES = 2;
+function setMaxImages(n) { MAX_IMAGES = Math.max(1, Math.min(4, n | 0)) || 1; }
 
 function pruneImages(messages) {
   const imageIndices = [];
@@ -1203,6 +1219,8 @@ export default function GameAgent() {
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Local models have tiny context windows — send smaller screenshots to fit.
   useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
+  // Small local GPUs: keep only ONE screenshot in context (two can OOM the runner)
+  useEffect(() => { setMaxImages(providerKey === "ollama" ? 1 : 2); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -2009,6 +2027,9 @@ REASONING STYLE (for analyse_game_state):
             ]
           : turnMsg,
       });
+      // Study turns also accumulate images — prune here too, or by turn 3 we send
+      // three full screenshots and blow up prompt size (and VRAM on small GPUs).
+      convRef.current = pruneConv(convRef.current, checkpointRef.current);
 
       try {
         const studyTools = noToolsMode ? [] : TOOLS.filter(t => studyToolNames.has(t.name));
