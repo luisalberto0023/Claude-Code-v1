@@ -1131,6 +1131,9 @@ export default function GameAgent() {
   const [autoSetup, setAutoSetup] = useState(true);   // let the agent get the game ready before playing
   const [doTutorial, setDoTutorial] = useState(false); // take the tutorial if the game offers one
   const [screenState, setScreenState] = useState(null);
+  // Screenshot width sent to LOCAL models. Vision memory scales with pixel count,
+  // so this is the main lever when a small GPU runs out of VRAM.
+  const [localImageWidth, setLocalImageWidth] = useState(512);
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1231,7 +1234,7 @@ export default function GameAgent() {
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Local models have tiny context windows — send smaller screenshots to fit.
-  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? 768 : 1280); }, [providerKey]);
+  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -2632,6 +2635,25 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   style={inputStyle()}
                 />
               </div>
+              {providerKey === "ollama" && (
+                <div>
+                  <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
+                    Local screenshot width (px)
+                  </label>
+                  <input
+                    type="number"
+                    min="320"
+                    max="1280"
+                    step="64"
+                    value={localImageWidth}
+                    onChange={e => setLocalImageWidth(Math.max(320, Math.min(1280, Number(e.target.value) || 512)))}
+                    style={inputStyle()}
+                  />
+                  <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
+                    Vision memory grows with pixel count. Lower this if Ollama crashes / "Failed to fetch" on image turns. 512 is a safe start for 6GB; 384 if it still crashes.
+                  </div>
+                </div>
+              )}
               <div>
                 <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
                   Vision every N turns (1 = every turn)
