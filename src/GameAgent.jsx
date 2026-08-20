@@ -533,17 +533,33 @@ function parseGridCell(cell, cols = GRID_COLS, rows = GRID_ROWS) {
 // ── Wait for screen change ────────────────────────────────────────────────────
 // `grab` is an async function that refreshes the canvas with the current frame
 // (works for both browser screen-share and backend native capture).
-async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 2.0) {
-  const t0 = Date.now();
+// Snapshot the screen hash. Call this BEFORE performing an action so the
+// comparison has a true "before" state.
+async function snapshotHash(grab, canvasEl) {
   await grab();
-  const baseline = frameHash(canvasEl);
-  let maxDist = 0; // report the largest movement seen, even if under threshold:
-                   // 0.00 means the capture is frozen, a small value means the
-                   // threshold is simply too high for this game's visuals.
+  return frameHash(canvasEl);
+}
+
+// `baseline` MUST be captured before the action. Fast games finish animating
+// during the action's own round trip, so grabbing the baseline afterwards
+// measures post-move vs post-move and always reports "unchanged".
+async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 2.0, baseline = null) {
+  const t0 = Date.now();
+  if (!baseline) {
+    await grab();
+    baseline = frameHash(canvasEl);
+  }
+  let maxDist = 0; // largest movement seen, even if under threshold
+  // Check immediately: the change may already have happened.
+  await grab();
+  let dist = hashDist(baseline, frameHash(canvasEl));
+  if (dist > maxDist) maxDist = dist;
+  if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
+
   while (Date.now() - t0 < maxMs) {
     await new Promise(r => setTimeout(r, 150));
     await grab();
-    const dist = hashDist(baseline, frameHash(canvasEl));
+    dist = hashDist(baseline, frameHash(canvasEl));
     if (dist > maxDist) maxDist = dist;
     if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
   }
@@ -1428,13 +1444,14 @@ export default function GameAgent() {
 
     if (toolName === "click") {
       const { x, y } = scaled(toolInput.x, toolInput.y);
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/mouse/click", {
         x, y,
         button: toolInput.button ?? "left",
         clicks: toolInput.clicks ?? 1,
         move_duration: timing.mouseSpeed,
       });
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1455,13 +1472,14 @@ export default function GameAgent() {
       const imgX = Math.round((parsed.col + clamp01(toolInput.dx, 0.5)) * cw);
       const imgY = Math.round((parsed.row + clamp01(toolInput.dy, 0.5)) * ch);
       const { x, y } = scaled(imgX, imgY);
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/mouse/click", {
         x, y,
         button: toolInput.button ?? "left",
         clicks: toolInput.clicks ?? 1,
         move_duration: timing.mouseSpeed,
       });
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1473,8 +1491,9 @@ export default function GameAgent() {
     if (toolName === "drag") {
       const s1 = scaled(toolInput.x1, toolInput.y1);
       const s2 = scaled(toolInput.x2, toolInput.y2);
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/mouse/drag", { x1: s1.x, y1: s1.y, x2: s2.x, y2: s2.y, duration: timing.mouseSpeed * 2, button: toolInput.button ?? "left" });
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1483,8 +1502,9 @@ export default function GameAgent() {
 
     if (toolName === "scroll") {
       const { x, y } = scaled(toolInput.x, toolInput.y);
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/mouse/scroll", { x, y, amount: toolInput.amount });
-      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1000));
+      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1000), undefined, __base);
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? "Scrolled." : `Error: ${res.error}`);
@@ -1492,6 +1512,7 @@ export default function GameAgent() {
 
     // ── Keyboard actions ─────────────────────────────────────────────────────
     if (toolName === "press_key") {
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/keyboard/press", { key: toolInput.key });
       if (!res.ok) {
         addLog(`⚠ Backend key error: ${res.error}`, "error");
@@ -1499,7 +1520,7 @@ export default function GameAgent() {
         // Synthetic keys land on whatever window has OS focus — surface it.
         addLog(`   key "${toolInput.key}" [${res.method ?? "?"}] → focused: "${res.focus}"`, "info");
       }
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1509,16 +1530,18 @@ export default function GameAgent() {
     }
 
     if (toolName === "hold_key") {
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/keyboard/hold", { key: toolInput.key, duration: toolInput.duration });
-      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500));
+      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? `Key held for ${toolInput.duration}s.` : `Error: ${res.error}`);
     }
 
     if (toolName === "type_text") {
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/keyboard/type", { text: toolInput.text, interval: timing.typingInterval });
-      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500));
+      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? "Text typed." : `Error: ${res.error}`);
@@ -1526,8 +1549,9 @@ export default function GameAgent() {
 
     // ── Gamepad actions ──────────────────────────────────────────────────────
     if (toolName === "gamepad_button") {
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/gamepad/button", { button: toolInput.button, hold: toolInput.hold ?? 0.08 });
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1537,12 +1561,13 @@ export default function GameAgent() {
     }
 
     if (toolName === "gamepad_stick") {
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/gamepad/stick", {
         stick: toolInput.stick ?? "left",
         x: toolInput.x ?? 0, y: toolInput.y ?? 0,
         duration: toolInput.duration ?? 0,
       });
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1552,12 +1577,13 @@ export default function GameAgent() {
     }
 
     if (toolName === "gamepad_trigger") {
+      const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/gamepad/trigger", {
         trigger: toolInput.trigger ?? "right",
         value: toolInput.value ?? 1,
         duration: toolInput.duration ?? 0.1,
       });
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1600,6 +1626,8 @@ export default function GameAgent() {
         const t = a.tool;
         const inp = a.input ?? {};
         let r;
+        // Baseline before this step's action, not after it
+        const __base = await snapshotHash(grabFrame, canvasRef.current);
 
         if (t === "press_key") {
           r = await backend("/keyboard/press", { key: inp.key });
@@ -1620,7 +1648,7 @@ export default function GameAgent() {
           continue;
         }
 
-        const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
+        const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
         executed++;
         lastConfirmInfo = confirm;
         addAction(`seq.${t}`, inp, { ok: r?.ok ?? false, ...confirm });
