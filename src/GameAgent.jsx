@@ -604,7 +604,13 @@ async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 2.0, baselin
 }
 
 // ── Conversation window management ────────────────────────────────────────────
-const WINDOW_TURNS = 20;
+// How many turns of history to keep. Local models run with a small context
+// (Ollama defaults to 4096) — letting history grow to ~3.5k tokens leaves no
+// headroom, and llama.cpp starts shifting/rebuilding its context cache, which
+// is slow enough to stall a turn until the connection drops. Keep local runs
+// well under that so every request is a cheap cache hit.
+let WINDOW_TURNS = 20;
+function setWindowTurns(n) { WINDOW_TURNS = Math.max(3, Math.min(40, n | 0)) || 20; }
 const CHECKPOINT_EVERY = 15;
 // NitroGen finding: a single recent frame carries enough context — keep fewer
 // images in the window to cut vision tokens (was 3). Mutable because local
@@ -1256,6 +1262,8 @@ export default function GameAgent() {
   useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
   // Local models: exactly ONE screenshot in context (2+ crashes the runner)
   useEffect(() => { setMaxImages(providerKey === "ollama" ? 1 : 2); }, [providerKey]);
+  // ...and a short history, so the prompt stays far below a 4096-token context
+  useEffect(() => { setWindowTurns(providerKey === "ollama" ? 6 : 20); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
