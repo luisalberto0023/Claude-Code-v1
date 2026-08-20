@@ -1516,7 +1516,7 @@ export default function GameAgent() {
         addLog(`⚠ Backend key error: ${res.error}`, "error");
       } else if (res.focus) {
         // Synthetic keys land on whatever window has OS focus — surface it.
-        addLog(`   key "${toolInput.key}" sent to focused window: "${res.focus}"`, "info");
+        addLog(`   key "${toolInput.key}" [${res.method ?? "?"}] → focused: "${res.focus}"`, "info");
       }
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay);
       setLastConfirm(confirm);
@@ -2659,7 +2659,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   await new Promise(r => setTimeout(r, 3000));
                   const res = await backend("/keyboard/press", { key: "left" });
                   if (res.ok) {
-                    addLog(`Test: sent "left" to focused window: "${res.focus || "unknown"}" (held ${res.held ?? "?"}s). Did the game move?`, "success");
+                    addLog(`Test: sent "left" via ${res.method ?? "?"} to focused window: "${res.focus || "unknown"}" (held ${res.held ?? "?"}s). Did the game move?`, "success");
                   } else {
                     addLog(`Test FAILED: ${res.error}`, "error");
                   }

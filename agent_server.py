@@ -38,6 +38,89 @@ pyautogui.PAUSE = 0.0
 
 SCREEN_W, SCREEN_H = pyautogui.size()
 
+# ── Windows low-level key input (SendInput + scan codes) ───────────────────────
+# pyautogui uses the legacy keybd_event API WITHOUT the extended-key flag, so
+# arrow/nav keys are delivered as their numpad twins — browsers and games then
+# ignore them (or read digits when NumLock is on). We instead use SendInput with
+# hardware SCAN CODES, which is also the only input DirectInput games accept.
+SENDINPUT_OK = False
+if platform.system() == "Windows":
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        _ULONG_PTR = ctypes.POINTER(ctypes.c_ulong)
+
+        class _KEYBDINPUT(ctypes.Structure):
+            _fields_ = [("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort),
+                        ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong),
+                        ("dwExtraInfo", _ULONG_PTR)]
+
+        class _MOUSEINPUT(ctypes.Structure):
+            _fields_ = [("dx", ctypes.c_long), ("dy", ctypes.c_long),
+                        ("mouseData", ctypes.c_ulong), ("dwFlags", ctypes.c_ulong),
+                        ("time", ctypes.c_ulong), ("dwExtraInfo", _ULONG_PTR)]
+
+        class _INPUTUNION(ctypes.Union):
+            _fields_ = [("ki", _KEYBDINPUT), ("mi", _MOUSEINPUT)]
+
+        class _INPUT(ctypes.Structure):
+            _fields_ = [("type", ctypes.c_ulong), ("u", _INPUTUNION)]
+
+        _INPUT_KEYBOARD = 1
+        _KEYEVENTF_EXTENDEDKEY = 0x0001
+        _KEYEVENTF_KEYUP = 0x0002
+        _KEYEVENTF_SCANCODE = 0x0008
+
+        # Set-1 scan codes. 0xE0xx = extended key (real arrows, not numpad).
+        _SCAN = {
+            "escape": 0x01, "esc": 0x01,
+            "1": 0x02, "2": 0x03, "3": 0x04, "4": 0x05, "5": 0x06,
+            "6": 0x07, "7": 0x08, "8": 0x09, "9": 0x0A, "0": 0x0B,
+            "-": 0x0C, "=": 0x0D, "backspace": 0x0E, "tab": 0x0F,
+            "q": 0x10, "w": 0x11, "e": 0x12, "r": 0x13, "t": 0x14,
+            "y": 0x15, "u": 0x16, "i": 0x17, "o": 0x18, "p": 0x19,
+            "[": 0x1A, "]": 0x1B, "enter": 0x1C, "return": 0x1C,
+            "ctrl": 0x1D, "ctrlleft": 0x1D,
+            "a": 0x1E, "s": 0x1F, "d": 0x20, "f": 0x21, "g": 0x22,
+            "h": 0x23, "j": 0x24, "k": 0x25, "l": 0x26, ";": 0x27, "'": 0x28,
+            "`": 0x29, "shift": 0x2A, "shiftleft": 0x2A, "\\": 0x2B,
+            "z": 0x2C, "x": 0x2D, "c": 0x2E, "v": 0x2F, "b": 0x30,
+            "n": 0x31, "m": 0x32, ",": 0x33, ".": 0x34, "/": 0x35,
+            "shiftright": 0x36, "alt": 0x38, "altleft": 0x38,
+            "space": 0x39, "capslock": 0x3A,
+            "f1": 0x3B, "f2": 0x3C, "f3": 0x3D, "f4": 0x3E, "f5": 0x3F,
+            "f6": 0x40, "f7": 0x41, "f8": 0x42, "f9": 0x43, "f10": 0x44,
+            "f11": 0x57, "f12": 0x58,
+            # Extended (0xE0-prefixed) — the ones pyautogui gets wrong
+            "up": 0xE048, "down": 0xE050, "left": 0xE04B, "right": 0xE04D,
+            "home": 0xE047, "end": 0xE04F, "pageup": 0xE049, "pagedown": 0xE051,
+            "insert": 0xE052, "delete": 0xE053, "del": 0xE053,
+            "ctrlright": 0xE01D, "altright": 0xE038,
+            "win": 0xE05B, "winleft": 0xE05B, "winright": 0xE05C,
+        }
+
+        def _send_scan(scan: int, keyup: bool = False) -> None:
+            flags = _KEYEVENTF_SCANCODE
+            if scan & 0xE000 == 0xE000:
+                flags |= _KEYEVENTF_EXTENDEDKEY
+            if keyup:
+                flags |= _KEYEVENTF_KEYUP
+            inp = _INPUT(type=_INPUT_KEYBOARD,
+                         u=_INPUTUNION(ki=_KEYBDINPUT(0, scan & 0xFF, flags, 0, None)))
+            ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(_INPUT))
+
+        SENDINPUT_OK = True
+    except Exception:
+        SENDINPUT_OK = False
+
+
+def _scan_for(key: str):
+    """Scan code for a key name, or None if we don't have one."""
+    if not SENDINPUT_OK:
+        return None
+    return _SCAN.get(key.strip().lower())
+
 # ── Optional capability modules (graceful degradation) ──────────────────────────
 # Each is best-effort: if the package/driver is missing the server still runs and
 # the matching endpoints return {"ok": False, "available": False, ...}.
@@ -248,8 +331,23 @@ def key_press(b: KeyPressBody):
         keys = _parse_key(b.key)
         focus = _active_window_title()
         hold = max(0.0, min(b.hold, 2.0))
+
+        # Preferred path: SendInput with hardware scan codes (correct extended-key
+        # handling; works with browsers AND DirectInput games).
+        scans = [_scan_for(k) for k in keys]
+        if scans and all(s is not None for s in scans):
+            *mods, last = scans
+            for m in mods:
+                _send_scan(m)
+            _send_scan(last)
+            time.sleep(hold)
+            _send_scan(last, keyup=True)
+            for m in reversed(mods):
+                _send_scan(m, keyup=True)
+            return {"ok": True, "focus": focus, "held": hold, "method": "sendinput"}
+
+        # Fallback: pyautogui (non-Windows, or a key we have no scan code for)
         if len(keys) > 1:
-            # Modifier combo: hold modifiers, tap the final key.
             *mods, last = keys
             for m in mods:
                 pyautogui.keyDown(m)
@@ -262,7 +360,7 @@ def key_press(b: KeyPressBody):
             pyautogui.keyDown(keys[0])
             time.sleep(hold)
             pyautogui.keyUp(keys[0])
-        return {"ok": True, "focus": focus, "held": hold}
+        return {"ok": True, "focus": focus, "held": hold, "method": "pyautogui"}
     except Exception as e:
         return {"ok": False, "error": str(e), "focus": _active_window_title()}
 
@@ -271,12 +369,20 @@ def key_press(b: KeyPressBody):
 def key_hold(b: HoldBody):
     try:
         keys = _parse_key(b.key)
+        scans = [_scan_for(k) for k in keys]
+        if scans and all(s is not None for s in scans):
+            for s in scans:
+                _send_scan(s)
+            time.sleep(b.duration)
+            for s in reversed(scans):
+                _send_scan(s, keyup=True)
+            return {"ok": True, "method": "sendinput"}
         for k in keys:
             pyautogui.keyDown(k)
         time.sleep(b.duration)
         for k in reversed(keys):
             pyautogui.keyUp(k)
-        return {"ok": True}
+        return {"ok": True, "method": "pyautogui"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
