@@ -310,11 +310,21 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         tools: tools.length ? toOpenAITools(tools) : undefined,
         stream: false,
       };
-      const res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const t0 = Date.now();
+      let res;
+      try {
+        res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (netErr) {
+        // Connection died rather than returning an HTTP status. Report how long
+        // it survived — a consistent cutoff points at a timeout in the path,
+        // while a fast failure means Ollama is unreachable.
+        const secs = ((Date.now() - t0) / 1000).toFixed(1);
+        throw new Error(`${netErr.message} after ${secs}s — the request was still being processed when the connection dropped. Shrink the screenshot (Advanced -> Local screenshot width) so each turn finishes sooner.`);
+      }
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.text() || "").slice(0, 300); } catch {}
@@ -1775,12 +1785,16 @@ export default function GameAgent() {
     lastTurnHashRef.current = currentHash;
 
     let resp;
+    const __t0 = Date.now();
     try {
       const toolsArg = noToolsRef.current ? [] : activeToolsRef.current;
       resp = await callAI(providerKey, model, systemPrompt, convRef.current, toolsArg, apiKey, msg => addLog(msg, "warn"));
+      const secs = ((Date.now() - __t0) / 1000).toFixed(1);
+      const imgNote = sendImage && frame ? ` (sent ${frame.imgW}×${frame.imgH} image)` : " (no image)";
+      addLog(`   LLM replied in ${secs}s${imgNote}`, "info");
     } catch (e) {
       await setGameSpeed(1); // always resume the game on the way out
-      addLog(`API error: ${e.message}`, "error");
+      addLog(`API error after ${((Date.now() - __t0) / 1000).toFixed(1)}s: ${e.message}`, "error");
       return { stop: true, reason: "api-error" };
     }
 
