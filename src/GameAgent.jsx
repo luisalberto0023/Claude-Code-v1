@@ -310,37 +310,11 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         tools: tools.length ? toOpenAITools(tools) : undefined,
         stream: false,
       };
-      const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image"));
-      const imgCount = messages.reduce((n, m) => n + (Array.isArray(m.content) ? m.content.filter(c => c.type === "image").length : 0), 0);
-      let res;
-      const t0 = Date.now();
-      // Fail fast instead of hanging for minutes when the runner is thrashing.
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 180000);
-      try {
-        res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-          signal: ctrl.signal,
-        });
-      } catch (netErr) {
-        // "Failed to fetch" = the connection died, not an HTTP error. On a small
-        // GPU this usually means the Ollama runner crashed (out of VRAM) while
-        // processing the request — most often one containing an image.
-        const secs = Math.round((Date.now() - t0) / 1000);
-        const slow = secs > 45
-          ? ` It ran ${secs}s before dying — that is CPU-offload slow, which means the model does NOT fit in VRAM. Run 'ollama ps' on the GPU box: if PROCESSOR shows any CPU, lower OLLAMA_CONTEXT_LENGTH (try 4096) or use a smaller model.`
-          : "";
-        const hint = netErr.name === "AbortError"
-          ? `request timed out after ${secs}s${slow}`
-          : hasImage
-            ? `connection to Ollama dropped while sending ${imgCount} image(s) after ${secs}s — the model runner likely ran out of VRAM.${slow}`
-            : "cannot reach Ollama — is it running and reachable at the configured server address?";
-        throw new Error(`${netErr.message} (${hint})`);
-      } finally {
-        clearTimeout(timer);
-      }
+      const res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.text() || "").slice(0, 300); } catch {}
@@ -576,10 +550,8 @@ async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 4.0) {
 const WINDOW_TURNS = 20;
 const CHECKPOINT_EVERY = 15;
 // NitroGen finding: a single recent frame carries enough context — keep fewer
-// images in the window to cut vision tokens (was 3). Mutable so local models on
-// small GPUs can be held to a single image.
-let MAX_IMAGES = 2;
-function setMaxImages(n) { MAX_IMAGES = Math.max(1, Math.min(4, n | 0)) || 1; }
+// images in the window to cut vision tokens (was 3).
+const MAX_IMAGES = 2;
 
 function pruneImages(messages) {
   const imageIndices = [];
@@ -1116,9 +1088,6 @@ export default function GameAgent() {
   const [previewSrc, setPreviewSrc] = useState(null);
   const [strategyInterval, setStrategyInterval] = useState(1); // B2: vision every N turns (1 = every turn)
   const [noToolsMode, setNoToolsMode] = useState(false); // JSON-action mode for small local models
-  // Screenshot width sent to LOCAL models. Vision memory scales with pixel count,
-  // so this is the main lever when a small GPU runs out of VRAM.
-  const [localImageWidth, setLocalImageWidth] = useState(512);
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1218,9 +1187,7 @@ export default function GameAgent() {
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Local models have tiny context windows — send smaller screenshots to fit.
-  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
-  // Small local GPUs: keep only ONE screenshot in context (two can OOM the runner)
-  useEffect(() => { setMaxImages(providerKey === "ollama" ? 1 : 2); }, [providerKey]);
+  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? 768 : 1280); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -2027,9 +1994,6 @@ REASONING STYLE (for analyse_game_state):
             ]
           : turnMsg,
       });
-      // Study turns also accumulate images — prune here too, or by turn 3 we send
-      // three full screenshots and blow up prompt size (and VRAM on small GPUs).
-      convRef.current = pruneConv(convRef.current, checkpointRef.current);
 
       try {
         const studyTools = noToolsMode ? [] : TOOLS.filter(t => studyToolNames.has(t.name));
@@ -2054,9 +2018,6 @@ REASONING STYLE (for analyse_game_state):
         addLog(`Study turn error: ${e.message}`, "warn");
       }
     }
-
-    if (stopRef.current) { setRunning(false); setPhase("idle"); return; }
-
 
     if (stopRef.current) { setRunning(false); setPhase("idle"); return; }
 
@@ -2493,25 +2454,6 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   style={inputStyle()}
                 />
               </div>
-              {providerKey === "ollama" && (
-                <div>
-                  <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
-                    Local screenshot width (px)
-                  </label>
-                  <input
-                    type="number"
-                    min="320"
-                    max="1280"
-                    step="64"
-                    value={localImageWidth}
-                    onChange={e => setLocalImageWidth(Math.max(320, Math.min(1280, Number(e.target.value) || 512)))}
-                    style={inputStyle()}
-                  />
-                  <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
-                    Vision memory grows with pixel count. Lower this if Ollama crashes / "Failed to fetch" on image turns. 512 is a safe start for 6GB; 384 if it still crashes.
-                  </div>
-                </div>
-              )}
               <div>
                 <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
                   Vision every N turns (1 = every turn)
