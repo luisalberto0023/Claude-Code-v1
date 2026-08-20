@@ -310,11 +310,23 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         tools: tools.length ? toOpenAITools(tools) : undefined,
         stream: false,
       };
-      const res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const hasImage = messages.some(m => Array.isArray(m.content) && m.content.some(c => c.type === "image"));
+      let res;
+      try {
+        res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (netErr) {
+        // "Failed to fetch" = the connection died, not an HTTP error. On a small
+        // GPU this usually means the Ollama runner crashed (out of VRAM) while
+        // processing the request — most often the first one containing an image.
+        const hint = hasImage
+          ? "connection to Ollama dropped while sending an IMAGE — the model runner likely ran out of VRAM. Try a smaller model, lower OLLAMA_CONTEXT_LENGTH, or close other GPU apps. Check the Ollama window for a crash."
+          : "cannot reach Ollama — is it running and reachable at the configured server address?";
+        throw new Error(`${netErr.message} (${hint})`);
+      }
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.text() || "").slice(0, 300); } catch {}
