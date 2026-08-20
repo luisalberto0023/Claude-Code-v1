@@ -228,7 +228,11 @@ function fromGemini(resp) {
 
 // ── callAI — unified caller with 429-aware retry ──────────────────────────────
 const RETRY_429 = [15000, 30000, 62000];
-const RETRY_ERR = [2000, 4000, 8000];
+// Local models on slow GPUs drop long-running connections while the server is
+// still computing; the retry then hits Ollama's prompt cache and returns
+// quickly. Retrying persistently is what keeps a session alive, so allow more
+// attempts than the old 3.
+const RETRY_ERR = [2000, 4000, 8000, 8000, 8000, 8000];
 
 async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry) {
   const prov = PROVIDERS[providerKey];
@@ -366,16 +370,20 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
 let MAX_FRAME_W = 1280;
 function setMaxFrameW(w) { MAX_FRAME_W = Math.max(320, Math.min(1280, w | 0)) || 1280; }
 
-function captureFrame(videoEl, canvasEl, scaleRef) {
+// `maxW` overrides the global cap. Pass the real width to capture full-size,
+// which matters when a crop follows: cropping an already-downscaled frame
+// compounds the shrink and can leave the game unreadably small.
+function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
   if (!videoEl || !canvasEl || videoEl.readyState < 2) return null;
   const realW = videoEl.videoWidth;
   const realH = videoEl.videoHeight;
   if (!realW || !realH) return null;
 
+  const cap = maxW || MAX_FRAME_W;
   let imgW = realW, imgH = realH;
-  if (imgW > MAX_FRAME_W) {
-    imgH = Math.round(imgH * MAX_FRAME_W / imgW);
-    imgW = MAX_FRAME_W;
+  if (imgW > cap) {
+    imgH = Math.round(imgH * cap / imgW);
+    imgW = cap;
   }
 
   canvasEl.width = imgW;
@@ -498,6 +506,25 @@ function _tmpCanvas() {
 
 // Crops canvasEl in place by {top,right,bottom,left} percentages and updates
 // scaleRef so downstream coordinate scaling stays correct. Returns true if applied.
+// Shrink the canvas to at most maxW wide, updating scaleRef so coordinates
+// still map correctly. Run this AFTER cropping.
+function downscaleCanvas(canvasEl, scaleRef, maxW) {
+  if (!canvasEl || !canvasEl.width || canvasEl.width <= maxW) return;
+  const newW = maxW;
+  const newH = Math.round(canvasEl.height * maxW / canvasEl.width);
+  const tmp = _tmpCanvas();
+  tmp.width = newW; tmp.height = newH;
+  tmp.getContext("2d").drawImage(canvasEl, 0, 0, newW, newH);
+  canvasEl.width = newW; canvasEl.height = newH;
+  canvasEl.getContext("2d").drawImage(tmp, 0, 0);
+  const s = scaleRef.current;
+  scaleRef.current = {
+    ...s,
+    imgW: newW, imgH: newH,
+    scale: newW ? s.realW / newW : 1,
+  };
+}
+
 function applyCrop(canvasEl, scaleRef, m) {
   if (!canvasEl || !canvasEl.width) return false;
   const w = canvasEl.width, h = canvasEl.height;
@@ -1189,6 +1216,8 @@ export default function GameAgent() {
   const strategyIntervalRef = useRef(1);
   const forceStrategyRef = useRef(false); // force a vision turn (e.g. after stuck)
   const noToolsRef = useRef(false);
+  const lastActionNoOpRef = useRef(null);      // description of the last no-op move
+  const lastFailedMovesRef = useRef(new Set()); // moves that did nothing on this board
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1329,7 +1358,11 @@ export default function GameAgent() {
       };
       base = { data: r.image, imgW, imgH, realW, realH };
     } else {
-      base = captureFrame(videoRef.current, canvasRef.current, scaleRef);
+      // When cropping, capture at FULL resolution and downscale after the crop.
+      // Cropping an already-shrunk frame compounds the reduction (a 384px frame
+      // cropped to the board became ~142px — too small to read).
+      const cropping = !!cropRef.current?.enabled;
+      base = captureFrame(videoRef.current, canvasRef.current, scaleRef, cropping ? 4096 : null);
       if (!base) return null;
     }
 
@@ -1337,13 +1370,19 @@ export default function GameAgent() {
     // HUD crop first (changes dimensions + scaleRef offsets) ...
     if (cropRef.current?.enabled && canvasRef.current?.width) {
       if (applyCrop(canvasRef.current, scaleRef, cropRef.current)) {
-        base = {
-          ...base,
-          imgW: canvasRef.current.width, imgH: canvasRef.current.height,
-          realW: scaleRef.current.realW, realH: scaleRef.current.realH,
-        };
         mutated = true;
       }
+      // ... then bring it down to the target width, so the cropped game area
+      // fills the frame at full budget instead of a fraction of it.
+      if (canvasRef.current.width > MAX_FRAME_W) {
+        downscaleCanvas(canvasRef.current, scaleRef, MAX_FRAME_W);
+        mutated = true;
+      }
+      base = {
+        ...base,
+        imgW: canvasRef.current.width, imgH: canvasRef.current.height,
+        realW: scaleRef.current.realW, realH: scaleRef.current.realH,
+      };
     }
     // ... then the labeled click-grid on top of the (possibly cropped) frame.
     if (gridEnabledRef.current && canvasRef.current?.width) {
@@ -1533,9 +1572,17 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
+      // Track no-op moves so the next turn can tell the model not to repeat them
+      if (confirm.changed) {
+        lastActionNoOpRef.current = null;
+        lastFailedMovesRef.current.clear();
+      } else {
+        lastActionNoOpRef.current = `press_key ${toolInput.key}`;
+        lastFailedMovesRef.current.add(String(toolInput.key));
+      }
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Key pressed. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
+        ? `Key pressed. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)}) — this direction is BLOCKED, try a different one`}.`
         : `Error: ${res.error}`);
     }
 
@@ -1749,14 +1796,23 @@ export default function GameAgent() {
     const frame = await grabFrame();
     const currentHash = frame ? frameHash(canvasRef.current) : null;
     const distFromLast = (currentHash && lastTurnHashRef.current) ? hashDist(lastTurnHashRef.current, currentHash) : 999;
-    // A1: even on a strategy turn, skip the image if the screen is unchanged
-    const a1Skip = turnCountRef.current > 1 && distFromLast < 2.0;
+    // A1: even on a strategy turn, skip the image if the screen is unchanged.
+    // But never skip right after a no-op action: the model needs to SEE the
+    // board again to pick a different move, otherwise it repeats the failed one.
+    const lastNoOp = lastActionNoOpRef.current;
+    const a1Skip = turnCountRef.current > 1 && distFromLast < 2.0 && !lastNoOp;
     const sendImage = !!frame && isStrategyTurn && !a1Skip;
 
     // Mode-appropriate nudge: small models must be pushed to ACT, not just analyse.
-    const actNudge = noToolsRef.current
+    let actNudge = noToolsRef.current
       ? 'Reply with ONE JSON action that MOVES the game now, e.g. {"tool":"press_key","input":{"key":"up"}}.'
       : "First call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.";
+    // Break repetition loops: a small model will otherwise re-issue the exact
+    // move that just did nothing, forever.
+    if (lastNoOp) {
+      const tried = [...lastFailedMovesRef.current].join(", ");
+      actNudge = `Your last move (${lastNoOp}) changed NOTHING — that direction is blocked. Do NOT repeat it.${tried ? ` Already failed here: ${tried}.` : ""} Pick a DIFFERENT direction now. ${actNudge}`;
+    }
 
     if (sendImage) {
       convRef.current.push({
@@ -1951,6 +2007,8 @@ export default function GameAgent() {
     goalsRef.current = [];
     currentGoalIndexRef.current = 0;
     lastTurnHashRef.current = null;
+    lastActionNoOpRef.current = null;
+    lastFailedMovesRef.current = new Set();
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
     noToolsRef.current = noToolsMode;
