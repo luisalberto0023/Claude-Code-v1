@@ -550,8 +550,11 @@ async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 4.0) {
 const WINDOW_TURNS = 20;
 const CHECKPOINT_EVERY = 15;
 // NitroGen finding: a single recent frame carries enough context — keep fewer
-// images in the window to cut vision tokens (was 3).
-const MAX_IMAGES = 2;
+// images in the window to cut vision tokens (was 3). Mutable because local
+// models on small GPUs must be held to exactly ONE image: a single image is
+// processed fine, but two or more reliably kill the Ollama runner.
+let MAX_IMAGES = 2;
+function setMaxImages(n) { MAX_IMAGES = Math.max(1, Math.min(4, n | 0)) || 1; }
 
 function pruneImages(messages) {
   const imageIndices = [];
@@ -1188,6 +1191,8 @@ export default function GameAgent() {
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Local models have tiny context windows — send smaller screenshots to fit.
   useEffect(() => { setMaxFrameW(providerKey === "ollama" ? 768 : 1280); }, [providerKey]);
+  // Local models: exactly ONE screenshot in context (2+ crashes the runner)
+  useEffect(() => { setMaxImages(providerKey === "ollama" ? 1 : 2); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
   useEffect(() => {
     if (!CONTROL_SCHEMES[controlScheme]?.native) {
@@ -1994,6 +1999,9 @@ REASONING STYLE (for analyse_game_state):
             ]
           : turnMsg,
       });
+      // The play loop prunes, but the study loop did not — so study sent 1, then
+      // 2, then 3 screenshots on successive turns. Prune here too.
+      convRef.current = pruneConv(convRef.current, checkpointRef.current);
 
       try {
         const studyTools = noToolsMode ? [] : TOOLS.filter(t => studyToolNames.has(t.name));
