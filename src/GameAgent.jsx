@@ -533,17 +533,21 @@ function parseGridCell(cell, cols = GRID_COLS, rows = GRID_ROWS) {
 // ── Wait for screen change ────────────────────────────────────────────────────
 // `grab` is an async function that refreshes the canvas with the current frame
 // (works for both browser screen-share and backend native capture).
-async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 4.0) {
+async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 2.0) {
   const t0 = Date.now();
   await grab();
   const baseline = frameHash(canvasEl);
+  let maxDist = 0; // report the largest movement seen, even if under threshold:
+                   // 0.00 means the capture is frozen, a small value means the
+                   // threshold is simply too high for this game's visuals.
   while (Date.now() - t0 < maxMs) {
     await new Promise(r => setTimeout(r, 150));
     await grab();
     const dist = hashDist(baseline, frameHash(canvasEl));
+    if (dist > maxDist) maxDist = dist;
     if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
   }
-  return { changed: false, dist: 0, elapsed: maxMs };
+  return { changed: false, dist: maxDist, elapsed: maxMs };
 }
 
 // ── Conversation window management ────────────────────────────────────────────
@@ -1091,6 +1095,10 @@ export default function GameAgent() {
   const [previewSrc, setPreviewSrc] = useState(null);
   const [strategyInterval, setStrategyInterval] = useState(1); // B2: vision every N turns (1 = every turn)
   const [noToolsMode, setNoToolsMode] = useState(false); // JSON-action mode for small local models
+  // Screenshot width sent to LOCAL models. Vision/prompt-processing time scales
+  // with pixel count, so this is the main lever for getting each request to
+  // finish before the connection times out.
+  const [localImageWidth, setLocalImageWidth] = useState(512);
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1190,7 +1198,7 @@ export default function GameAgent() {
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Local models have tiny context windows — send smaller screenshots to fit.
-  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? 768 : 1280); }, [providerKey]);
+  useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
   // Local models: exactly ONE screenshot in context (2+ crashes the runner)
   useEffect(() => { setMaxImages(providerKey === "ollama" ? 1 : 2); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
@@ -1431,7 +1439,7 @@ export default function GameAgent() {
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Clicked. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
+        ? `Clicked. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
         : `Error: ${res.error}`);
     }
 
@@ -1458,7 +1466,7 @@ export default function GameAgent() {
       addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Clicked cell ${toolInput.cell.toUpperCase()} (image ${imgX},${imgY}). Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
+        ? `Clicked cell ${toolInput.cell.toUpperCase()} (image ${imgX},${imgY}). Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
         : `Error: ${res.error}`);
     }
 
@@ -1496,7 +1504,7 @@ export default function GameAgent() {
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Key pressed. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
+        ? `Key pressed. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
         : `Error: ${res.error}`);
     }
 
@@ -1524,7 +1532,7 @@ export default function GameAgent() {
       addAction(toolName, toolInput, { ...res, ...confirm });
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : "unchanged"}.`
+        ? `Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
         : `Error: ${res.error}${res.available === false ? " (install vgamepad + ViGEmBus on Windows)" : ""}`);
     }
 
@@ -2462,6 +2470,25 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   style={inputStyle()}
                 />
               </div>
+              {providerKey === "ollama" && (
+                <div>
+                  <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
+                    Local screenshot width (px)
+                  </label>
+                  <input
+                    type="number"
+                    min="320"
+                    max="1280"
+                    step="64"
+                    value={localImageWidth}
+                    onChange={e => setLocalImageWidth(Math.max(320, Math.min(1280, Number(e.target.value) || 512)))}
+                    style={inputStyle()}
+                  />
+                  <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
+                    Smaller = much faster inference. Lower this if requests time out ("Failed to fetch"). 512 is a good start on 6GB; try 384 if turns still take &gt;30s.
+                  </div>
+                </div>
+              )}
               <div>
                 <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
                   Vision every N turns (1 = every turn)
