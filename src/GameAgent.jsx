@@ -2535,11 +2535,27 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 }}
                 style={{ ...btnStyle(C.yellow), fontSize: 11 }}>⌨ Test Key</button>
             )}
+            {!running && (
+              <button onClick={previewCrop} style={{ ...btnStyle(C.accent), fontSize: 11 }}>
+                👁 See What Agent Sees
+              </button>
+            )}
             {!running && gameDesc.trim() && (
               <button onClick={async () => { await clearMemory(slugify(gameDesc)); setMemoryData(null); addLog("Memory cleared.", "warn"); }}
                 style={{ ...btnStyle(C.border), fontSize: 11 }}>Clear Memory</button>
             )}
           </div>
+          {previewSrc && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>
+                EXACTLY what the model receives — is the game board visible and clear?
+              </div>
+              <img src={previewSrc} alt="agent view"
+                style={{ display: "block", width: "100%", border: `1px solid ${C.accent}`, borderRadius: 3 }} />
+              <button onClick={() => setPreviewSrc(null)}
+                style={{ ...btnStyle(C.border), fontSize: 10, marginTop: 4 }}>Hide</button>
+            </div>
+          )}
         </div>
 
         {/* Goals */}
