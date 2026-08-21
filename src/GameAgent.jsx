@@ -395,6 +395,12 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
 // fits their small context window). Cloud models keep the full 1280px.
 let MAX_FRAME_W = 1280;
 function setMaxFrameW(w) { MAX_FRAME_W = Math.max(320, Math.min(1280, w | 0)) || 1280; }
+// JPEG quality for the frame we transmit. Smaller payloads spend less time on
+// the wire, which matters when the request crosses a flaky network link: a
+// body that is cut off mid-upload leaves the server waiting and then rejecting
+// the request as malformed.
+let FRAME_QUALITY = 0.85;
+function setFrameQuality(q) { FRAME_QUALITY = Math.max(0.3, Math.min(0.95, q)) || 0.85; }
 
 // `maxW` overrides the global cap. Pass the real width to capture full-size,
 // which matters when a crop follows: cropping an already-downscaled frame
@@ -419,7 +425,7 @@ function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
   scaleRef.current = { imgW, imgH, realW, realH, scale: realW / imgW, offsetX: 0, offsetY: 0 };
 
   return {
-    data: canvasEl.toDataURL("image/jpeg", 0.85).split(",")[1],
+    data: canvasEl.toDataURL("image/jpeg", FRAME_QUALITY).split(",")[1],
     imgW, imgH, realW, realH,
   };
 }
@@ -1290,6 +1296,8 @@ export default function GameAgent() {
   useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
   // Local models: exactly ONE screenshot in context (2+ crashes the runner)
   useEffect(() => { setMaxImages(providerKey === "ollama" ? 1 : 2); }, [providerKey]);
+  // Smaller payload for local runs — the request often crosses a LAN link
+  useEffect(() => { setFrameQuality(providerKey === "ollama" ? 0.6 : 0.85); }, [providerKey]);
   // ...and a short history, so the prompt stays far below a 4096-token context
   useEffect(() => { setWindowTurns(providerKey === "ollama" ? 6 : 20); }, [providerKey]);
   // Reset native-only options when a non-native (browser) scheme is selected
@@ -1426,7 +1434,7 @@ export default function GameAgent() {
       mutated = true;
     }
     if (mutated && canvasRef.current?.width) {
-      base = { ...base, data: canvasRef.current.toDataURL("image/jpeg", 0.85).split(",")[1] };
+      base = { ...base, data: canvasRef.current.toDataURL("image/jpeg", FRAME_QUALITY).split(",")[1] };
     }
     return base;
   }, []);
@@ -1882,7 +1890,8 @@ export default function GameAgent() {
       const toolsArg = noToolsRef.current ? [] : activeToolsRef.current;
       resp = await callAI(providerKey, model, systemPrompt, convRef.current, toolsArg, apiKey, msg => addLog(msg, "warn"));
       const secs = ((Date.now() - __t0) / 1000).toFixed(1);
-      const imgNote = sendImage && frame ? ` (sent ${frame.imgW}×${frame.imgH} image)` : " (no image)";
+      const kb = sendImage && frame?.data ? Math.round(frame.data.length * 0.75 / 1024) : 0;
+      const imgNote = sendImage && frame ? ` (sent ${frame.imgW}×${frame.imgH} image, ~${kb}KB)` : " (no image)";
       addLog(`   LLM replied in ${secs}s${imgNote}`, "info");
     } catch (e) {
       await setGameSpeed(1); // always resume the game on the way out
