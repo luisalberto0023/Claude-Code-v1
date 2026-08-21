@@ -80,6 +80,10 @@ const PROVIDERS = {
 
 // Ollama server address — configurable so the model can live on a separate PC.
 let _ollamaBase = "http://localhost:11434";
+// Route Ollama calls through the local backend rather than straight from the
+// browser (see /llm/ollama in agent_server.py).
+let _ollamaViaBackend = true;
+function setOllamaViaBackend(v) { _ollamaViaBackend = !!v; }
 function setOllamaBase(url) {
   const u = (url || "").trim().replace(/\/+$/, "");
   _ollamaBase = u || "http://localhost:11434";
@@ -315,6 +319,28 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         stream: false,
       };
       const t0 = Date.now();
+
+      // Preferred path: relay through the local backend. The browser then only
+      // holds a localhost connection, so security software / network gear on the
+      // LAN path can't kill the long request while the model is thinking.
+      if (_ollamaViaBackend) {
+        let relay;
+        try {
+          relay = await backend("/llm/ollama", { base_url: _ollamaBase, payload: body, timeout: 600 });
+        } catch (e) {
+          throw new Error(`Relay unreachable: ${e.message} — is agent_server.py running?`);
+        }
+        if (relay?.ok && relay.body) return fromOpenAI(relay.body);
+        const secs = relay?.elapsed ?? ((Date.now() - t0) / 1000).toFixed(1);
+        const err = new Error(
+          relay?.status
+            ? `HTTP ${relay.status} after ${secs}s: ${String(relay.error ?? "").slice(0, 300)}`
+            : `Ollama relay failed after ${secs}s: ${String(relay?.error ?? "unknown")}`
+        );
+        if (relay?.status) err.status = relay.status;
+        throw err;
+      }
+
       let res;
       try {
         res = await fetch(`${_ollamaBase}/v1/chat/completions`, {
@@ -1158,6 +1184,7 @@ export default function GameAgent() {
   // with pixel count, so this is the main lever for getting each request to
   // finish before the connection times out.
   const [localImageWidth, setLocalImageWidth] = useState(512);
+  const [ollamaViaBackend, setOllamaViaBackendState] = useState(true);
   const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
@@ -1257,6 +1284,7 @@ export default function GameAgent() {
   useEffect(() => { cropRef.current = { enabled: cropEnabled, ...cropMargins }; }, [cropEnabled, cropMargins]);
   useEffect(() => { strategyIntervalRef.current = Math.max(1, strategyInterval || 1); }, [strategyInterval]);
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
+  useEffect(() => { setOllamaViaBackend(ollamaViaBackend); }, [ollamaViaBackend]);
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
   // Local models have tiny context windows — send smaller screenshots to fit.
   useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
@@ -2416,6 +2444,13 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               />
               <div style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>
                 localhost = model on this PC. For a separate GPU box, use its IP — and start Ollama there with OLLAMA_HOST=0.0.0.0 and OLLAMA_ORIGINS=* so the browser can reach it.
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", color: C.text, marginTop: 5 }}>
+                <input type="checkbox" checked={ollamaViaBackend} onChange={e => setOllamaViaBackendState(e.target.checked)} />
+                Relay through local backend
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
+                Recommended. The browser then only holds a localhost connection, so antivirus/firewall on the LAN path can't cut off long requests mid-think.
               </div>
             </>
           )}

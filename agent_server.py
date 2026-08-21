@@ -531,6 +531,51 @@ def memory_patch(game_key: str, patch: MemoryPatch):
     return {"ok": True, "entry": entry}
 
 
+# ── Ollama relay ───────────────────────────────────────────────────────────────
+# The browser holds a long idle connection while the model thinks, and security
+# software / network gear on the path frequently kills such sockets mid-request
+# (observed: sockets dropped at a fixed ~19s while Ollama was still computing).
+# Relaying through this local backend keeps the browser's connection on
+# localhost and lets Python own the long-running call, with its own timeout.
+
+import urllib.request
+import urllib.error
+
+
+class OllamaRelayBody(BaseModel):
+    base_url: str
+    payload: Dict[str, Any]
+    timeout: float = 600.0
+
+
+@app.post("/llm/ollama")
+def llm_ollama(b: OllamaRelayBody):
+    url = b.base_url.rstrip("/") + "/v1/chat/completions"
+    data = json.dumps(b.payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    started = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=max(30.0, min(b.timeout, 1800.0))) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+        return {"ok": True, "status": 200, "elapsed": round(time.time() - started, 1),
+                "body": json.loads(body)}
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = e.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            pass
+        return {"ok": False, "status": e.code, "elapsed": round(time.time() - started, 1),
+                "error": detail or str(e)}
+    except Exception as e:
+        return {"ok": False, "status": 0, "elapsed": round(time.time() - started, 1),
+                "error": f"{type(e).__name__}: {e}"}
+
+
 @app.delete("/memory/{game_key}")
 def memory_clear(game_key: str):
     data = _load_all()
