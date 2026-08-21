@@ -1962,7 +1962,11 @@ export default function GameAgent() {
         "You are a game strategy researcher with deep knowledge of browser and desktop games.",
         [{
           role: "user",
-          content: `What are the best strategies for playing "${gameDesc}"? Provide 3-5 concise bullet points covering: core mechanics, optimal strategy, common mistakes to avoid, and any tips for high scores. Use your training knowledge.`,
+          // This text ends up in the system prompt of every later request, so on
+          // a small local context it must be short and directly actionable.
+          content: providerKey === "ollama"
+            ? `In at most 4 SHORT imperative rules (max 15 words each, no preamble, no headings), how should a player win at "${gameDesc}"? Give only concrete per-move rules, e.g. "keep the largest tile in one corner".`
+            : `What are the best strategies for playing "${gameDesc}"? Provide 3-5 concise bullet points covering: core mechanics, optimal strategy, common mistakes to avoid, and any tips for high scores. Use your training knowledge.`,
         }],
         [], apiKey, msg => addLog(msg, "warn")
       );
@@ -2050,11 +2054,23 @@ export default function GameAgent() {
     }
 
     // Build system prompt
-    const memCtx = mem?.strategies?.length
-      ? `\n\nPRIOR KNOWLEDGE FROM MEMORY:\n- Best score: ${mem.bestScore ?? "unknown"}\n- Strategies: ${mem.strategies.slice(0, 3).join("; ")}\n- Discoveries: ${(mem.discoveries ?? []).slice(0, 5).join("; ")}\n- Avoid: ${(mem.avoidPatterns ?? []).slice(0, 3).join("; ")}`
-      : "";
+    // The system prompt is resent on EVERY request, so unbounded research or
+    // memory text permanently eats the context window. On a 4096-token local
+    // model that alone can leave no room for the screenshot. Cap both.
+    const isLocal = providerKey === "ollama";
+    const RESEARCH_CAP = isLocal ? 700 : 2500;
+    const MEM_CAP = isLocal ? 350 : 1200;
+    const cap = (t, n) => {
+      const s = String(t ?? "").trim().replace(/\s+/g, " ");
+      return s.length > n ? `${s.slice(0, n)}…` : s;
+    };
 
-    const researchCtx = research ? `\n\nRESEARCH FINDINGS:\n${research}` : "";
+    const memRaw = mem?.strategies?.length
+      ? `Best score: ${mem.bestScore ?? "unknown"}. Strategies: ${mem.strategies.slice(0, isLocal ? 2 : 3).join("; ")}. Discoveries: ${(mem.discoveries ?? []).slice(0, isLocal ? 2 : 5).join("; ")}. Avoid: ${(mem.avoidPatterns ?? []).slice(0, isLocal ? 2 : 3).join("; ")}`
+      : "";
+    const memCtx = memRaw ? `\n\nPRIOR KNOWLEDGE:\n${cap(memRaw, MEM_CAP)}` : "";
+
+    const researchCtx = research ? `\n\nSTRATEGY NOTES:\n${cap(research, RESEARCH_CAP)}` : "";
 
     const controlDesc = controlSchemeDescription(controlScheme, pauseActive, gridEnabled);
 
@@ -2093,6 +2109,15 @@ COORDINATE SYSTEM:
 REASONING STYLE (for analyse_game_state):
 - Be concise: 1-3 sentences max
 - State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
+
+    // The system prompt is resent every request. On a local 4096-token context a
+    // bloated one leaves no room for the screenshot, and llama.cpp cannot shift
+    // the KV cache — it reprocesses everything and the turn stalls.
+    const promptTokEst = Math.round(systemPrompt.length / 4);
+    addLog(`System prompt ≈ ${promptTokEst} tokens`, "info");
+    if (isLocal && promptTokEst > 1200) {
+      addLog(`⚠ System prompt is large (≈${promptTokEst} tok) for a local model — turns may stall. Enable "Skip research phase" and/or Clear Memory to shrink it.`, "warn");
+    }
 
     // Study phase — 3 observe-only turns to understand the game state
     setPhase("study");
