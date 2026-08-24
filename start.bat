@@ -8,19 +8,20 @@ echo   Game Agent -- Starting Up
 echo   =========================
 echo.
 
-:: ── Check .env ────────────────────────────────────────────────────────────────
+:: ── Check .env (only needed for cloud providers) ──────────────────────────────
+:: A local Ollama model needs no API key, so a missing/placeholder .env is a
+:: warning rather than a hard stop.
 if not exist ".env" (
-    echo   ERROR: No .env file found.
-    echo   Copy .env.example to .env and add your API key.
-    pause & exit /b 1
+    echo   NOTE: No .env file found — fine if you are using Ollama ^(local^).
+    echo         For Anthropic/OpenAI/Gemini, copy .env.example to .env and add a key.
+) else (
+    findstr /c:"your-key-here" ".env" >nul 2>&1
+    if not errorlevel 1 (
+        echo   NOTE: .env still has the placeholder key — fine for Ollama ^(local^).
+    ) else (
+        echo   OK: .env found
+    )
 )
-findstr /c:"your-key-here" ".env" >nul 2>&1
-if not errorlevel 1 (
-    echo   ERROR: .env still has the placeholder key.
-    echo   Open .env and replace the placeholder with your real API key.
-    pause & exit /b 1
-)
-echo   OK: .env found
 
 :: ── Check Python ──────────────────────────────────────────────────────────────
 python --version >nul 2>&1

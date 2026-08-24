@@ -9,17 +9,14 @@ Write-Host "  Game Agent -- Starting Up" -ForegroundColor Cyan
 Write-Host "  =========================" -ForegroundColor Cyan
 Write-Host ""
 
-# .env check
+# .env check — only needed for cloud providers; Ollama (local) needs no key
 if (-not (Test-Path ".env")) {
-    Write-Host "  ERROR: No .env file found." -ForegroundColor Red
-    Write-Host "  Copy .env.example to .env and add your API key."
-    Read-Host "  Press Enter to exit"; exit 1
+    Write-Host "  NOTE: No .env file found - fine if you are using Ollama (local)." -ForegroundColor Yellow
+} elseif (Select-String -Path ".env" -Pattern "your-key-here" -Quiet) {
+    Write-Host "  NOTE: .env still has the placeholder key - fine for Ollama (local)." -ForegroundColor Yellow
+} else {
+    Write-Host "  OK: .env found" -ForegroundColor Green
 }
-if (Select-String -Path ".env" -Pattern "your-key-here" -Quiet) {
-    Write-Host "  ERROR: .env still has the placeholder key." -ForegroundColor Red
-    Read-Host "  Press Enter to exit"; exit 1
-}
-Write-Host "  OK: .env found" -ForegroundColor Green
 
 # Python
 try { python --version | Out-Null } catch {
