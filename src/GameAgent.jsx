@@ -1467,101 +1467,6 @@ export default function GameAgent() {
     return base;
   }, []);
 
-  // ── Restart the game after it ends ──────────────────────────────────────────
-  // General pattern: detect terminal state -> click the restart control -> verify.
-  // The button's location is remembered after the first success and reused, so
-  // later restarts cost no LLM call at all (a small learned "skill").
-  const attemptRestart = useCallback(async (systemPrompt, apiKey) => {
-    const timing = getTiming();
-    const verify = async (base) => {
-      const c = await waitChange(grabFrame, canvasRef.current, Math.max(timing.confirmDelay, 2500), 3.0, base);
-      return c.changed;
-    };
-
-    // 1) Reuse the remembered button position, if we have one.
-    if (restartPointRef.current) {
-      const { x, y } = restartPointRef.current;
-      addLog("Restarting — clicking remembered New Game button…", "info");
-      const base = await snapshotHash(grabFrame, canvasRef.current);
-      const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
-      if (res.ok && await verify(base)) {
-        addLog("✓ New game started.", "success");
-        return true;
-      }
-      addLog("Remembered button did not work — asking the model to find it.", "warn");
-      restartPointRef.current = null;
-    }
-
-    // 2) Ask the model to locate and click it (grid makes small models accurate).
-    const savedGrid = gridEnabledRef.current;
-    gridEnabledRef.current = true; // click_grid needs the overlay drawn
-    try {
-      for (let attempt = 1; attempt <= 3 && !stopRef.current; attempt++) {
-        const frame = await grabFrame();
-        if (!frame) return false;
-        const ask = [
-          "The game has ENDED (no moves left, or a game-over screen is showing).",
-          "Find the button that starts a new game — labelled something like",
-          '"New Game", "Try again", "Play again", or "Restart" — and click it.',
-          'Reply with ONE JSON object using click_grid, e.g. {"see":"Game over overlay with a Try again button","plan":"click Try again","tool":"click_grid","input":{"cell":"F4"}}',
-          "Use the labelled grid drawn on the screenshot to pick the cell containing that button.",
-        ].join("\n");
-
-        convRef.current.push({
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
-            { type: "text", text: ask },
-          ],
-        });
-        convRef.current = pruneConv(convRef.current, checkpointRef.current);
-
-        let resp;
-        try {
-          resp = await callAI(providerKey, model, systemPrompt, convRef.current, noToolsRef.current ? [] : activeToolsRef.current, apiKey, m => addLog(m, "warn"));
-        } catch (e) {
-          addLog(`Restart attempt failed: ${e.message}`, "warn");
-          continue;
-        }
-
-        const txt = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
-        convRef.current.push({ role: "assistant", content: txt || "(restart)" });
-        const acts = noToolsRef.current
-          ? parseJsonActions(txt)
-          : (resp.content ?? []).filter(c => c.type === "tool_use").map(c => ({ tool: c.name, input: c.input }));
-
-        const clickAct = acts.find(a => a.tool === "click_grid" || a.tool === "click");
-        if (!clickAct) {
-          addLog(`Restart attempt ${attempt}: model did not return a click.`, "warn");
-          continue;
-        }
-
-        const base = await snapshotHash(grabFrame, canvasRef.current);
-        addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input).slice(0, 60)})`, "tool");
-        const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`);
-        const txtOut = (result?.content ?? []).find(c => c.type === "text")?.text ?? "";
-
-        if (await verify(base)) {
-          // Remember where that click landed so later restarts skip the LLM.
-          const m = txtOut.match(/image (\d+),(\d+)/);
-          if (m) {
-            const s = scaleRef.current;
-            const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
-            restartPointRef.current = {
-              x: Math.round((s.offsetX ?? 0) + Number(m[1]) * sc),
-              y: Math.round((s.offsetY ?? 0) + Number(m[2]) * sc),
-            };
-          }
-          addLog("✓ New game started.", "success");
-          return true;
-        }
-        addLog(`Restart attempt ${attempt}: screen did not change.`, "warn");
-      }
-    } finally {
-      gridEnabledRef.current = savedGrid;
-    }
-    return false;
-  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog]);
 
   // Grab one frame and show it (with crop + grid applied) so margins can be tuned.
   const previewCrop = useCallback(async () => {
@@ -1929,6 +1834,102 @@ export default function GameAgent() {
 
     return toolResult(`Unknown tool: ${toolName}`);
   }, [gameDesc, getTiming, addLog, addAction, grabFrame]);
+
+  // ── Restart the game after it ends ──────────────────────────────────────────
+  // General pattern: detect terminal state -> click the restart control -> verify.
+  // The button's location is remembered after the first success and reused, so
+  // later restarts cost no LLM call at all (a small learned "skill").
+  const attemptRestart = useCallback(async (systemPrompt, apiKey) => {
+    const timing = getTiming();
+    const verify = async (base) => {
+      const c = await waitChange(grabFrame, canvasRef.current, Math.max(timing.confirmDelay, 2500), 3.0, base);
+      return c.changed;
+    };
+
+    // 1) Reuse the remembered button position, if we have one.
+    if (restartPointRef.current) {
+      const { x, y } = restartPointRef.current;
+      addLog("Restarting — clicking remembered New Game button…", "info");
+      const base = await snapshotHash(grabFrame, canvasRef.current);
+      const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+      if (res.ok && await verify(base)) {
+        addLog("✓ New game started.", "success");
+        return true;
+      }
+      addLog("Remembered button did not work — asking the model to find it.", "warn");
+      restartPointRef.current = null;
+    }
+
+    // 2) Ask the model to locate and click it (grid makes small models accurate).
+    const savedGrid = gridEnabledRef.current;
+    gridEnabledRef.current = true; // click_grid needs the overlay drawn
+    try {
+      for (let attempt = 1; attempt <= 3 && !stopRef.current; attempt++) {
+        const frame = await grabFrame();
+        if (!frame) return false;
+        const ask = [
+          "The game has ENDED (no moves left, or a game-over screen is showing).",
+          "Find the button that starts a new game — labelled something like",
+          '"New Game", "Try again", "Play again", or "Restart" — and click it.',
+          'Reply with ONE JSON object using click_grid, e.g. {"see":"Game over overlay with a Try again button","plan":"click Try again","tool":"click_grid","input":{"cell":"F4"}}',
+          "Use the labelled grid drawn on the screenshot to pick the cell containing that button.",
+        ].join("\n");
+
+        convRef.current.push({
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
+            { type: "text", text: ask },
+          ],
+        });
+        convRef.current = pruneConv(convRef.current, checkpointRef.current);
+
+        let resp;
+        try {
+          resp = await callAI(providerKey, model, systemPrompt, convRef.current, noToolsRef.current ? [] : activeToolsRef.current, apiKey, m => addLog(m, "warn"));
+        } catch (e) {
+          addLog(`Restart attempt failed: ${e.message}`, "warn");
+          continue;
+        }
+
+        const txt = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
+        convRef.current.push({ role: "assistant", content: txt || "(restart)" });
+        const acts = noToolsRef.current
+          ? parseJsonActions(txt)
+          : (resp.content ?? []).filter(c => c.type === "tool_use").map(c => ({ tool: c.name, input: c.input }));
+
+        const clickAct = acts.find(a => a.tool === "click_grid" || a.tool === "click");
+        if (!clickAct) {
+          addLog(`Restart attempt ${attempt}: model did not return a click.`, "warn");
+          continue;
+        }
+
+        const base = await snapshotHash(grabFrame, canvasRef.current);
+        addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input).slice(0, 60)})`, "tool");
+        const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`);
+        const txtOut = (result?.content ?? []).find(c => c.type === "text")?.text ?? "";
+
+        if (await verify(base)) {
+          // Remember where that click landed so later restarts skip the LLM.
+          const m = txtOut.match(/image (\d+),(\d+)/);
+          if (m) {
+            const s = scaleRef.current;
+            const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
+            restartPointRef.current = {
+              x: Math.round((s.offsetX ?? 0) + Number(m[1]) * sc),
+              y: Math.round((s.offsetY ?? 0) + Number(m[2]) * sc),
+            };
+          }
+          addLog("✓ New game started.", "success");
+          return true;
+        }
+        addLog(`Restart attempt ${attempt}: screen did not change.`, "warn");
+      }
+    } finally {
+      gridEnabledRef.current = savedGrid;
+    }
+    return false;
+  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog]);
 
   // ── agentTurn ────────────────────────────────────────────────────────────────
   const agentTurn = useCallback(async (systemPrompt, apiKey) => {
