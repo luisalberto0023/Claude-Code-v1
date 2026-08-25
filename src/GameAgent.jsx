@@ -317,6 +317,11 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         messages: [{ role: "system", content: systemPrompt }, ...toOpenAIMessages(messages)],
         tools: tools.length ? toOpenAITools(tools) : undefined,
         stream: false,
+        // Ollama defaults to temperature 1.0. Choosing a game move is a
+        // decision, not creative writing — sample the model's best judgment
+        // instead of a random one from the distribution.
+        temperature: 0.25,
+        top_p: 0.9,
       };
       const t0 = Date.now();
 
@@ -1070,20 +1075,29 @@ function buildJsonProtocol(tools) {
   return `
 
 === HOW YOU CONTROL THE GAME (CRITICAL — this overrides any earlier tool instructions) ===
-You cannot call functions. Each turn, reply with ONLY ONE JSON object — no prose, no markdown, no code fences:
-{"tool":"<name>","input":{ ...args },"why":"<one short sentence>"}
+You cannot call functions. Each turn, reply with ONLY ONE JSON object — no prose, no markdown, no code fences.
+Look at the screenshot FIRST, then decide. Fill every field:
 
-You MUST choose an action that CHANGES the screen (usually press_key). Analysing alone does NOTHING and wastes the turn — never respond with only analyse_game_state.
-For 2048 and most keyboard games this means a move every turn, e.g.:
-{"tool":"press_key","input":{"key":"up"},"why":"stack tiles upward"}   (keys: up, down, left, right)
+{"see":"<what is actually on screen right now>",
+ "plan":"<why this move is best given what you see>",
+ "score":<current score as a number, or null if not visible>,
+ "tool":"<name>","input":{ ...args }}
+
+Example:
+{"see":"top row 4,8,2,2; bottom-right holds the largest tile 64; one empty cell bottom-left",
+ "plan":"merge the two 2s on the right while keeping 64 pinned in the bottom-right corner",
+ "score":1240,
+ "tool":"press_key","input":{"key":"right"}}
 
 Available tools (?=optional arg):
 ${buildActionReference(tools)}
 
 RULES:
 - Output ONE JSON object only. No arrays, no extra text, no code fences.
-- Put your brief reasoning inside "why" — do NOT send a separate analyse_game_state turn.
-- Every single turn must contain a real game action (press_key / click / gamepad_button …), never just analysis.`;
+- "see" must describe THIS screenshot — actual tile values and positions, not a generic sentence. Do not repeat a previous turn's description.
+- "plan" must justify THIS move specifically. Never reuse the same sentence every turn.
+- Every turn must end in a real screen-changing action (press_key / click / gamepad_button …), never analysis alone.
+- Read the score off the screen into "score" when you can see it.`;
 }
 
 // Extract a list of {tool, input} from a model's free-text reply.
@@ -1105,11 +1119,19 @@ function parseJsonActions(text) {
     if (!tool) return null;
     let input = it.input || it.args || it.arguments;
     if (!input || typeof input !== "object") {
-      // flattened form e.g. {"tool":"press_key","key":"up"}
-      const { tool: _t, action: _a, name: _n, ...rest } = it;
+      // flattened form e.g. {"tool":"press_key","key":"up"} — drop the
+      // reasoning fields so they never get passed as tool arguments
+      const { tool: _t, action: _a, name: _n, see: _s, plan: _p, why: _w,
+              reasoning: _r, score: _sc, ...rest } = it;
       input = rest;
     }
-    return { tool, input: input || {} };
+    return {
+      tool,
+      input: input || {},
+      see: typeof it.see === "string" ? it.see : null,
+      plan: typeof it.plan === "string" ? (it.plan) : (typeof it.why === "string" ? it.why : null),
+      score: typeof it.score === "number" ? it.score : null,
+    };
   }).filter(Boolean);
 }
 
@@ -1177,6 +1199,9 @@ export default function GameAgent() {
   const [skipResearch, setSkipResearch] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [maxTokens, setMaxTokens] = useState(150000);
+  const [gamesPerSession, setGamesPerSession] = useState(1);
+  const [gameScores, setGameScores] = useState([]);
+  const [gameNumber, setGameNumber] = useState(0);
 
   // Control scheme / input method (play any game: browser, native, KB/mouse, gamepad)
   const [controlScheme, setControlScheme] = useState("browser-kbm");
@@ -1258,6 +1283,8 @@ export default function GameAgent() {
   const lastActionNoOpRef = useRef(null);      // description of the last no-op move
   const lastFailedMovesRef = useRef(new Set()); // moves that did nothing on this board
   const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
+  const restartPointRef = useRef(null);        // learned New Game button position
+  const gameScoresRef = useRef([]);            // score of each completed game
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1439,6 +1466,102 @@ export default function GameAgent() {
     }
     return base;
   }, []);
+
+  // ── Restart the game after it ends ──────────────────────────────────────────
+  // General pattern: detect terminal state -> click the restart control -> verify.
+  // The button's location is remembered after the first success and reused, so
+  // later restarts cost no LLM call at all (a small learned "skill").
+  const attemptRestart = useCallback(async (systemPrompt, apiKey) => {
+    const timing = getTiming();
+    const verify = async (base) => {
+      const c = await waitChange(grabFrame, canvasRef.current, Math.max(timing.confirmDelay, 2500), 3.0, base);
+      return c.changed;
+    };
+
+    // 1) Reuse the remembered button position, if we have one.
+    if (restartPointRef.current) {
+      const { x, y } = restartPointRef.current;
+      addLog("Restarting — clicking remembered New Game button…", "info");
+      const base = await snapshotHash(grabFrame, canvasRef.current);
+      const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+      if (res.ok && await verify(base)) {
+        addLog("✓ New game started.", "success");
+        return true;
+      }
+      addLog("Remembered button did not work — asking the model to find it.", "warn");
+      restartPointRef.current = null;
+    }
+
+    // 2) Ask the model to locate and click it (grid makes small models accurate).
+    const savedGrid = gridEnabledRef.current;
+    gridEnabledRef.current = true; // click_grid needs the overlay drawn
+    try {
+      for (let attempt = 1; attempt <= 3 && !stopRef.current; attempt++) {
+        const frame = await grabFrame();
+        if (!frame) return false;
+        const ask = [
+          "The game has ENDED (no moves left, or a game-over screen is showing).",
+          "Find the button that starts a new game — labelled something like",
+          '"New Game", "Try again", "Play again", or "Restart" — and click it.',
+          'Reply with ONE JSON object using click_grid, e.g. {"see":"Game over overlay with a Try again button","plan":"click Try again","tool":"click_grid","input":{"cell":"F4"}}',
+          "Use the labelled grid drawn on the screenshot to pick the cell containing that button.",
+        ].join("\n");
+
+        convRef.current.push({
+          role: "user",
+          content: [
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
+            { type: "text", text: ask },
+          ],
+        });
+        convRef.current = pruneConv(convRef.current, checkpointRef.current);
+
+        let resp;
+        try {
+          resp = await callAI(providerKey, model, systemPrompt, convRef.current, noToolsRef.current ? [] : activeToolsRef.current, apiKey, m => addLog(m, "warn"));
+        } catch (e) {
+          addLog(`Restart attempt failed: ${e.message}`, "warn");
+          continue;
+        }
+
+        const txt = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
+        convRef.current.push({ role: "assistant", content: txt || "(restart)" });
+        const acts = noToolsRef.current
+          ? parseJsonActions(txt)
+          : (resp.content ?? []).filter(c => c.type === "tool_use").map(c => ({ tool: c.name, input: c.input }));
+
+        const clickAct = acts.find(a => a.tool === "click_grid" || a.tool === "click");
+        if (!clickAct) {
+          addLog(`Restart attempt ${attempt}: model did not return a click.`, "warn");
+          continue;
+        }
+
+        const base = await snapshotHash(grabFrame, canvasRef.current);
+        addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input).slice(0, 60)})`, "tool");
+        const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`);
+        const txtOut = (result?.content ?? []).find(c => c.type === "text")?.text ?? "";
+
+        if (await verify(base)) {
+          // Remember where that click landed so later restarts skip the LLM.
+          const m = txtOut.match(/image (\d+),(\d+)/);
+          if (m) {
+            const s = scaleRef.current;
+            const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
+            restartPointRef.current = {
+              x: Math.round((s.offsetX ?? 0) + Number(m[1]) * sc),
+              y: Math.round((s.offsetY ?? 0) + Number(m[2]) * sc),
+            };
+          }
+          addLog("✓ New game started.", "success");
+          return true;
+        }
+        addLog(`Restart attempt ${attempt}: screen did not change.`, "warn");
+      }
+    } finally {
+      gridEnabledRef.current = savedGrid;
+    }
+    return false;
+  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog]);
 
   // Grab one frame and show it (with crop + grid applied) so margins can be tuned.
   const previewCrop = useCallback(async () => {
@@ -1929,9 +2052,21 @@ export default function GameAgent() {
       // ── JSON-action mode (small local models): plain-text history, parse actions ──
       const text = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
       convRef.current.push({ role: "assistant", content: text || "(no output)" });
-      if (text) addLog(text.slice(0, 300), "assistant");
 
       const actions = parseJsonActions(text);
+
+      // Surface the model's reasoning readably instead of dumping raw JSON,
+      // and pick up the score it read off the screen (no extra LLM call).
+      const lead = actions[0];
+      if (lead?.see) addLog(`  👁 ${lead.see.slice(0, 220)}`, "info");
+      if (lead?.plan) addLog(`  🧠 ${lead.plan.slice(0, 220)}`, "assistant");
+      if (!lead?.see && !lead?.plan && text) addLog(text.slice(0, 300), "assistant");
+      if (typeof lead?.score === "number" && Number.isFinite(lead.score)) {
+        if (lead.score !== currentScoreRef.current) {
+          currentScoreRef.current = lead.score;
+          setCurrentScore(lead.score);
+        }
+      }
       const PASSIVE = new Set(["analyse_game_state", "observe_screen", "read_screen_text"]);
       const hasRealAction = actions.some(a => !PASSIVE.has(a.tool));
 
@@ -2062,6 +2197,10 @@ export default function GameAgent() {
     lastActionNoOpRef.current = null;
     lastFailedMovesRef.current = new Set();
     noOpStreakRef.current = 0;
+    restartPointRef.current = null;
+    gameScoresRef.current = [];
+    setGameScores([]);
+    setGameNumber(0);
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
     noToolsRef.current = noToolsMode;
@@ -2217,6 +2356,24 @@ REASONING STYLE (for analyse_game_state):
 
     let finalOutcome = "ended";
     let finalScore = null;
+    const totalGames = Math.max(1, gamesPerSession || 1);
+
+    // ── Games loop ───────────────────────────────────────────────────────────
+    // Each pass plays one game to completion. When a game ends and more are
+    // requested, click the restart control and keep going. This also recovers a
+    // game that never started: every move is a no-op, which reads as "no moves
+    // left", and the same restart path clicks New Game.
+    for (let gameIdx = 0; gameIdx < totalGames && !stopRef.current; gameIdx++) {
+      setGameNumber(gameIdx + 1);
+      if (totalGames > 1) addLog(`── Game ${gameIdx + 1} of ${totalGames} ──`, "info");
+
+      // Reset per-game tracking
+      noOpStreakRef.current = 0;
+      lastFailedMovesRef.current = new Set();
+      lastActionNoOpRef.current = null;
+      stuckTriggerRef.current = 0;
+      gameEndRef.current = null;
+      let gameOutcome = "ended";
 
     while (!stopRef.current) {
       while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 500));
@@ -2225,8 +2382,11 @@ REASONING STYLE (for analyse_game_state):
       const result = await agentTurn(systemPrompt, apiKey);
 
       if (result.stop) {
-        finalOutcome = result.outcome ?? "ended";
-        finalScore = result.finalScore ?? currentScoreRef.current;
+        gameOutcome = result.outcome ?? "ended";
+        if (result.finalScore != null) {
+          currentScoreRef.current = result.finalScore;
+          setCurrentScore(result.finalScore);
+        }
         break;
       }
 
@@ -2260,7 +2420,7 @@ REASONING STYLE (for analyse_game_state):
       const exhausted = noOps >= 4 && distinctFailed >= 3;
       const hardStop = noOps >= 10;
       if (exhausted || hardStop) {
-        finalOutcome = "stuck";
+        gameOutcome = "stuck";
         addLog(
           exhausted
             ? `No moves available — ${distinctFailed} different directions all blocked over ${noOps} actions.`
@@ -2268,6 +2428,44 @@ REASONING STYLE (for analyse_game_state):
           "warn"
         );
         break;
+      }
+    }
+
+      // ── Game finished ──────────────────────────────────────────────────────
+      const thisScore = gameEndRef.current?.finalScore ?? currentScoreRef.current;
+      gameScoresRef.current = [...gameScoresRef.current, { game: gameIdx + 1, score: thisScore, outcome: gameOutcome }];
+      setGameScores([...gameScoresRef.current]);
+      addLog(`Game ${gameIdx + 1} finished — ${gameOutcome}${thisScore != null ? `, score ${thisScore}` : ""}.`, "success");
+
+      finalOutcome = gameOutcome;
+      finalScore = thisScore ?? finalScore;
+
+      const moreToPlay = gameIdx + 1 < totalGames;
+      if (!moreToPlay || stopRef.current) break;
+
+      // Restart for the next game
+      setPhase("restarting");
+      const ok = await attemptRestart(systemPrompt, apiKey);
+      setPhase("playing");
+      if (!ok) {
+        addLog("Could not start a new game — ending session.", "warn");
+        break;
+      }
+      // Fresh board: clear per-game state so nothing leaks across games
+      currentScoreRef.current = null;
+      setCurrentScore(null);
+      lastTurnHashRef.current = null;
+      forceStrategyRef.current = true;
+    }
+
+    // Multi-game summary
+    if (gameScoresRef.current.length > 1) {
+      const scored = gameScoresRef.current.map(g => g.score).filter(s => typeof s === "number");
+      if (scored.length) {
+        const best = Math.max(...scored);
+        const avg = Math.round(scored.reduce((a, b) => a + b, 0) / scored.length);
+        addLog(`Session totals — games: ${gameScoresRef.current.length}, best: ${best}, average: ${avg}`, "success");
+        finalScore = best;
       }
     }
 
@@ -2341,6 +2539,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
+      gamesPerSession, attemptRestart,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
@@ -2384,7 +2583,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   ];
   const readyToPlay = checklist.every(c => c.done);
 
-  const phaseColor = { idle: C.dim, research: C.yellow, study: C.accentL, playing: C.green, ended: C.textDim }[phase] ?? C.dim;
+  const phaseColor = { idle: C.dim, research: C.yellow, study: C.accentL, playing: C.green, restarting: C.yellow, ended: C.textDim }[phase] ?? C.dim;
   const logColors  = { info: C.text, assistant: C.accentL, tool: C.yellow, error: C.red, warn: C.yellow, success: C.green };
   const outcomeColors = { won: C.green, lost: C.red, stuck: C.yellow, ended: C.textDim };
 
@@ -2660,6 +2859,23 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               )}
               <div>
                 <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
+                  Games per session
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="20"
+                  step="1"
+                  value={gamesPerSession}
+                  onChange={e => setGamesPerSession(Math.max(1, Math.min(20, Number(e.target.value) || 1)))}
+                  style={inputStyle()}
+                />
+                <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
+                  After each game ends the agent clicks New Game and plays again, then reports best/average score. Also recovers a game that never started.
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
                   Token budget cap (0 = no cap)
                 </label>
                 <input
@@ -2882,6 +3098,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <HudRow label="Mouse"   value={`${mousePos.x}, ${mousePos.y}`} />
           <HudRow label="Scale"   value={scaleRef.current.scale > 0 ? `${scaleRef.current.scale.toFixed(2)}x` : "—"} />
           <HudRow label="Turns"   value={turnCount} />
+          {gamesPerSession > 1 && <HudRow label="Game" value={`${gameNumber}/${gamesPerSession}`} color={C.accentL} />}
+          {gameScores.length > 0 && (
+            <HudRow label="Best" value={Math.max(...gameScores.map(g => g.score ?? 0))} color={C.green} />
+          )}
           <HudRow label="In tok"  value={tokenCount.input.toLocaleString()} />
           <HudRow label="Out tok" value={tokenCount.output.toLocaleString()} />
           {maxTokens > 0 && (
