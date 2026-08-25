@@ -1202,6 +1202,7 @@ export default function GameAgent() {
   const [gamesPerSession, setGamesPerSession] = useState(1);
   const [gameScores, setGameScores] = useState([]);
   const [gameNumber, setGameNumber] = useState(0);
+  const [displaySurface, setDisplaySurface] = useState(null); // monitor | window | browser
 
   // Control scheme / input method (play any game: browser, native, KB/mouse, gamepad)
   const [controlScheme, setControlScheme] = useState("browser-kbm");
@@ -1396,9 +1397,26 @@ export default function GameAgent() {
         await videoRef.current.play();
       }
       setCapturing(true);
-      addLog("Screen capture started", "success");
-      stream.getVideoTracks()[0].addEventListener("ended", () => {
+
+      // What was shared decides whether clicks land correctly. Clicks are sent
+      // in absolute screen coordinates, but a window/tab capture's origin is
+      // that window's corner, not the screen's — so those coordinates would be
+      // offset. Only a full-monitor share lines the two up.
+      const track = stream.getVideoTracks()[0];
+      const surface = track.getSettings?.().displaySurface ?? "unknown";
+      setDisplaySurface(surface);
+      const SURFACE_LABEL = { monitor: "entire screen", window: "a window", browser: "a browser tab" };
+      addLog(`Screen capture started — sharing ${SURFACE_LABEL[surface] ?? surface}`, "success");
+      if (surface === "window" || surface === "browser") {
+        addLog(
+          `⚠ You shared ${SURFACE_LABEL[surface]}. Keyboard works fine, but CLICKS (restart / click_grid) will land at the wrong place, because click coordinates are screen-absolute. Re-share and pick "Entire Screen", then use Crop to game area.`,
+          "warn"
+        );
+      }
+
+      track.addEventListener("ended", () => {
         setCapturing(false);
+        setDisplaySurface(null);
         addLog("Screen capture ended", "warn");
       });
     } catch (e) {
@@ -3099,6 +3117,13 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <HudRow label="Mouse"   value={`${mousePos.x}, ${mousePos.y}`} />
           <HudRow label="Scale"   value={scaleRef.current.scale > 0 ? `${scaleRef.current.scale.toFixed(2)}x` : "—"} />
           <HudRow label="Turns"   value={turnCount} />
+          {displaySurface && (
+            <HudRow
+              label="Sharing"
+              value={displaySurface === "monitor" ? "screen ✓" : `${displaySurface} ⚠`}
+              color={displaySurface === "monitor" ? C.green : C.yellow}
+            />
+          )}
           {gamesPerSession > 1 && <HudRow label="Game" value={`${gameNumber}/${gamesPerSession}`} color={C.accentL} />}
           {gameScores.length > 0 && (
             <HudRow label="Best" value={Math.max(...gameScores.map(g => g.score ?? 0))} color={C.green} />
