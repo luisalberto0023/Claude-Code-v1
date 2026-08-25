@@ -1257,6 +1257,7 @@ export default function GameAgent() {
   const noToolsRef = useRef(false);
   const lastActionNoOpRef = useRef(null);      // description of the last no-op move
   const lastFailedMovesRef = useRef(new Set()); // moves that did nothing on this board
+  const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1620,9 +1621,11 @@ export default function GameAgent() {
       if (confirm.changed) {
         lastActionNoOpRef.current = null;
         lastFailedMovesRef.current.clear();
+        noOpStreakRef.current = 0;
       } else {
         lastActionNoOpRef.current = `press_key ${toolInput.key}`;
         lastFailedMovesRef.current.add(String(toolInput.key));
+        noOpStreakRef.current++;
       }
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
@@ -2058,6 +2061,7 @@ export default function GameAgent() {
     lastTurnHashRef.current = null;
     lastActionNoOpRef.current = null;
     lastFailedMovesRef.current = new Set();
+    noOpStreakRef.current = 0;
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
     noToolsRef.current = noToolsMode;
@@ -2226,24 +2230,44 @@ REASONING STYLE (for analyse_game_state):
         break;
       }
 
-      // Stuck detection — ring buffer of last 7 hashes, 5 similar = stuck
-      if (stuckRingRef.current.length >= 5) {
-        const ring = stuckRingRef.current.slice(-5);
-        const allSimilar = ring.every((h, i) => i === 0 || hashDist(ring[i - 1], h) < 4.0);
-        if (allSimilar) {
-          stuckTriggerRef.current++;
-          addLog(`Stuck detected (${stuckTriggerRef.current}/2)`, "warn");
-          if (stuckTriggerRef.current >= 2) {
-            finalOutcome = "stuck";
-            addLog("Agent declared stuck after 2 consecutive triggers.", "warn");
-            break;
-          }
+      // ── Stuck detection ──────────────────────────────────────────────────
+      // Based on whether ACTIONS actually changed the screen, not on comparing
+      // turn-boundary frame hashes. Hash comparison was unreliable: a real 2048
+      // move on a cropped board scores ~2-4, below the old 4.0 "similar"
+      // threshold, so successful moves counted as no-progress and ended healthy
+      // sessions. A genuinely finished game is one where every direction we try
+      // does nothing — so require repeated no-ops across SEVERAL DIFFERENT
+      // actions before giving up, and reset as soon as anything works.
+      const noOps = noOpStreakRef.current;
+      const distinctFailed = lastFailedMovesRef.current.size;
+
+      if (noOps === 0) {
+        stuckTriggerRef.current = 0; // progress — clear any earlier suspicion
+      } else if (noOps >= 3) {
+        // Nudge the model to reassess, and make sure it gets a fresh screenshot
+        forceStrategyRef.current = true;
+        if (noOps === 3 || noOps === 6) {
           convRef.current.push({
             role: "user",
-            content: "The screen has not changed in several turns. Try a completely different approach, check if the game ended, or use observe_screen to reassess.",
+            content: `${noOps} actions in a row changed nothing (tried: ${[...lastFailedMovesRef.current].join(", ") || "n/a"}). Try a DIFFERENT direction you have not just tried. If every direction is blocked, the game is over — call signal_game_end.`,
           });
-          forceStrategyRef.current = true; // give the model a fresh look next turn
+          addLog(`No progress for ${noOps} actions — asking model to change approach.`, "warn");
         }
+      }
+
+      // Give up only when the evidence is strong: either many different actions
+      // all failed, or a long run of failures regardless of variety.
+      const exhausted = noOps >= 4 && distinctFailed >= 3;
+      const hardStop = noOps >= 10;
+      if (exhausted || hardStop) {
+        finalOutcome = "stuck";
+        addLog(
+          exhausted
+            ? `No moves available — ${distinctFailed} different directions all blocked over ${noOps} actions.`
+            : `No progress after ${noOps} consecutive actions.`,
+          "warn"
+        );
+        break;
       }
     }
 
