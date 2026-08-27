@@ -1273,6 +1273,8 @@ export default function GameAgent() {
   const solverScaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1, offsetX: 0, offsetY: 0 });
   const solverScoreRef = useRef(0);
   const solverFailRef = useRef(0);
+  const solverBlockedRef = useRef(new Set()); // directions that produced no change
+  const solverActiveRef = useRef(false);
   const scaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1 });
   const convRef = useRef([]);
   const checkpointRef = useRef(null);
@@ -1884,6 +1886,13 @@ export default function GameAgent() {
     const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
     if (!frame) return { fallback: true, reason: "no frame" };
 
+    // The game-over overlay washes out the tile colours, so check for it before
+    // trusting any board read: otherwise the solver reads noise, plays a move
+    // that cannot apply, and loops.
+    if (plugin.isGameOverScreen?.(canvas)) {
+      return { gameOver: true, reason: "game-over screen" };
+    }
+
     const state = plugin.readState(canvas);
     if (!state) return { fallback: true, reason: "board not readable" };
 
@@ -1891,7 +1900,8 @@ export default function GameAgent() {
       return { gameOver: true, board: state.board };
     }
 
-    const move = plugin.chooseMove(state);
+    // Don't re-issue a move that just failed to change anything.
+    const move = plugin.chooseMove(state, [...solverBlockedRef.current]);
     if (!move) return { gameOver: true, board: state.board };
 
     const timing = getTiming();
@@ -1914,9 +1924,16 @@ export default function GameAgent() {
       setCurrentScore(solverScoreRef.current);
       noOpStreakRef.current = 0;
       lastFailedMovesRef.current.clear();
+      solverBlockedRef.current.clear();
     } else {
       noOpStreakRef.current++;
       lastFailedMovesRef.current.add(move.key);
+      // Remember that this direction did nothing so the next search picks
+      // something else instead of repeating it.
+      solverBlockedRef.current.add(move.key);
+      if (solverBlockedRef.current.size >= 4) {
+        return { gameOver: true, reason: "every direction blocked", board: state.board };
+      }
     }
 
     addAction(`solver.${move.key}`, { key: move.key }, { ok: true, changed });
@@ -1937,23 +1954,51 @@ export default function GameAgent() {
     // 0) If a plugin can find the restart control by colour, use that — no model
     //    call, no click-grid, and it works even when the board is unreadable.
     const plug = useSolver ? findPlugin(gameDesc) : null;
+
+    // A plugin can confirm a restart properly: a fresh 2048 game has exactly one
+    // or two tiles on the board. Checking that beats watching for any pixel
+    // change, which an animation or a stray repaint can satisfy while the game
+    // is in fact still over.
+    const verifyFresh = async () => {
+      if (!plug?.looksLikeNewGame || !solverCanvasRef.current) return null;
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+        if (plug.isGameOverScreen?.(solverCanvasRef.current)) continue; // overlay still up
+        const st = plug.readState(solverCanvasRef.current);
+        if (st && plug.looksLikeNewGame(st)) return true;
+      }
+      return false;
+    };
+
     if (plug?.findRestartButton && solverCanvasRef.current) {
-      captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
-      const pt = plug.findRestartButton(solverCanvasRef.current);
-      if (pt) {
+      // Try each distinct button on screen, verifying a real restart each time.
+      for (let attempt = 0; attempt < 3 && !stopRef.current; attempt++) {
+        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+        const pt = plug.findRestartButton(solverCanvasRef.current);
+        if (!pt) break;
         const s = solverScaleRef.current;
         const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
         const x = Math.round((s.offsetX ?? 0) + pt.x * sc);
         const y = Math.round((s.offsetY ?? 0) + pt.y * sc);
-        addLog(`Restarting — found the button by colour at image ${pt.x},${pt.y}.`, "info");
+        addLog(`Restarting — clicking the ${pt.kind ?? "restart"} button at image ${pt.x},${pt.y} (screen ${x},${y}).`, "info");
         const base = await snapshotHash(grabFrame, canvasRef.current);
         const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
-        if (res.ok && await verify(base)) {
+        if (!res.ok) { addLog(`Click failed: ${res.error}`, "warn"); break; }
+
+        const fresh = await verifyFresh();
+        if (fresh === true) {
+          restartPointRef.current = { x, y };
+          addLog("✓ New game started (fresh board confirmed).", "success");
+          return true;
+        }
+        if (fresh === null && await verify(base)) {
+          // No plugin verification available — fall back to a screen change
           restartPointRef.current = { x, y };
           addLog("✓ New game started.", "success");
           return true;
         }
-        addLog("Colour-located button click did not take — trying other methods.", "warn");
+        addLog(`That button did not start a new game (attempt ${attempt + 1}/3).`, "warn");
       }
     }
 
@@ -2208,10 +2253,22 @@ export default function GameAgent() {
       if (lead?.see) addLog(`  👁 ${lead.see.slice(0, 220)}`, "info");
       if (lead?.plan) addLog(`  🧠 ${lead.plan.slice(0, 220)}`, "assistant");
       if (!lead?.see && !lead?.plan && text) addLog(text.slice(0, 300), "assistant");
-      if (typeof lead?.score === "number" && Number.isFinite(lead.score)) {
-        if (lead.score !== currentScoreRef.current) {
-          currentScoreRef.current = lead.score;
-          setCurrentScore(lead.score);
+      // Only trust a model-reported score when nothing better is available.
+      // The solver computes the score from actual merges; a small model asked
+      // to read it off the screen produced a value that simply doubled every
+      // turn (52428800 -> 104857600 -> ... -> 13421772800), which then polluted
+      // saved memory. Ignore it while the solver is running, and sanity-check it
+      // otherwise: scores only go up, and not by absurd leaps.
+      if (typeof lead?.score === "number" && Number.isFinite(lead.score) && !solverActiveRef.current) {
+        const prev = currentScoreRef.current;
+        const s = Math.round(lead.score);
+        const plausible = s >= 0 && s < 10_000_000 &&
+          (prev == null || (s >= prev && s <= Math.max(prev * 4, prev + 5000)));
+        if (plausible && s !== prev) {
+          currentScoreRef.current = s;
+          setCurrentScore(s);
+        } else if (!plausible) {
+          addLog(`Ignoring implausible reported score ${lead.score}.`, "warn");
         }
       }
       const PASSIVE = new Set(["analyse_game_state", "observe_screen", "read_screen_text"]);
@@ -2505,6 +2562,7 @@ REASONING STYLE (for analyse_game_state):
     let finalScore = null;
     const totalGames = Math.max(1, gamesPerSession || 1);
     const activePlugin = useSolver ? findPlugin(gameDesc) : null;
+    solverActiveRef.current = !!activePlugin;
     if (activePlugin) {
       addLog(`⚙ Solver active: ${activePlugin.label} — reading the board from pixels and choosing moves by search.`, "success");
     } else if (useSolver) {
@@ -2528,6 +2586,7 @@ REASONING STYLE (for analyse_game_state):
       gameEndRef.current = null;
       solverScoreRef.current = 0;
       solverFailRef.current = 0;
+      solverBlockedRef.current = new Set();
       let gameOutcome = "ended";
 
     while (!stopRef.current) {

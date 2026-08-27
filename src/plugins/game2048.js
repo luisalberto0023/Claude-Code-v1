@@ -216,16 +216,7 @@ export function diagnose(canvasEl) {
  * Locate the restart control ("New Game" / "Try again") by its button colour.
  * Deterministic, so restarting needs no model call and no click-grid.
  */
-export function findRestartButton(canvasEl) {
-  if (!canvasEl || !canvasEl.width) return null;
-  const w = canvasEl.width, h = canvasEl.height;
-  let data;
-  try {
-    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
-  } catch { return null; }
-
-  // Collect pixels close to the button colour, then group them into blobs by
-  // scanning rows — the buttons are solid rectangles of one colour.
+function buttonClusters(data, w, h) {
   const step = Math.max(1, Math.floor(Math.min(w, h) / 300));
   const pts = [];
   for (let y = 0; y < h; y += step) {
@@ -234,9 +225,7 @@ export function findRestartButton(canvasEl) {
       if (dist2([data[i], data[i + 1], data[i + 2]], BUTTON_BG) <= 2500) pts.push([x, y]);
     }
   }
-  if (pts.length < 20) return null;
-
-  // Cluster loosely: bucket by rounded position and keep the densest region.
+  if (pts.length < 20) return [];
   const clusters = [];
   for (const [x, y] of pts) {
     let placed = false;
@@ -249,13 +238,83 @@ export function findRestartButton(canvasEl) {
     }
     if (!placed) clusters.push({ minX: x, maxX: x, minY: y, maxY: y, n: 1 });
   }
-  const good = clusters.filter(c => c.n >= 15 && (c.maxX - c.minX) > 30 && (c.maxY - c.minY) > 10);
-  if (!good.length) return null;
-  // Prefer the lowest one on screen: "Try again" sits below "New Game" when a
-  // game-over overlay is showing, and it is the one we want.
-  good.sort((a, b) => (b.minY - a.minY) || (b.n - a.n));
-  const c = good[0];
-  return { x: Math.round((c.minX + c.maxX) / 2), y: Math.round((c.minY + c.maxY) / 2) };
+  return clusters.filter(c => c.n >= 15 && (c.maxX - c.minX) > 30 && (c.maxY - c.minY) > 10);
+}
+
+/**
+ * Locate the restart control.
+ *
+ * Colour alone is not enough: several page elements share the button colour, and
+ * clicking the wrong one silently does nothing. The game-over "Try again" button
+ * is drawn INSIDE the board area, so when the board is known, a button within
+ * those bounds is the one to click. Otherwise fall back to the nearest button
+ * above the board ("New Game").
+ */
+export function findRestartButton(canvasEl, rectHint = null) {
+  if (!canvasEl || !canvasEl.width) return null;
+  const w = canvasEl.width, h = canvasEl.height;
+  let data;
+  try {
+    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  } catch { return null; }
+
+  const clusters = buttonClusters(data, w, h);
+  if (!clusters.length) return null;
+
+  const rect = rectHint ?? findBoardRect(data, w, h);
+  const centre = c => ({ x: Math.round((c.minX + c.maxX) / 2), y: Math.round((c.minY + c.maxY) / 2) });
+
+  if (rect) {
+    // "Try again" overlays the board — strongly preferred when present.
+    const inside = clusters.filter(c => {
+      const p = centre(c);
+      return p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h;
+    });
+    if (inside.length) {
+      inside.sort((a, b) => b.n - a.n);
+      return { ...centre(inside[0]), kind: "try-again" };
+    }
+    // Otherwise "New Game" sits just above the board, horizontally near it.
+    const above = clusters.filter(c => {
+      const p = centre(c);
+      return p.y < rect.y && p.y > rect.y - rect.h && p.x > rect.x - rect.w * 0.3 && p.x < rect.x + rect.w * 1.3;
+    });
+    if (above.length) {
+      above.sort((a, b) => b.minY - a.minY); // the one closest above the board
+      return { ...centre(above[0]), kind: "new-game" };
+    }
+  }
+
+  clusters.sort((a, b) => (b.minY - a.minY) || (b.n - a.n));
+  return { ...centre(clusters[0]), kind: "guess" };
+}
+
+/**
+ * Is the game over? The "Try again" button only exists on the game-over
+ * overlay, so a button inside the board bounds is a reliable signal — and it
+ * still works when the overlay has washed out the tile colours enough that the
+ * board itself cannot be read.
+ */
+export function isGameOverScreen(canvasEl) {
+  if (!canvasEl || !canvasEl.width) return false;
+  const w = canvasEl.width, h = canvasEl.height;
+  let data;
+  try {
+    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  } catch { return false; }
+  const rect = findBoardRect(data, w, h);
+  if (!rect) return false;
+  return buttonClusters(data, w, h).some(c => {
+    const cx = (c.minX + c.maxX) / 2, cy = (c.minY + c.maxY) / 2;
+    return cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
+  });
+}
+
+/** A freshly started 2048 game has only two tiles on the board. */
+export function looksLikeNewGame(state) {
+  if (!state) return false;
+  const filled = state.board.flat().filter(v => v > 0);
+  return filled.length > 0 && filled.length <= 2 && filled.every(v => v === 2 || v === 4);
 }
 
 // Read one cell by sampling several points and taking the most common tile
@@ -469,7 +528,7 @@ function expectimax(b, depth, isChance) {
  * Pick the best move for a board.
  * Returns { key, reason, gained } or null when no move is legal.
  */
-export function chooseMove(state) {
+export function chooseMove(state, exclude = []) {
   const board = state.board;
   const empty = emptyCells(board).length;
   // Search deeper when the board is crowded and mistakes are expensive.
@@ -477,6 +536,10 @@ export function chooseMove(state) {
 
   let best = null, bestScore = -Infinity;
   for (const d of DIRS) {
+    // Skip moves already shown not to change the real board. If the read is
+    // subtly wrong, repeating the same "legal" move loops forever; trying the
+    // next-best move breaks out of that.
+    if (exclude.includes(d)) continue;
     const { board: nb, moved, gained } = applyMove(board, d);
     if (!moved) continue;
     const s = gained + expectimax(nb, depth - 1, true);
@@ -504,7 +567,7 @@ export const plugin = {
   id: "2048",
   label: "2048 (board reader + expectimax solver)",
   match, readState, chooseMove, isTerminal, describeState, applyMove, legalMoves,
-  diagnose, findRestartButton,
+  diagnose, findRestartButton, isGameOverScreen, looksLikeNewGame,
 };
 
 export default plugin;
