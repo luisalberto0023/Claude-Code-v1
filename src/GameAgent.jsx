@@ -1,4 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import game2048 from "./plugins/game2048.js";
+
+// Game plugins provide deterministic perception and policy for a specific game.
+// When one matches, the agent reads the true game state from pixels and picks
+// moves by search instead of asking the model — far more reliable than a small
+// vision model, and effectively free.
+const GAME_PLUGINS = [game2048];
+function findPlugin(gameDesc) {
+  return GAME_PLUGINS.find(p => p.match(gameDesc)) ?? null;
+}
 
 // ── Safe env access (works in Vite AND artifact sandbox) ──────────────────────
 const _runtimeKeys = {};
@@ -1203,6 +1213,7 @@ export default function GameAgent() {
   const [gameScores, setGameScores] = useState([]);
   const [gameNumber, setGameNumber] = useState(0);
   const [displaySurface, setDisplaySurface] = useState(null); // monitor | window | browser
+  const [useSolver, setUseSolver] = useState(true);
 
   // Control scheme / input method (play any game: browser, native, KB/mouse, gamepad)
   const [controlScheme, setControlScheme] = useState("browser-kbm");
@@ -1255,6 +1266,13 @@ export default function GameAgent() {
   // Refs
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
+  // Separate canvas for the solver: it reads at full resolution (the frame is
+  // never sent to a model, so pixels are free) and must not have the crop or
+  // click-grid overlay applied.
+  const solverCanvasRef = useRef(null);
+  const solverScaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1, offsetX: 0, offsetY: 0 });
+  const solverScoreRef = useRef(0);
+  const solverFailRef = useRef(0);
   const scaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1 });
   const convRef = useRef([]);
   const checkpointRef = useRef(null);
@@ -1853,6 +1871,58 @@ export default function GameAgent() {
     return toolResult(`Unknown tool: ${toolName}`);
   }, [gameDesc, getTiming, addLog, addAction, grabFrame]);
 
+  // ── Solver turn ─────────────────────────────────────────────────────────────
+  // Read the real board from pixels, pick a move by search, press the key, then
+  // confirm by re-reading the board. No model call at all: reliable and ~instant.
+  // Returns { ok } | { gameOver } | { fallback, reason } so the caller can hand
+  // the turn back to the LLM if perception fails.
+  const solverTurn = useCallback(async (plugin) => {
+    const canvas = solverCanvasRef.current;
+    if (!canvas) return { fallback: true, reason: "no canvas" };
+
+    // Full-resolution grab, no crop and no grid overlay
+    const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
+    if (!frame) return { fallback: true, reason: "no frame" };
+
+    const state = plugin.readState(canvas);
+    if (!state) return { fallback: true, reason: "board not readable" };
+
+    if (plugin.isTerminal(state)) {
+      return { gameOver: true, board: state.board };
+    }
+
+    const move = plugin.chooseMove(state);
+    if (!move) return { gameOver: true, board: state.board };
+
+    const timing = getTiming();
+    const res = await backend("/keyboard/press", { key: move.key });
+    if (!res.ok) {
+      addLog(`⚠ Backend key error: ${res.error}`, "error");
+      return { fallback: true, reason: "key failed" };
+    }
+
+    // Let the tiles animate, then re-read and compare — a real state check
+    // rather than a pixel-difference guess.
+    await new Promise(r => setTimeout(r, Math.max(180, timing.actionPace || 0) + 220));
+    captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
+    const after = plugin.readState(canvas);
+    const changed = after && JSON.stringify(after.board) !== JSON.stringify(state.board);
+
+    if (changed) {
+      solverScoreRef.current += move.gained || 0;
+      currentScoreRef.current = solverScoreRef.current;
+      setCurrentScore(solverScoreRef.current);
+      noOpStreakRef.current = 0;
+      lastFailedMovesRef.current.clear();
+    } else {
+      noOpStreakRef.current++;
+      lastFailedMovesRef.current.add(move.key);
+    }
+
+    addAction(`solver.${move.key}`, { key: move.key }, { ok: true, changed });
+    return { ok: true, key: move.key, changed, reason: move.reason, board: state.board };
+  }, [getTiming, addLog, addAction]);
+
   // ── Restart the game after it ends ──────────────────────────────────────────
   // General pattern: detect terminal state -> click the restart control -> verify.
   // The button's location is remembered after the first success and reused, so
@@ -2376,6 +2446,12 @@ REASONING STYLE (for analyse_game_state):
     let finalOutcome = "ended";
     let finalScore = null;
     const totalGames = Math.max(1, gamesPerSession || 1);
+    const activePlugin = useSolver ? findPlugin(gameDesc) : null;
+    if (activePlugin) {
+      addLog(`⚙ Solver active: ${activePlugin.label} — reading the board from pixels and choosing moves by search.`, "success");
+    } else if (useSolver) {
+      addLog(`No solver plugin matches "${gameDesc}" — the model will play.`, "info");
+    }
 
     // ── Games loop ───────────────────────────────────────────────────────────
     // Each pass plays one game to completion. When a game ends and more are
@@ -2392,11 +2468,46 @@ REASONING STYLE (for analyse_game_state):
       lastActionNoOpRef.current = null;
       stuckTriggerRef.current = 0;
       gameEndRef.current = null;
+      solverScoreRef.current = 0;
+      solverFailRef.current = 0;
       let gameOutcome = "ended";
 
     while (!stopRef.current) {
       while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 500));
       if (stopRef.current) break;
+
+      // ── Solver path ──────────────────────────────────────────────────────
+      // When a plugin recognises the game, perception and policy are handled
+      // deterministically; the model is only consulted if that fails.
+      if (activePlugin) {
+        const sr = await solverTurn(activePlugin);
+
+        if (sr.gameOver) {
+          gameOutcome = "ended";
+          addLog(`Board full — no legal moves. Final score ${solverScoreRef.current}.`, "warn");
+          if (sr.board) addLog(activePlugin.describeState({ board: sr.board }), "info");
+          break;
+        }
+        if (sr.ok) {
+          solverFailRef.current = 0;
+          turnCountRef.current++;
+          setTurnCount(t => t + 1);
+          addLog(`⚙ ${sr.reason}${sr.changed ? "" : " — no change"}`, sr.changed ? "info" : "warn");
+          // A solver move that changes nothing means the board read is stale or
+          // wrong; a few in a row and we hand back to the model.
+          if (!sr.changed && noOpStreakRef.current >= 4) {
+            addLog("Solver moves are not changing the board — falling back to the model.", "warn");
+            solverFailRef.current = 99;
+          }
+          if (solverFailRef.current < 3) continue;
+        } else {
+          solverFailRef.current++;
+          addLog(`Solver could not act (${sr.reason}) — attempt ${solverFailRef.current}/3.`, "warn");
+          if (solverFailRef.current < 3) { await new Promise(r => setTimeout(r, 400)); continue; }
+          addLog("Falling back to the model for this turn.", "warn");
+          solverFailRef.current = 0;
+        }
+      }
 
       const result = await agentTurn(systemPrompt, apiKey);
 
@@ -2558,7 +2669,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     setPhase("ended");
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
-      gamesPerSession, attemptRestart,
+      gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
 
   const stopAgent = useCallback(() => {
@@ -2642,6 +2753,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             )}
           </div>
           <canvas ref={canvasRef} style={{ display: "none" }} />
+          <canvas ref={solverCanvasRef} style={{ display: "none" }} />
           <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
             {useNativeCapture
               ? <span style={{ fontSize: 10, color: C.textDim }}>Using backend capture (configured under Control Scheme)</span>
@@ -2829,6 +2941,16 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           </button>
           {showAdvanced && (
             <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
+                <input type="checkbox" checked={useSolver} onChange={e => setUseSolver(e.target.checked)} />
+                Use built-in solver when available
+                {findPlugin(gameDesc)
+                  ? <span style={{ color: C.green, fontSize: 10 }}>● 2048 ready</span>
+                  : <span style={{ color: C.dim, fontSize: 10 }}>○ none for this game</span>}
+              </label>
+              <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
+                Reads the board from pixels and picks moves by search — far more accurate than a small vision model, and uses no tokens. The model still handles game-over and restarts.
+              </div>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase
