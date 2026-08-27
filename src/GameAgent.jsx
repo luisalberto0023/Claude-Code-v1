@@ -2053,9 +2053,14 @@ export default function GameAgent() {
     const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
     if (!frame) { addLog("No frame — is screen capture running?", "warn"); return; }
 
+    // Show the frame the solver actually looked at. The most common failure is
+    // simply that the game was not visible on screen at capture time, which is
+    // obvious from the image but invisible in the numbers.
+    try { setPreviewSrc(canvas.toDataURL("image/jpeg", 0.8)); } catch {}
+
     const d = plug.diagnose(canvas);
     addLog(`── Solver diagnostic ──`, "info");
-    addLog(`capture: ${d.canvas}`, "info");
+    addLog(`capture: ${d.canvas} (see the image below — is the game board in it?)`, "info");
     if (d.topColors) addLog(`dominant colours: ${d.topColors.join("  ")}`, "info");
     if (d.rect) addLog(`board found at x${d.rect.x} y${d.rect.y} ${d.rect.w}×${d.rect.h} (tolerance ${d.boardTolerance})`, "info");
     (d.cells ?? []).forEach(c => addLog(`   ${c}`, "info"));

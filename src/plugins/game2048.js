@@ -128,7 +128,23 @@ export function diagnose(canvasEl) {
     if (rect) { usedTol = tol; break; }
   }
   if (!rect) {
-    out.notes.push(`board background rgb(${BOARD_BG}) not found even at loose tolerance — the site's palette likely differs`);
+    // Distinguish "the board isn't in this frame" from "the palette differs".
+    // A 2048 board is unmistakably warm/tan; if the frame contains almost no
+    // warm mid-tones, the board simply isn't on screen — usually because
+    // another window is covering the game.
+    let warm = 0, sampled = 0;
+    for (let y = 0; y < h; y += st) for (let x = 0; x < w; x += st) {
+      const i = (y * w + x) * 4;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      sampled++;
+      if (r > 120 && r > b + 18 && g > b + 5 && r < 252) warm++;
+    }
+    const warmPct = sampled ? Math.round((warm / sampled) * 100) : 0;
+    if (warmPct < 3) {
+      out.notes.push(`no warm/tan pixels in this frame (${warmPct}%) — the 2048 board is NOT on screen. Make sure the game window is visible and not covered by the agent window.`);
+    } else {
+      out.notes.push(`warm pixels present (${warmPct}%) but board background rgb(${BOARD_BG}) was not matched — this site's palette likely differs; the per-cell colours below can be used to correct it`);
+    }
     return out;
   }
   out.rect = rect;
