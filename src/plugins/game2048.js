@@ -33,13 +33,19 @@ const TILE_COLORS = [
   { v: 4096,  rgb: [60, 58, 50] },    // "super" tiles share a dark colour
 ];
 const BOARD_BG = [187, 173, 160];
+const BUTTON_BG = [143, 122, 102]; // "New Game" / "Try again" button
 
 function dist2(a, b) {
   const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
   return dr * dr + dg * dg + db * db;
 }
 
-function nearestTile(rgb, maxDist = 1400) {
+// Clones of 2048 use slightly different palettes (2048.org is noticeably more
+// pastel than play2048.co), and JPEG compression shifts colours further, so
+// matching is deliberately tolerant. 6000 in squared-RGB terms is about 45 per
+// channel — wide enough for a re-skinned clone, still far narrower than the gap
+// between adjacent tile colours.
+function nearestTile(rgb, maxDist = 6000) {
   let best = null, bestD = Infinity;
   for (const t of TILE_COLORS) {
     const d = dist2(rgb, t.rgb);
@@ -48,15 +54,24 @@ function nearestTile(rgb, maxDist = 1400) {
   return bestD <= maxDist ? best.v : null;
 }
 
+function nearestTileInfo(rgb) {
+  let best = null, bestD = Infinity;
+  for (const t of TILE_COLORS) {
+    const d = dist2(rgb, t.rgb);
+    if (d < bestD) { bestD = d; best = t; }
+  }
+  return { v: best.v, dist: Math.round(Math.sqrt(bestD)) };
+}
+
 // Locate the board by finding the bounding box of the board's background colour.
 // Returns null when too few matching pixels are found (board not on screen).
-function findBoardRect(data, w, h) {
+function findBoardRect(data, w, h, tol = 2500) {
   let minX = w, minY = h, maxX = -1, maxY = -1, hits = 0;
   const step = Math.max(1, Math.floor(Math.min(w, h) / 240)); // subsample for speed
   for (let y = 0; y < h; y += step) {
     for (let x = 0; x < w; x += step) {
       const i = (y * w + x) * 4;
-      if (dist2([data[i], data[i + 1], data[i + 2]], BOARD_BG) <= 900) {
+      if (dist2([data[i], data[i + 1], data[i + 2]], BOARD_BG) <= tol) {
         hits++;
         if (x < minX) minX = x;
         if (y < minY) minY = y;
@@ -73,6 +88,116 @@ function findBoardRect(data, w, h) {
   if (ratio < 0.7 || ratio > 1.4) return null;
   if (bw < 60 || bh < 60) return null;
   return { x: minX, y: minY, w: bw, h: bh };
+}
+
+/**
+ * Diagnose why a read failed, using the actual pixels on screen.
+ * Colours vary between 2048 clones and cannot be guessed reliably, so this
+ * reports what is really there instead: the detected board and the measured RGB
+ * of every cell with its closest known tile and distance.
+ */
+export function diagnose(canvasEl) {
+  const out = { ok: false, notes: [] };
+  if (!canvasEl || !canvasEl.width) { out.notes.push("no canvas / zero size"); return out; }
+  const w = canvasEl.width, h = canvasEl.height;
+  out.canvas = `${w}×${h}`;
+  let data;
+  try {
+    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  } catch (e) { out.notes.push("getImageData failed: " + e.message); return out; }
+
+  // Which colours actually dominate the image? Useful when nothing matches.
+  const buckets = new Map();
+  const st = Math.max(1, Math.floor(Math.min(w, h) / 120));
+  for (let y = 0; y < h; y += st) for (let x = 0; x < w; x += st) {
+    const i = (y * w + x) * 4;
+    const key = `${data[i] >> 4},${data[i + 1] >> 4},${data[i + 2] >> 4}`;
+    buckets.set(key, (buckets.get(key) ?? 0) + 1);
+  }
+  out.topColors = [...buckets.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([k, n]) => {
+      const [r, g, b] = k.split(",").map(Number);
+      return `rgb(${r * 16},${g * 16},${b * 16})×${n}`;
+    });
+
+  // Try progressively looser board detection so we can tell "not found at all"
+  // from "found only with a loose tolerance".
+  let rect = null, usedTol = null;
+  for (const tol of [900, 2500, 6000, 12000]) {
+    rect = findBoardRect(data, w, h, tol);
+    if (rect) { usedTol = tol; break; }
+  }
+  if (!rect) {
+    out.notes.push(`board background rgb(${BOARD_BG}) not found even at loose tolerance — the site's palette likely differs`);
+    return out;
+  }
+  out.rect = rect;
+  out.boardTolerance = usedTol;
+
+  const cw = rect.w / 4, ch = rect.h / 4;
+  const cells = [];
+  for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 4; c++) {
+      const px = Math.round(rect.x + cw * (c + 0.5));
+      const py = Math.round(rect.y + ch * (r + 0.5));
+      const i = (py * w + px) * 4;
+      const rgb = [data[i], data[i + 1], data[i + 2]];
+      const near = nearestTileInfo(rgb);
+      cells.push(`r${r}c${c} rgb(${rgb}) → ${near.v} (off by ${near.dist})`);
+    }
+  }
+  out.cells = cells;
+  const st2 = readState(canvasEl);
+  out.ok = !!st2;
+  if (st2) out.board = st2.board;
+  else out.notes.push("cells found but too many were unreadable");
+  return out;
+}
+
+/**
+ * Locate the restart control ("New Game" / "Try again") by its button colour.
+ * Deterministic, so restarting needs no model call and no click-grid.
+ */
+export function findRestartButton(canvasEl) {
+  if (!canvasEl || !canvasEl.width) return null;
+  const w = canvasEl.width, h = canvasEl.height;
+  let data;
+  try {
+    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  } catch { return null; }
+
+  // Collect pixels close to the button colour, then group them into blobs by
+  // scanning rows — the buttons are solid rectangles of one colour.
+  const step = Math.max(1, Math.floor(Math.min(w, h) / 300));
+  const pts = [];
+  for (let y = 0; y < h; y += step) {
+    for (let x = 0; x < w; x += step) {
+      const i = (y * w + x) * 4;
+      if (dist2([data[i], data[i + 1], data[i + 2]], BUTTON_BG) <= 2500) pts.push([x, y]);
+    }
+  }
+  if (pts.length < 20) return null;
+
+  // Cluster loosely: bucket by rounded position and keep the densest region.
+  const clusters = [];
+  for (const [x, y] of pts) {
+    let placed = false;
+    for (const cl of clusters) {
+      if (x >= cl.minX - 40 && x <= cl.maxX + 40 && y >= cl.minY - 25 && y <= cl.maxY + 25) {
+        cl.minX = Math.min(cl.minX, x); cl.maxX = Math.max(cl.maxX, x);
+        cl.minY = Math.min(cl.minY, y); cl.maxY = Math.max(cl.maxY, y);
+        cl.n++; placed = true; break;
+      }
+    }
+    if (!placed) clusters.push({ minX: x, maxX: x, minY: y, maxY: y, n: 1 });
+  }
+  const good = clusters.filter(c => c.n >= 15 && (c.maxX - c.minX) > 30 && (c.maxY - c.minY) > 10);
+  if (!good.length) return null;
+  // Prefer the lowest one on screen: "Try again" sits below "New Game" when a
+  // game-over overlay is showing, and it is the one we want.
+  good.sort((a, b) => (b.minY - a.minY) || (b.n - a.n));
+  const c = good[0];
+  return { x: Math.round((c.minX + c.maxX) / 2), y: Math.round((c.minY + c.maxY) / 2) };
 }
 
 // Read one cell by sampling several points and taking the most common tile
@@ -298,6 +423,7 @@ export const plugin = {
   id: "2048",
   label: "2048 (board reader + expectimax solver)",
   match, readState, chooseMove, isTerminal, describeState, applyMove, legalMoves,
+  diagnose, findRestartButton,
 };
 
 export default plugin;

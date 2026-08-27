@@ -1934,6 +1934,29 @@ export default function GameAgent() {
       return c.changed;
     };
 
+    // 0) If a plugin can find the restart control by colour, use that — no model
+    //    call, no click-grid, and it works even when the board is unreadable.
+    const plug = useSolver ? findPlugin(gameDesc) : null;
+    if (plug?.findRestartButton && solverCanvasRef.current) {
+      captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+      const pt = plug.findRestartButton(solverCanvasRef.current);
+      if (pt) {
+        const s = solverScaleRef.current;
+        const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
+        const x = Math.round((s.offsetX ?? 0) + pt.x * sc);
+        const y = Math.round((s.offsetY ?? 0) + pt.y * sc);
+        addLog(`Restarting — found the button by colour at image ${pt.x},${pt.y}.`, "info");
+        const base = await snapshotHash(grabFrame, canvasRef.current);
+        const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+        if (res.ok && await verify(base)) {
+          restartPointRef.current = { x, y };
+          addLog("✓ New game started.", "success");
+          return true;
+        }
+        addLog("Colour-located button click did not take — trying other methods.", "warn");
+      }
+    }
+
     // 1) Reuse the remembered button position, if we have one.
     if (restartPointRef.current) {
       const { x, y } = restartPointRef.current;
@@ -2017,7 +2040,37 @@ export default function GameAgent() {
       gridEnabledRef.current = savedGrid;
     }
     return false;
-  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog]);
+  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog, useSolver, gameDesc]);
+
+  // ── Solver diagnostics ──────────────────────────────────────────────────────
+  // Tile palettes differ between 2048 clones, so rather than guessing colours,
+  // measure what is actually on screen and report it.
+  const testSolver = useCallback(async () => {
+    const plug = findPlugin(gameDesc);
+    if (!plug) { addLog(`No solver plugin matches "${gameDesc}".`, "warn"); return; }
+    const canvas = solverCanvasRef.current;
+    if (!canvas || !videoRef.current) { addLog("Start screen capture first.", "warn"); return; }
+    const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
+    if (!frame) { addLog("No frame — is screen capture running?", "warn"); return; }
+
+    const d = plug.diagnose(canvas);
+    addLog(`── Solver diagnostic ──`, "info");
+    addLog(`capture: ${d.canvas}`, "info");
+    if (d.topColors) addLog(`dominant colours: ${d.topColors.join("  ")}`, "info");
+    if (d.rect) addLog(`board found at x${d.rect.x} y${d.rect.y} ${d.rect.w}×${d.rect.h} (tolerance ${d.boardTolerance})`, "info");
+    (d.cells ?? []).forEach(c => addLog(`   ${c}`, "info"));
+    (d.notes ?? []).forEach(n => addLog(`   note: ${n}`, "warn"));
+    if (d.ok) {
+      addLog("✓ Board read successfully:", "success");
+      addLog(plug.describeState({ board: d.board }), "success");
+      const mv = plug.chooseMove({ board: d.board });
+      addLog(mv ? `solver would play: ${mv.reason}` : "no legal move (game over)", "success");
+    } else {
+      addLog("✗ Board NOT readable — copy the lines above so the palette can be corrected.", "error");
+    }
+    const btn = plug.findRestartButton?.(canvas);
+    addLog(btn ? `restart button found at image ${btn.x},${btn.y}` : "restart button not found by colour", btn ? "success" : "warn");
+  }, [gameDesc, addLog]);
 
   // ── agentTurn ────────────────────────────────────────────────────────────────
   const agentTurn = useCallback(async (systemPrompt, apiKey) => {
@@ -3092,6 +3145,11 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   }
                 }}
                 style={{ ...btnStyle(C.yellow), fontSize: 11 }}>⌨ Test Key</button>
+            )}
+            {!running && findPlugin(gameDesc) && (
+              <button onClick={testSolver} style={{ ...btnStyle(C.green), fontSize: 11 }}>
+                🔍 Test Solver
+              </button>
             )}
             {!running && (
               <button onClick={previewCrop} style={{ ...btnStyle(C.accent), fontSize: 11 }}>
