@@ -40,12 +40,10 @@ function dist2(a, b) {
   return dr * dr + dg * dg + db * db;
 }
 
-// Clones of 2048 use slightly different palettes (2048.org is noticeably more
-// pastel than play2048.co), and JPEG compression shifts colours further, so
-// matching is deliberately tolerant. 6000 in squared-RGB terms is about 45 per
-// channel — wide enough for a re-skinned clone, still far narrower than the gap
-// between adjacent tile colours.
-function nearestTile(rgb, maxDist = 6000) {
+// Tolerance for identifying a tile by colour. 2500 (about 50 per channel)
+// absorbs JPEG artefacts while staying under the ~61 gap between an empty cell
+// and a "2" tile, so those two never blur together.
+function nearestTile(rgb, maxDist = 2500) {
   let best = null, bestD = Infinity;
   for (const t of TILE_COLORS) {
     const d = dist2(rgb, t.rgb);
@@ -65,29 +63,73 @@ function nearestTileInfo(rgb) {
 
 // Locate the board by finding the bounding box of the board's background colour.
 // Returns null when too few matching pixels are found (board not on screen).
-function findBoardRect(data, w, h, tol = 2500) {
-  let minX = w, minY = h, maxX = -1, maxY = -1, hits = 0;
-  const step = Math.max(1, Math.floor(Math.min(w, h) / 240)); // subsample for speed
-  for (let y = 0; y < h; y += step) {
-    for (let x = 0; x < w; x += step) {
-      const i = (y * w + x) * 4;
-      if (dist2([data[i], data[i + 1], data[i + 2]], BOARD_BG) <= tol) {
-        hits++;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
+// Is this pixel part of a 2048 board? The board is made of its background
+// colour plus empty cells plus tiles, so match against the whole palette.
+function isBoardPixel(rgb, tol) {
+  if (dist2(rgb, BOARD_BG) <= tol) return true;
+  for (const t of TILE_COLORS) if (dist2(rgb, t.rgb) <= tol) return true;
+  return false;
+}
+
+/**
+ * Locate the board as the largest CONNECTED region of board-palette pixels.
+ *
+ * A plain bounding box over every matching pixel is not usable in practice: on
+ * a shared full screen, a handful of similarly-coloured pixels anywhere else
+ * (browser chrome, the agent's own window) stretch the box until it no longer
+ * looks square and the read is abandoned. Connected-component labelling ignores
+ * those isolated specks and returns the actual board.
+ */
+// Default tolerance is deliberately tight. The page background behind the game
+// (250,248,239) sits only ~31 from the "2" tile (238,228,218); at a looser
+// tolerance the flood fill merges the board into the whole page and the
+// detected rectangle is meaningless.
+function findBoardRect(data, w, h, tol = 900) {
+  // Work on a coarse mask; the board is large so this loses nothing and keeps
+  // the flood fill cheap.
+  const step = Math.max(1, Math.round(Math.min(w, h) / 180));
+  const gw = Math.floor(w / step), gh = Math.floor(h / step);
+  if (gw < 8 || gh < 8) return null;
+
+  const mask = new Uint8Array(gw * gh);
+  for (let gy = 0; gy < gh; gy++) {
+    for (let gx = 0; gx < gw; gx++) {
+      const i = ((gy * step) * w + gx * step) * 4;
+      if (isBoardPixel([data[i], data[i + 1], data[i + 2]], tol)) mask[gy * gw + gx] = 1;
     }
   }
-  if (hits < 40 || maxX <= minX || maxY <= minY) return null;
-  const bw = maxX - minX, bh = maxY - minY;
-  // The 2048 board is square; reject wildly non-square regions (usually a false
-  // positive on page background rather than the board itself).
+
+  // Largest connected component (4-neighbour flood fill)
+  const seen = new Uint8Array(gw * gh);
+  const queue = new Int32Array(gw * gh);
+  let best = null;
+  for (let s = 0; s < mask.length; s++) {
+    if (!mask[s] || seen[s]) continue;
+    let head = 0, tail = 0;
+    queue[tail++] = s; seen[s] = 1;
+    let minX = gw, minY = gh, maxX = -1, maxY = -1, n = 0;
+    while (head < tail) {
+      const p = queue[head++];
+      const px = p % gw, py = (p / gw) | 0;
+      n++;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+      if (px > 0)      { const q = p - 1;  if (mask[q] && !seen[q]) { seen[q] = 1; queue[tail++] = q; } }
+      if (px < gw - 1) { const q = p + 1;  if (mask[q] && !seen[q]) { seen[q] = 1; queue[tail++] = q; } }
+      if (py > 0)      { const q = p - gw; if (mask[q] && !seen[q]) { seen[q] = 1; queue[tail++] = q; } }
+      if (py < gh - 1) { const q = p + gw; if (mask[q] && !seen[q]) { seen[q] = 1; queue[tail++] = q; } }
+    }
+    if (!best || n > best.n) best = { n, minX, minY, maxX, maxY };
+  }
+  if (!best || best.n < 40) return null;
+
+  const x = best.minX * step, y = best.minY * step;
+  const bw = (best.maxX - best.minX + 1) * step;
+  const bh = (best.maxY - best.minY + 1) * step;
   const ratio = bw / bh;
-  if (ratio < 0.7 || ratio > 1.4) return null;
+  if (ratio < 0.75 || ratio > 1.33) return null; // the board is square
   if (bw < 60 || bh < 60) return null;
-  return { x: minX, y: minY, w: bw, h: bh };
+  return { x, y, w: bw, h: bh };
 }
 
 /**
@@ -218,25 +260,48 @@ export function findRestartButton(canvasEl) {
 
 // Read one cell by sampling several points and taking the most common tile
 // colour. Sampling many points steps over the digits printed on the tile.
+// Sample the tile's background in a ring around its centre.
+//
+// The digits are printed in the middle of the tile, and light text on a tile is
+// numerically close to the palest tile colours — white (249,246,242) is only
+// about 32 away from the "2" tile (238,228,218), well inside the tolerance a
+// re-skinned clone needs. Sampling through the centre therefore lets the text
+// outvote the tile. Reading the ring avoids the glyphs entirely.
+// Sample fractions chosen from measured pixels: 0.20-0.80 lands on tile
+// background across the cell, while the gaps between tiles sit outside that
+// range and the printed digits sit in the middle.
+const SAMPLE_FRACS = [0.20, 0.32, 0.50, 0.68, 0.80];
+const TEXT_LIGHT = [249, 246, 242];
+const TEXT_DARK = [119, 110, 101];
+
+function isTextPixel(rgb) {
+  return dist2(rgb, TEXT_LIGHT) <= 900 || dist2(rgb, TEXT_DARK) <= 1600;
+}
+
 function readCell(data, w, h, cx, cy, cw, ch) {
   const votes = new Map();
-  const inset = 0.30; // stay inside the cell, away from gaps and rounded corners
-  for (let sy = 0; sy < 5; sy++) {
-    for (let sx = 0; sx < 5; sx++) {
-      const px = Math.round(cx + cw * (inset + (1 - 2 * inset) * (sx / 4)));
-      const py = Math.round(cy + ch * (inset + (1 - 2 * inset) * (sy / 4)));
+  let usable = 0;
+  for (const fy of SAMPLE_FRACS) {
+    for (const fx of SAMPLE_FRACS) {
+      // Skip the middle of the tile, where the number is drawn
+      if (fx > 0.35 && fx < 0.65 && fy > 0.35 && fy < 0.65) continue;
+      const px = Math.round(cx + cw * fx);
+      const py = Math.round(cy + ch * fy);
       if (px < 0 || py < 0 || px >= w || py >= h) continue;
       const i = (py * w + px) * 4;
-      const v = nearestTile([data[i], data[i + 1], data[i + 2]]);
-      if (v === null) continue; // digit pixel or unknown — ignore
+      const c = [data[i], data[i + 1], data[i + 2]];
+      if (isTextPixel(c)) continue;   // glyph antialiasing — ignore
+      usable++;
+      const v = nearestTile(c);
+      if (v === null) continue;
       votes.set(v, (votes.get(v) ?? 0) + 1);
     }
   }
-  if (!votes.size) return null;
+  if (!votes.size || !usable) return null;
   let bestV = null, bestN = 0;
   for (const [v, n] of votes) if (n > bestN) { bestN = n; bestV = v; }
-  // Require a clear majority so a half-animated tile doesn't produce a wrong read
-  return bestN >= 6 ? bestV : null;
+  // Require a clear majority so a mid-animation tile doesn't produce a bad read
+  return bestN >= Math.max(5, usable * 0.5) ? bestV : null;
 }
 
 /**
