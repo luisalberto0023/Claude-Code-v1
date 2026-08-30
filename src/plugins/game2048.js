@@ -222,7 +222,10 @@ function buttonClusters(data, w, h) {
   for (let y = 0; y < h; y += step) {
     for (let x = 0; x < w; x += step) {
       const i = (y * w + x) * 4;
-      if (dist2([data[i], data[i + 1], data[i + 2]], BUTTON_BG) <= 2500) pts.push([x, y]);
+      // Tighter than tile matching on purpose: the dark digits printed on 2 and
+      // 4 tiles are rgb(119,110,101), only about 27 from the button colour
+      // rgb(143,122,102). A loose match turns tile numbers into "buttons".
+      if (dist2([data[i], data[i + 1], data[i + 2]], BUTTON_BG) <= 500) pts.push([x, y]);
     }
   }
   if (pts.length < 20) return [];
@@ -238,7 +241,16 @@ function buttonClusters(data, w, h) {
     }
     if (!placed) clusters.push({ minX: x, maxX: x, minY: y, maxY: y, n: 1 });
   }
-  return clusters.filter(c => c.n >= 15 && (c.maxX - c.minX) > 30 && (c.maxY - c.minY) > 10);
+  return clusters.filter(c => {
+    if (c.n < 15 || (c.maxX - c.minX) <= 30 || (c.maxY - c.minY) <= 10) return false;
+    // A button is a SOLID rectangle, so nearly every sample inside its bounds
+    // matches. Glyphs are strokes with gaps and fill only a small fraction of
+    // their bounding box — this is what separates real buttons from text.
+    const cols = Math.floor((c.maxX - c.minX) / step) + 1;
+    const rows = Math.floor((c.maxY - c.minY) / step) + 1;
+    const fill = c.n / Math.max(1, cols * rows);
+    return fill >= 0.55;
+  });
 }
 
 /**

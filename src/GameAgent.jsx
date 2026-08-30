@@ -1886,18 +1886,24 @@ export default function GameAgent() {
     const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
     if (!frame) return { fallback: true, reason: "no frame" };
 
-    // The game-over overlay washes out the tile colours, so check for it before
-    // trusting any board read: otherwise the solver reads noise, plays a move
-    // that cannot apply, and loops.
-    if (plugin.isGameOverScreen?.(canvas)) {
-      return { gameOver: true, reason: "game-over screen" };
-    }
-
+    // Trust the board read first. It is exact when it succeeds, whereas the
+    // game-over overlay check is a heuristic over button-coloured pixels and can
+    // misfire (tile digits are nearly the same colour as the buttons). Only fall
+    // back to that heuristic when the board genuinely cannot be read, which is
+    // what the washed-out overlay actually causes.
     const state = plugin.readState(canvas);
-    if (!state) return { fallback: true, reason: "board not readable" };
 
-    if (plugin.isTerminal(state)) {
-      return { gameOver: true, board: state.board };
+    if (state) {
+      if (plugin.isTerminal(state)) {
+        return { gameOver: true, board: state.board };
+      }
+      // A readable board with legal moves means the game is live, whatever the
+      // overlay heuristic thinks.
+    } else {
+      if (plugin.isGameOverScreen?.(canvas)) {
+        return { gameOver: true, reason: "game-over overlay (board unreadable)" };
+      }
+      return { fallback: true, reason: "board not readable" };
     }
 
     // Don't re-issue a move that just failed to change anything.
