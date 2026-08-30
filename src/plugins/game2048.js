@@ -250,7 +250,7 @@ function buttonClusters(data, w, h) {
  * those bounds is the one to click. Otherwise fall back to the nearest button
  * above the board ("New Game").
  */
-export function findRestartButton(canvasEl, rectHint = null) {
+export function findRestartButton(canvasEl, rectHint = null, exclude = []) {
   if (!canvasEl || !canvasEl.width) return null;
   const w = canvasEl.width, h = canvasEl.height;
   let data;
@@ -258,7 +258,16 @@ export function findRestartButton(canvasEl, rectHint = null) {
     data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
   } catch { return null; }
 
-  const clusters = buttonClusters(data, w, h);
+  let clusters = buttonClusters(data, w, h);
+  // Skip buttons already tried: both "Try again" and "New Game" restart the
+  // game, so if the preferred one does not work we must be able to fall through
+  // to the other rather than clicking the same place again.
+  if (exclude.length) {
+    clusters = clusters.filter(c => {
+      const cx = (c.minX + c.maxX) / 2, cy = (c.minY + c.maxY) / 2;
+      return !exclude.some(p => Math.abs(p.x - cx) < 45 && Math.abs(p.y - cy) < 25);
+    });
+  }
   if (!clusters.length) return null;
 
   const rect = rectHint ?? findBoardRect(data, w, h);

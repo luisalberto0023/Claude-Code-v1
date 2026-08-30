@@ -1973,10 +1973,15 @@ export default function GameAgent() {
 
     if (plug?.findRestartButton && solverCanvasRef.current) {
       // Try each distinct button on screen, verifying a real restart each time.
+      // At game over both "Try again" (over the board) and "New Game" (above it)
+      // will restart, so anything already tried is excluded from the next search
+      // instead of being clicked again.
+      const tried = [];
       for (let attempt = 0; attempt < 3 && !stopRef.current; attempt++) {
         captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
-        const pt = plug.findRestartButton(solverCanvasRef.current);
-        if (!pt) break;
+        const pt = plug.findRestartButton(solverCanvasRef.current, null, tried);
+        if (!pt) { if (attempt) addLog("No further restart buttons to try.", "warn"); break; }
+        tried.push({ x: pt.x, y: pt.y });
         const s = solverScaleRef.current;
         const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
         const x = Math.round((s.offsetX ?? 0) + pt.x * sc);
