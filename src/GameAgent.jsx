@@ -2620,6 +2620,25 @@ REASONING STYLE (for analyse_game_state):
       addLog(`No solver plugin matches "${gameDesc}" — the model will play.`, "info");
     }
 
+    // A session usually starts on the board left behind by the last one, which
+    // is finished. Playing it as game 1 burns a game on a board with no legal
+    // moves, so clear it first and let game 1 start fresh.
+    if (activePlugin?.isTerminal && activePlugin.readState) {
+      try {
+        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+        const startState = activePlugin.readState(solverCanvasRef.current);
+        const finished = startState
+          ? activePlugin.isTerminal(startState)
+          : !!activePlugin.isGameOverScreen?.(solverCanvasRef.current);
+        if (finished) {
+          addLog("Board still shows a finished game — starting a fresh one first.", "info");
+          await attemptRestart(systemPrompt, apiKey);
+        }
+      } catch {
+        // Not readable yet (capture still warming up) — the games loop handles it.
+      }
+    }
+
     // ── Games loop ───────────────────────────────────────────────────────────
     // Each pass plays one game to completion. When a game ends and more are
     // requested, click the restart control and keep going. This also recovers a

@@ -350,7 +350,7 @@ export function looksLikeNewGame(state) {
 // Sample fractions chosen from measured pixels: 0.20-0.80 lands on tile
 // background across the cell, while the gaps between tiles sit outside that
 // range and the printed digits sit in the middle.
-const SAMPLE_FRACS = [0.20, 0.32, 0.50, 0.68, 0.80];
+const SAMPLE_FRACS = [0.16, 0.26, 0.36, 0.50, 0.64, 0.74, 0.84];
 const TEXT_LIGHT = [249, 246, 242];
 const TEXT_DARK = [119, 110, 101];
 
@@ -358,30 +358,49 @@ function isTextPixel(rgb) {
   return dist2(rgb, TEXT_LIGHT) <= 900 || dist2(rgb, TEXT_DARK) <= 1600;
 }
 
+/**
+ * Identify one cell by the median of many interior samples.
+ *
+ * Matching pixels individually and voting does not work for the high tiles: 128,
+ * 256, 512, 1024 and 2048 are all near-identical yellows about 17 apart, while
+ * scaling the capture blurs each pixel by more than that. Individual pixels then
+ * scatter across several tiers and the winner of the vote is close to arbitrary
+ * — which is why every board above 128 was read as 128.
+ *
+ * The median across ~40 samples cancels that noise (and ignores stray glyph or
+ * edge pixels), leaving a value accurate to a channel or two, which resolves the
+ * 17-unit gaps cleanly. A read is rejected unless the winning colour is
+ * distinctly closer than the runner-up, so an animating tile reads as unknown
+ * rather than as the wrong number.
+ */
 function readCell(data, w, h, cx, cy, cw, ch) {
-  const votes = new Map();
-  let usable = 0;
+  const rs = [], gs = [], bs = [];
   for (const fy of SAMPLE_FRACS) {
     for (const fx of SAMPLE_FRACS) {
       // Skip the middle of the tile, where the number is drawn
-      if (fx > 0.35 && fx < 0.65 && fy > 0.35 && fy < 0.65) continue;
+      if (fx > 0.36 && fx < 0.64 && fy > 0.36 && fy < 0.64) continue;
       const px = Math.round(cx + cw * fx);
       const py = Math.round(cy + ch * fy);
       if (px < 0 || py < 0 || px >= w || py >= h) continue;
       const i = (py * w + px) * 4;
       const c = [data[i], data[i + 1], data[i + 2]];
       if (isTextPixel(c)) continue;   // glyph antialiasing — ignore
-      usable++;
-      const v = nearestTile(c);
-      if (v === null) continue;
-      votes.set(v, (votes.get(v) ?? 0) + 1);
+      rs.push(c[0]); gs.push(c[1]); bs.push(c[2]);
     }
   }
-  if (!votes.size || !usable) return null;
-  let bestV = null, bestN = 0;
-  for (const [v, n] of votes) if (n > bestN) { bestN = n; bestV = v; }
-  // Require a clear majority so a mid-animation tile doesn't produce a bad read
-  return bestN >= Math.max(5, usable * 0.5) ? bestV : null;
+  if (rs.length < 8) return null;
+  const mid = arr => { arr.sort((a, b) => a - b); return arr[arr.length >> 1]; };
+  const avg = [mid(rs), mid(gs), mid(bs)];
+
+  let best = null, bestD = Infinity, secondD = Infinity;
+  for (const t of TILE_COLORS) {
+    const d = dist2(avg, t.rgb);
+    if (d < bestD) { secondD = bestD; bestD = d; best = t; }
+    else if (d < secondD) { secondD = d; }
+  }
+  if (bestD > 900) return null;                 // nothing in the palette fits
+  if (bestD * 4 > secondD) return null;         // too close to call
+  return best.v;
 }
 
 /**
