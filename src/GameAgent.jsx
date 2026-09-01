@@ -1306,13 +1306,53 @@ export default function GameAgent() {
   const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
+  const fullLogRef = useRef([]);               // every log line, uncapped
+  const logQueueRef = useRef([]);              // lines not yet written to disk
+  const logSessionRef = useRef(
+    new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
+  );
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
   }, [timingProfile, customTiming]);
 
+  // The on-screen log keeps only the most recent entries so the page stays
+  // responsive, but every line is also kept in full here and mirrored to a file
+  // on disk — a long run must not lose its early history, and a crashed tab must
+  // still leave a complete record to troubleshoot from.
   const addLog = useCallback((text, type = "info") => {
-    setLog(l => [...l.slice(-300), { id: uid(), ts: ts(), text, type }]);
+    const stamp = ts();
+    setLog(l => [...l.slice(-300), { id: uid(), ts: stamp, text, type }]);
+    const line = `[${stamp}] ${type === "info" ? "" : type.toUpperCase() + ": "}${text}`;
+    fullLogRef.current.push(line);
+    logQueueRef.current.push(line);
+  }, []);
+
+  // Flush queued lines to the backend on a timer: batching keeps a fast solver
+  // run from issuing a request per move.
+  useEffect(() => {
+    const flush = async () => {
+      if (!logQueueRef.current.length) return;
+      const batch = logQueueRef.current.splice(0, logQueueRef.current.length);
+      try {
+        await backend("/log/append", { session: logSessionRef.current, lines: batch });
+      } catch {
+        // Backend down or restarting — keep the lines in the full in-memory copy
+        // so "Save log" still produces everything; just do not retry forever.
+      }
+    };
+    const id = setInterval(flush, 2000);
+    return () => { flush(); clearInterval(id); };
+  }, []);
+
+  const saveLogFile = useCallback(() => {
+    const body = fullLogRef.current.join("\n") + "\n";
+    const url = URL.createObjectURL(new Blob([body], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `agent-${logSessionRef.current}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
   }, []);
 
   const addAction = useCallback((name, args, result) => {
@@ -3352,6 +3392,17 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <span style={{ fontSize: 11, color: C.dim }}>In: {tokenCount.input.toLocaleString()} / Out: {tokenCount.output.toLocaleString()}</span>
           {currentScore != null && <span style={{ fontSize: 11, color: C.green }}>Score: {currentScore}</span>}
           {running && <span style={{ fontSize: 11, color: paused ? C.yellow : C.green }}>● {paused ? "PAUSED" : "RUNNING"}</span>}
+          <button
+            onClick={saveLogFile}
+            title="Download every line of this run, including entries scrolled out of the view above"
+            style={{
+              marginLeft: "auto", background: "transparent", color: C.dim,
+              border: `1px solid ${C.border}`, borderRadius: 4,
+              padding: "2px 8px", fontSize: 11, cursor: "pointer", fontFamily: "inherit",
+            }}
+          >
+            ⬇ Save full log
+          </button>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px" }}>
           {log.map(entry => (

@@ -418,6 +418,54 @@ def screen_info():
     return {"width": SCREEN_W, "height": SCREEN_H, "platform": platform.system()}
 
 
+# ── Session log files ──────────────────────────────────────────────────────────
+# The in-page log is capped and lives only in browser memory, so a long run loses
+# its early history and a crashed tab loses everything. Every line is mirrored to
+# a file here so the full run is always available for troubleshooting.
+
+LOG_DIR = Path(__file__).parent / "logs"
+
+
+class LogLines(BaseModel):
+    session: str
+    lines: List[str]
+
+
+def _log_path(session: str) -> Path:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", session)[:80] or "session"
+    return LOG_DIR / f"agent-{safe}.log"
+
+
+@app.post("/log/append")
+def log_append(b: LogLines):
+    """Append log lines to this session's file, creating it on first write."""
+    try:
+        LOG_DIR.mkdir(exist_ok=True)
+        path = _log_path(b.session)
+        with path.open("a", encoding="utf-8") as fh:
+            for line in b.lines:
+                fh.write(line.rstrip("\n") + "\n")
+        return {"ok": True, "path": str(path), "bytes": path.stat().st_size}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/log/list")
+def log_list():
+    """Most recent session logs first, so the last run is easy to find."""
+    if not LOG_DIR.exists():
+        return {"dir": str(LOG_DIR), "files": []}
+    files = sorted(LOG_DIR.glob("agent-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+    return {
+        "dir": str(LOG_DIR),
+        "files": [
+            {"name": p.name, "path": str(p), "bytes": p.stat().st_size,
+             "modified": datetime.datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")}
+            for p in files[:25]
+        ],
+    }
+
+
 # ── Memory storage ─────────────────────────────────────────────────────────────
 
 MEMORY_FILE = Path(__file__).parent / "game-agent-memory.json"
