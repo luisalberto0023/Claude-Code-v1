@@ -1247,6 +1247,7 @@ export default function GameAgent() {
   const [turnCount, setTurnCount] = useState(0);
   const [tokenCount, setTokenCount] = useState({ input: 0, output: 0 });
   const [currentScore, setCurrentScore] = useState(null);
+  const [bestTile, setBestTile] = useState(0);
   const [gameResult, setGameResult] = useState(null);
   const [memoryData, setMemoryData] = useState(null);
   const [milestones, setMilestones] = useState([]);
@@ -1306,6 +1307,7 @@ export default function GameAgent() {
   const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
+  const gameBestTileRef = useRef(0);           // highest tile merged this game
   const fullLogRef = useRef([]);               // every log line, uncapped
   const logQueueRef = useRef([]);              // lines not yet written to disk
   const logSessionRef = useRef(
@@ -1968,6 +1970,13 @@ export default function GameAgent() {
       solverScoreRef.current += move.gained || 0;
       currentScoreRef.current = solverScoreRef.current;
       setCurrentScore(solverScoreRef.current);
+      // Track the biggest tile built this game. Score and highest tile are
+      // different achievements — a game can score well above 2048 without ever
+      // merging a 2048 tile — and the tile is what says how far the game got.
+      for (const row of after.board) {
+        for (const v of row) if (v > gameBestTileRef.current) gameBestTileRef.current = v;
+      }
+      setBestTile(gameBestTileRef.current);
       noOpStreakRef.current = 0;
       lastFailedMovesRef.current.clear();
       solverBlockedRef.current.clear();
@@ -2657,6 +2666,8 @@ REASONING STYLE (for analyse_game_state):
       solverScoreRef.current = 0;
       solverFailRef.current = 0;
       solverBlockedRef.current = new Set();
+      gameBestTileRef.current = 0;
+      setBestTile(0);
       let gameOutcome = "ended";
 
     while (!stopRef.current) {
@@ -2750,9 +2761,15 @@ REASONING STYLE (for analyse_game_state):
 
       // ── Game finished ──────────────────────────────────────────────────────
       const thisScore = gameEndRef.current?.finalScore ?? currentScoreRef.current;
-      gameScoresRef.current = [...gameScoresRef.current, { game: gameIdx + 1, score: thisScore, outcome: gameOutcome }];
+      const thisBestTile = gameBestTileRef.current;
+      gameScoresRef.current = [...gameScoresRef.current,
+        { game: gameIdx + 1, score: thisScore, bestTile: thisBestTile, outcome: gameOutcome }];
       setGameScores([...gameScoresRef.current]);
-      addLog(`Game ${gameIdx + 1} finished — ${gameOutcome}${thisScore != null ? `, score ${thisScore}` : ""}.`, "success");
+      addLog(
+        `Game ${gameIdx + 1} finished — ${gameOutcome}` +
+        `${thisScore != null ? `, score ${thisScore}` : ""}` +
+        `${thisBestTile ? `, highest tile ${thisBestTile}` : ""}.`,
+        "success");
 
       finalOutcome = gameOutcome;
       finalScore = thisScore ?? finalScore;
@@ -2775,13 +2792,27 @@ REASONING STYLE (for analyse_game_state):
       forceStrategyRef.current = true;
     }
 
-    // Multi-game summary
+    // Per-game results, then the session roll-up. Each game is listed on its own
+    // line: an average hides which game did what, and the highest tile is the
+    // real measure of how far a game got — a game can score well past 2048
+    // without ever merging a 2048 tile.
     if (gameScoresRef.current.length > 1) {
+      addLog("── Results by game ──", "info");
+      for (const g of gameScoresRef.current) {
+        addLog(
+          `  Game ${g.game}: score ${g.score ?? "unknown"}` +
+          `${g.bestTile ? `, highest tile ${g.bestTile}` : ""} (${g.outcome})`,
+          "info");
+      }
       const scored = gameScoresRef.current.map(g => g.score).filter(s => typeof s === "number");
+      const tiles = gameScoresRef.current.map(g => g.bestTile).filter(Boolean);
       if (scored.length) {
         const best = Math.max(...scored);
         const avg = Math.round(scored.reduce((a, b) => a + b, 0) / scored.length);
-        addLog(`Session totals — games: ${gameScoresRef.current.length}, best: ${best}, average: ${avg}`, "success");
+        addLog(
+          `Session totals — games: ${gameScoresRef.current.length}, best score: ${best}, average score: ${avg}` +
+          `${tiles.length ? `, highest tile reached: ${Math.max(...tiles)}` : ""}`,
+          "success");
         finalScore = best;
       }
     }
@@ -2791,9 +2822,16 @@ REASONING STYLE (for analyse_game_state):
     if (turnCountRef.current >= 3) {
       addLog("Running post-session analysis...", "info");
       try {
+        const perGame = gameScoresRef.current.length > 1
+          ? `\nResults per game:\n${gameScoresRef.current.map(g =>
+              `  Game ${g.game}: score ${g.score ?? "unknown"}` +
+              `${g.bestTile ? `, highest tile ${g.bestTile}` : ""} (${g.outcome})`).join("\n")}`
+          : "";
         const analysisPrompt = `You just completed a session of "${gameDesc}".
 Outcome: ${finalOutcome}
-Final score: ${finalScore ?? "unknown"}
+Best score of the session: ${finalScore ?? "unknown"}${perGame}
+Note: score and highest tile are different achievements. A game can score well
+above 2048 without ever merging a 2048 tile; the highest tile says how far it got.
 Turns played: ${turnCountRef.current}
 Goals at end: ${goalsRef.current.length > 0 ? goalsRef.current.map((g, i) => `${i === currentGoalIndexRef.current ? "▶" : i < currentGoalIndexRef.current ? "✓" : "○"} ${g}`).join("; ") : "none set"}
 
@@ -3410,6 +3448,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <span style={{ fontSize: 11, color: C.dim }}>Turn {turnCount}</span>
           <span style={{ fontSize: 11, color: C.dim }}>In: {tokenCount.input.toLocaleString()} / Out: {tokenCount.output.toLocaleString()}</span>
           {currentScore != null && <span style={{ fontSize: 11, color: C.green }}>Score: {currentScore}</span>}
+          {bestTile > 0 && <span style={{ fontSize: 11, color: C.yellow }}>Highest tile: {bestTile}</span>}
           {running && <span style={{ fontSize: 11, color: paused ? C.yellow : C.green }}>● {paused ? "PAUSED" : "RUNNING"}</span>}
           <button
             onClick={saveLogFile}
