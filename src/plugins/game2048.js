@@ -437,6 +437,223 @@ export function readState(canvasEl) {
 
 // ── Game mechanics ────────────────────────────────────────────────────────────
 
+// ── Reading SCORE and BEST from the page ──────────────────────────────────────
+// The score the agent reports must come from the game, not from its own tally of
+// the merges it thinks it made: that tally is only as good as the board read
+// behind it, and when the reader was wrong it produced scores the board could
+// never have produced. BEST cannot be derived at all — it is the game's own
+// record across runs — so both are read from the two boxes above the board.
+//
+// Digits are white on the box fill, so segmentation is a colour threshold and a
+// column projection. Classification uses shape rather than a font template:
+// counting enclosed holes and where they sit separates 0/4/6/8/9, and coarse ink
+// profiles separate 1/2/3/5/7. Anything ambiguous returns null, and the caller
+// keeps its previous value rather than recording a guess.
+
+// Digits are pure white; the page background behind the boxes is (250,248,239),
+// only 330 away, so this has to stay tight or the whole page matches.
+const DIGIT_WHITE_MAX = 200;
+
+// Count enclosed background regions in a binary glyph (holes), and note the
+// vertical centre of the largest one.
+function holesOf(grid, gw, gh) {
+  const seen = new Uint8Array(gw * gh);
+  const holes = [];
+  for (let y = 0; y < gh; y++) {
+    for (let x = 0; x < gw; x++) {
+      const i = y * gw + x;
+      if (grid[i] || seen[i]) continue;
+      // Flood the background region; it is a hole only if it never touches the edge.
+      const stack = [[x, y]];
+      seen[i] = 1;
+      let touchesEdge = false, n = 0, sumY = 0;
+      while (stack.length) {
+        const [px, py] = stack.pop();
+        n++; sumY += py;
+        if (px === 0 || py === 0 || px === gw - 1 || py === gh - 1) touchesEdge = true;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = px + dx, ny = py + dy;
+          if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+          const ni = ny * gw + nx;
+          if (grid[ni] || seen[ni]) continue;
+          seen[ni] = 1; stack.push([nx, ny]);
+        }
+      }
+      if (!touchesEdge && n >= 3) holes.push({ n, cy: sumY / n / gh });
+    }
+  }
+  holes.sort((a, b) => b.n - a.n);
+  return holes;
+}
+
+// Averaged shapes of each digit over three sans-bold fonts at five sizes, as a
+// 10x15 grid of ink fractions quantised to 0-9. Averaging across fonts rather
+// than copying one keeps the match from depending on the exact face the page
+// uses. Enclosed-hole count gates which digits are even considered, which is a
+// property of the shape rather than the font and rules out most confusions
+// outright (4 against 1, 8 against 6, 9 against 3).
+const TPL_W = 10, TPL_H = 15;
+const DIGIT_TEMPLATES = [
+  "001479520002799999401798557993399400289569810006988981000599997100059999710005999971000599898100059979810006994993001796189733699303899999610025896400",
+  "112466422334566663335666897333654599733332248873330002666333000266633300026663330002666333000266633300026663330002666333222366745555556688886666668999",
+  "013589631035999999615887557995566200379834400016980110002798000000489500000479720001499720001599620001699410001598410000599743333389999999999999999999",
+  "013589630015999999613887558994365100389623200027960000004883001356884000238997200012457983000000279811100016995650001799687533699747999999822257996410",
+  "000017994000003999400001799940000495894000276289400069228940028602894016810289404940028940884334895399999999998888889998111112894100000289400000028940",
+  "279999999327999999932796555541389200000038911210003984797410499999997148754479951110002798000000169900000016994440002798787534799547999999611257985410",
+  "001359842000699999710598656784289510033259810000007972265310997689986199985579959994001798898200059969710005994993000698189733599602899999710025797410",
+  "999999999999999999995555556898000000289500000069710000049840000018961000003984000001696200000389410000069820000017961000004994000000599200000069810000",
+  "003489630004999999613998446994598300179659820017962895113893038877884102799898302896224984798100169899700005998981001698699622499716998899820146997420",
+  "002488420004999998303997557982698200289589700017989970001698898100279959962259991699999899015786369800012006971220002794387434798217999998300157975200",
+];
+const HOLES_OF_DIGIT = [1, 0, 0, 0, 1, 0, 1, 0, 2, 1];
+
+function classifyDigit(cells) {
+  // A binary copy is what the hole count is computed on.
+  const bin = new Uint8Array(TPL_W * TPL_H);
+  for (let i = 0; i < cells.length; i++) bin[i] = cells[i] > 0.5 ? 1 : 0;
+  const nHoles = holesOf(bin, TPL_W, TPL_H).length;
+
+  let candidates = [];
+  for (let d = 0; d < 10; d++) if (HOLES_OF_DIGIT[d] === nHoles) candidates.push(d);
+  if (!candidates.length) candidates = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+
+  let best = null, bestD = Infinity, secondD = Infinity;
+  for (const d of candidates) {
+    const tpl = DIGIT_TEMPLATES[d];
+    let sum = 0;
+    for (let i = 0; i < cells.length; i++) {
+      const diff = cells[i] - (tpl.charCodeAt(i) - 48) / 9;
+      sum += diff * diff;
+    }
+    if (sum < bestD) { secondD = bestD; bestD = sum; best = d; }
+    else if (sum < secondD) secondD = sum;
+  }
+  // Ambiguous match: report nothing rather than a wrong digit, so the caller
+  // keeps the value it already has.
+  if (candidates.length > 1 && bestD > secondD * 0.85) return null;
+  return best;
+}
+
+// Split the ink into digits by columns that contain no ink, then classify each.
+function readNumber(mask, w, h) {
+  const colHas = new Array(w).fill(false);
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) if (mask[y * w + x]) { colHas[x] = true; break; }
+  }
+  const spans = [];
+  let start = -1;
+  for (let x = 0; x <= w; x++) {
+    if (x < w && colHas[x]) { if (start < 0) start = x; }
+    else if (start >= 0) { spans.push([start, x - 1]); start = -1; }
+  }
+  if (!spans.length || spans.length > 9) return null;
+
+  let out = "";
+  for (const [x0, x1] of spans) {
+    let y0 = h, y1 = -1;
+    for (let y = 0; y < h; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (mask[y * w + x]) { if (y < y0) y0 = y; if (y > y1) y1 = y; break; }
+      }
+    }
+    if (y1 < y0) return null;
+    const dw = x1 - x0 + 1, dh = y1 - y0 + 1;
+    if (dh < 9) return null;   // below this the strokes merge and holes close up
+    // Average the ink over each cell rather than sampling one pixel: a single
+    // sample throws away most of the glyph and makes thin strokes disappear.
+    const cells = new Float32Array(TPL_W * TPL_H);
+    for (let gy = 0; gy < TPL_H; gy++) {
+      for (let gx = 0; gx < TPL_W; gx++) {
+        const sx0 = x0 + gx * dw / TPL_W, sx1 = x0 + (gx + 1) * dw / TPL_W;
+        const sy0 = y0 + gy * dh / TPL_H, sy1 = y0 + (gy + 1) * dh / TPL_H;
+        let on = 0, total = 0;
+        for (let yy = Math.floor(sy0); yy < Math.max(Math.floor(sy0) + 1, Math.round(sy1)); yy++) {
+          for (let xx = Math.floor(sx0); xx < Math.max(Math.floor(sx0) + 1, Math.round(sx1)); xx++) {
+            if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+            total++; on += mask[yy * w + xx];
+          }
+        }
+        cells[gy * TPL_W + gx] = total ? on / total : 0;
+      }
+    }
+    const d = classifyDigit(cells);
+    if (d === null) return null;
+    out += d;
+  }
+  return out.length ? Number(out) : null;
+}
+
+/**
+ * Read the SCORE and BEST values shown above the board.
+ * Returns { score, best } with null for anything that could not be read.
+ */
+export function readScores(canvasEl, rectHint = null) {
+  if (!canvasEl || !canvasEl.width) return { score: null, best: null };
+  const w = canvasEl.width, h = canvasEl.height;
+  let data;
+  try {
+    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  } catch { return { score: null, best: null }; }
+
+  const rect = rectHint || findBoardRect(data, w, h);
+  if (!rect) return { score: null, best: null };
+
+  // The boxes sit in the strip above the board. Find them by their fill colour
+  // first — the same tone as the board — because the page behind them is nearly
+  // white and searching for white digits across the whole strip matches the page
+  // itself rather than the numbers.
+  const y0 = Math.max(0, rect.y - Math.round(rect.h * 0.34));
+  const y1 = Math.max(0, rect.y - 2);
+  if (y1 - y0 < 12) return { score: null, best: null };
+
+  const step = 2;
+  const pts = [];
+  for (let y = y0; y < y1; y += step) {
+    for (let x = rect.x; x < w; x += step) {
+      const i = (y * w + x) * 4;
+      if (dist2([data[i], data[i + 1], data[i + 2]], BOARD_BG) <= 900) pts.push([x, y]);
+    }
+  }
+  const boxes = [];
+  for (const [x, y] of pts) {
+    let placed = false;
+    for (const bx of boxes) {
+      // Tight: the two boxes are separated by only a thin strip of page
+      // background, and a loose gap merges them into one number.
+      if (x >= bx.minX - 4 && x <= bx.maxX + 4 && y >= bx.minY - 4 && y <= bx.maxY + 4) {
+        bx.minX = Math.min(bx.minX, x); bx.maxX = Math.max(bx.maxX, x);
+        bx.minY = Math.min(bx.minY, y); bx.maxY = Math.max(bx.maxY, y);
+        bx.n++; placed = true; break;
+      }
+    }
+    if (!placed) boxes.push({ minX: x, maxX: x, minY: y, maxY: y, n: 1 });
+  }
+  const found = boxes
+    .filter(b => (b.maxX - b.minX) > 20 && (b.maxY - b.minY) > 12)
+    .sort((a, b) => a.minX - b.minX);
+  if (!found.length) return { score: null, best: null };
+
+  const values = found.map(b => {
+    // Skip the label ("SCORE" / "BEST") in the upper part of the box.
+    const bx0 = b.minX, bx1 = b.maxX;
+    const by0 = b.minY + Math.round((b.maxY - b.minY) * 0.34), by1 = b.maxY;
+    const bw = bx1 - bx0 + 1, bh = by1 - by0 + 1;
+    if (bw < 6 || bh < 8) return null;
+    const mask = new Uint8Array(bw * bh);
+    for (let y = 0; y < bh; y++) {
+      for (let x = 0; x < bw; x++) {
+        const i = ((by0 + y) * w + (bx0 + x)) * 4;
+        mask[y * bw + x] =
+          dist2([data[i], data[i + 1], data[i + 2]], [255, 255, 255]) <= DIGIT_WHITE_MAX ? 1 : 0;
+      }
+    }
+    return readNumber(mask, bw, bh);
+  });
+
+  // SCORE is the left box, BEST the right one.
+  return { score: values[0] ?? null, best: values.length > 1 ? values[values.length - 1] : null };
+}
+
 const DIRS = ["up", "down", "left", "right"];
 
 function cloneBoard(b) { return b.map(r => r.slice()); }

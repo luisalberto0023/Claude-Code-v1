@@ -1248,6 +1248,7 @@ export default function GameAgent() {
   const [tokenCount, setTokenCount] = useState({ input: 0, output: 0 });
   const [currentScore, setCurrentScore] = useState(null);
   const [bestTile, setBestTile] = useState(0);
+  const [bestScore, setBestScore] = useState(null);
   const [gameResult, setGameResult] = useState(null);
   const [memoryData, setMemoryData] = useState(null);
   const [milestones, setMilestones] = useState([]);
@@ -1272,6 +1273,14 @@ export default function GameAgent() {
   // click-grid overlay applied.
   const solverCanvasRef = useRef(null);
   const solverScaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1, offsetX: 0, offsetY: 0 });
+  // The board is read from colours and survives downscaling, but the score
+  // digits do not: at 1280 the strokes merge and the holes that identify a
+  // digit close up. The score boxes are therefore read from their own
+  // full-resolution capture.
+  const scoreCanvasRef = useRef(null);
+  const scoreScaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1, offsetX: 0, offsetY: 0 });
+  const screenScoreRef = useRef(null);        // SCORE as shown by the game
+  const screenBestRef = useRef(null);         // BEST as shown by the game
   const solverScoreRef = useRef(0);
   const solverFailRef = useRef(0);
   const solverBlockedRef = useRef(new Set()); // directions that produced no change
@@ -1920,6 +1929,26 @@ export default function GameAgent() {
   // confirm by re-reading the board. No model call at all: reliable and ~instant.
   // Returns { ok } | { gameOver } | { fallback, reason } so the caller can hand
   // the turn back to the LLM if perception fails.
+  // Read SCORE and BEST from the boxes above the board, from a capture that is
+  // not downscaled. Passing the board rectangle avoids locating the board a
+  // second time at full resolution.
+  const readScoresFromScreen = useCallback((plugin, state) => {
+    if (!plugin?.readScores || !scoreCanvasRef.current) return null;
+    try {
+      if (!captureFrame(videoRef.current, scoreCanvasRef.current, scoreScaleRef, 4000)) return null;
+      const solverW = solverCanvasRef.current?.width || 0;
+      const k = solverW ? scoreCanvasRef.current.width / solverW : 1;
+      const r = state?.rect;
+      const hint = r ? {
+        x: Math.round(r.x * k), y: Math.round(r.y * k),
+        w: Math.round(r.w * k), h: Math.round(r.h * k),
+      } : null;
+      return plugin.readScores(scoreCanvasRef.current, hint);
+    } catch {
+      return null;
+    }
+  }, []);
+
   const solverTurn = useCallback(async (plugin) => {
     const canvas = solverCanvasRef.current;
     if (!canvas) return { fallback: true, reason: "no canvas" };
@@ -1968,8 +1997,31 @@ export default function GameAgent() {
 
     if (changed) {
       solverScoreRef.current += move.gained || 0;
-      currentScoreRef.current = solverScoreRef.current;
-      setCurrentScore(solverScoreRef.current);
+
+      // Prefer the score the game itself shows. The running total is only as
+      // good as the board reads behind it, and when those were wrong it produced
+      // scores the board could never have reached. BEST cannot be derived at all
+      // — it is the game's own record — so it has to be read too.
+      const seen = readScoresFromScreen(plugin, after);
+      if (seen) {
+        const prev = screenScoreRef.current;
+        // Within a game the score never falls, and one move cannot add a huge
+        // amount; either failure means a misread, so keep the previous value.
+        if (typeof seen.score === "number" && seen.score >= (prev ?? 0) &&
+            seen.score - (prev ?? 0) <= 200000) {
+          screenScoreRef.current = seen.score;
+        }
+        // BEST is never below the current score and never decreases.
+        if (typeof seen.best === "number" &&
+            seen.best >= (screenScoreRef.current ?? 0) &&
+            seen.best >= (screenBestRef.current ?? 0)) {
+          screenBestRef.current = seen.best;
+          setBestScore(seen.best);
+        }
+      }
+
+      currentScoreRef.current = screenScoreRef.current ?? solverScoreRef.current;
+      setCurrentScore(currentScoreRef.current);
       // Track the biggest tile built this game. Score and highest tile are
       // different achievements — a game can score well above 2048 without ever
       // merging a 2048 tile — and the tile is what says how far the game got.
@@ -1993,7 +2045,7 @@ export default function GameAgent() {
 
     addAction(`solver.${move.key}`, { key: move.key }, { ok: true, changed });
     return { ok: true, key: move.key, changed, reason: move.reason, board: state.board };
-  }, [getTiming, addLog, addAction]);
+  }, [getTiming, addLog, addAction, readScoresFromScreen]);
 
   // ── Restart the game after it ends ──────────────────────────────────────────
   // General pattern: detect terminal state -> click the restart control -> verify.
@@ -2668,6 +2720,7 @@ REASONING STYLE (for analyse_game_state):
       solverBlockedRef.current = new Set();
       gameBestTileRef.current = 0;
       setBestTile(0);
+      screenScoreRef.current = null;   // the game resets SCORE, but not BEST
       let gameOutcome = "ended";
 
     while (!stopRef.current) {
@@ -2763,7 +2816,8 @@ REASONING STYLE (for analyse_game_state):
       const thisScore = gameEndRef.current?.finalScore ?? currentScoreRef.current;
       const thisBestTile = gameBestTileRef.current;
       gameScoresRef.current = [...gameScoresRef.current,
-        { game: gameIdx + 1, score: thisScore, bestTile: thisBestTile, outcome: gameOutcome }];
+        { game: gameIdx + 1, score: thisScore, bestTile: thisBestTile,
+          fromScreen: screenScoreRef.current != null, outcome: gameOutcome }];
       setGameScores([...gameScoresRef.current]);
       addLog(
         `Game ${gameIdx + 1} finished — ${gameOutcome}` +
@@ -2979,6 +3033,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           </div>
           <canvas ref={canvasRef} style={{ display: "none" }} />
           <canvas ref={solverCanvasRef} style={{ display: "none" }} />
+          <canvas ref={scoreCanvasRef} style={{ display: "none" }} />
           <div style={{ display: "flex", gap: 6, marginTop: 6, alignItems: "center" }}>
             {useNativeCapture
               ? <span style={{ fontSize: 10, color: C.textDim }}>Using backend capture (configured under Control Scheme)</span>
@@ -3449,6 +3504,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <span style={{ fontSize: 11, color: C.dim }}>In: {tokenCount.input.toLocaleString()} / Out: {tokenCount.output.toLocaleString()}</span>
           {currentScore != null && <span style={{ fontSize: 11, color: C.green }}>Score: {currentScore}</span>}
           {bestTile > 0 && <span style={{ fontSize: 11, color: C.yellow }}>Highest tile: {bestTile}</span>}
+          {bestScore != null && <span style={{ fontSize: 11, color: C.dim }}>Best: {bestScore}</span>}
           {running && <span style={{ fontSize: 11, color: paused ? C.yellow : C.green }}>● {paused ? "PAUSED" : "RUNNING"}</span>}
           <button
             onClick={saveLogFile}
