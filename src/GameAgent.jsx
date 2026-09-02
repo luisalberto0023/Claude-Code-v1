@@ -420,6 +420,10 @@ function setFrameQuality(q) { FRAME_QUALITY = Math.max(0.3, Math.min(0.95, q)) |
 // `maxW` overrides the global cap. Pass the real width to capture full-size,
 // which matters when a crop follows: cropping an already-downscaled frame
 // compounds the shrink and can leave the game unreadably small.
+// The solver reads tile numbers, not just tile colours, so its capture must not
+// be downscaled: at 1280 the digits lose the detail that tells 256 from 128.
+const SOLVER_CAPTURE_W = 4000;
+
 function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
   if (!videoEl || !canvasEl || videoEl.readyState < 2) return null;
   const realW = videoEl.videoWidth;
@@ -1954,7 +1958,7 @@ export default function GameAgent() {
     if (!canvas) return { fallback: true, reason: "no canvas" };
 
     // Full-resolution grab, no crop and no grid overlay
-    const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
+    const frame = captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
     if (!frame) return { fallback: true, reason: "no frame" };
 
     // Trust the board read first. It is exact when it succeeds, whereas the
@@ -1962,7 +1966,15 @@ export default function GameAgent() {
     // misfire (tile digits are nearly the same colour as the buttons). Only fall
     // back to that heuristic when the board genuinely cannot be read, which is
     // what the washed-out overlay actually causes.
-    const state = plugin.readState(canvas);
+    // A cell caught mid-animation is now reported as unreadable rather than
+    // silently treated as empty, so give the tiles a moment and look again
+    // before giving up on the board.
+    let state = plugin.readState(canvas);
+    for (let retry = 0; !state && retry < 2; retry++) {
+      await new Promise(r => setTimeout(r, 120));
+      captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
+      state = plugin.readState(canvas);
+    }
 
     if (state) {
       if (plugin.isTerminal(state)) {
@@ -1991,7 +2003,7 @@ export default function GameAgent() {
     // Let the tiles animate, then re-read and compare — a real state check
     // rather than a pixel-difference guess.
     await new Promise(r => setTimeout(r, Math.max(180, timing.actionPace || 0) + 220));
-    captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
+    captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
     const after = plugin.readState(canvas);
     const changed = after && JSON.stringify(after.board) !== JSON.stringify(state.board);
 
@@ -2070,7 +2082,7 @@ export default function GameAgent() {
       if (!plug?.looksLikeNewGame || !solverCanvasRef.current) return null;
       for (let i = 0; i < 8; i++) {
         await new Promise(r => setTimeout(r, 250));
-        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, SOLVER_CAPTURE_W);
         if (plug.isGameOverScreen?.(solverCanvasRef.current)) continue; // overlay still up
         const st = plug.readState(solverCanvasRef.current);
         if (st && plug.looksLikeNewGame(st)) return true;
@@ -2085,7 +2097,7 @@ export default function GameAgent() {
       // instead of being clicked again.
       const tried = [];
       for (let attempt = 0; attempt < 3 && !stopRef.current; attempt++) {
-        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, SOLVER_CAPTURE_W);
         const pt = plug.findRestartButton(solverCanvasRef.current, null, tried);
         if (!pt) { if (attempt) addLog("No further restart buttons to try.", "warn"); break; }
         tried.push({ x: pt.x, y: pt.y });
@@ -2207,7 +2219,7 @@ export default function GameAgent() {
     if (!plug) { addLog(`No solver plugin matches "${gameDesc}".`, "warn"); return; }
     const canvas = solverCanvasRef.current;
     if (!canvas || !videoRef.current) { addLog("Start screen capture first.", "warn"); return; }
-    const frame = captureFrame(videoRef.current, canvas, solverScaleRef, 1280);
+    const frame = captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
     if (!frame) { addLog("No frame — is screen capture running?", "warn"); return; }
 
     // Show the frame the solver actually looked at. The most common failure is
@@ -2686,7 +2698,7 @@ REASONING STYLE (for analyse_game_state):
     // moves, so clear it first and let game 1 start fresh.
     if (activePlugin?.isTerminal && activePlugin.readState) {
       try {
-        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, 1280);
+        captureFrame(videoRef.current, solverCanvasRef.current, solverScaleRef, SOLVER_CAPTURE_W);
         const startState = activePlugin.readState(solverCanvasRef.current);
         const finished = startState
           ? activePlugin.isTerminal(startState)

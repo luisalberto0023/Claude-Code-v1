@@ -373,6 +373,42 @@ function isTextPixel(rgb) {
  * distinctly closer than the runner-up, so an animating tile reads as unknown
  * rather than as the wrong number.
  */
+/**
+ * Read the number printed on a tile.
+ *
+ * Colour alone cannot separate the high tiles: 128, 256, 512, 1024 and 2048 are
+ * near-identical yellows about 17 apart, which is within the noise a screen
+ * capture adds. The printed number is unambiguous, so it is the primary source
+ * and colour is only the fallback. Requires the capture not to be downscaled —
+ * the digits need the resolution.
+ */
+function readTileNumber(data, w, h, cx, cy, cw, ch) {
+  // Inset past the rounded corners and any border glow.
+  const x0 = Math.round(cx + cw * 0.10), x1 = Math.round(cx + cw * 0.90);
+  const y0 = Math.round(cy + ch * 0.10), y1 = Math.round(cy + ch * 0.90);
+  const bw = x1 - x0, bh = y1 - y0;
+  if (bw < 12 || bh < 12) return null;
+
+  const mask = new Uint8Array(bw * bh);
+  let ink = 0;
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      const i = ((y0 + y) * w + (x0 + x)) * 4;
+      const c = [data[i], data[i + 1], data[i + 2]];
+      // Tiles up to 4 print dark text, the rest light.
+      const on = dist2(c, TEXT_LIGHT) <= 400 || dist2(c, TEXT_DARK) <= 400;
+      mask[y * bw + x] = on ? 1 : 0;
+      if (on) ink++;
+    }
+  }
+  if (ink < 20) return null;                 // no number here
+  const n = readNumber(mask, bw, bh);
+  if (n === null) return null;
+  // Only powers of two from 2 up are real tiles; anything else is a misread.
+  if (n < 2 || n > 131072 || (n & (n - 1)) !== 0) return null;
+  return n;
+}
+
 function readCell(data, w, h, cx, cy, cw, ch) {
   const rs = [], gs = [], bs = [];
   for (const fy of SAMPLE_FRACS) {
@@ -399,7 +435,17 @@ function readCell(data, w, h, cx, cy, cw, ch) {
     else if (d < secondD) { secondD = d; }
   }
   if (bestD > 900) return null;                 // nothing in the palette fits
-  if (bestD * 4 > secondD) return null;         // too close to call
+
+  // An empty cell is far from every tile colour, so colour alone settles it.
+  if (best.v === 0 && bestD * 4 <= secondD) return 0;
+
+  // Otherwise trust the printed number over the colour. The high tiles are only
+  // about 17 apart in colour and a near-miss there used to be recorded as an
+  // empty square, which told the solver it had space where a large tile sat.
+  const printed = readTileNumber(data, w, h, cx, cy, cw, ch);
+  if (printed !== null) return printed;
+
+  if (bestD * 4 > secondD) return null;         // colour too close to call
   return best.v;
 }
 
@@ -429,9 +475,11 @@ export function readState(canvasEl) {
     }
     board.push(row);
   }
-  // A couple of unreadable cells is tolerable (mid-animation); more means the
-  // read is not trustworthy and the caller should fall back.
-  if (unread > 2) return null;
+  // A cell that cannot be read must never be reported as empty. Doing so told
+  // the solver it had free space exactly where a large tile sat, so it planned
+  // around room that did not exist and suffocated while its score kept climbing.
+  // An incomplete read is no read: the caller retries or falls back.
+  if (unread > 0) return null;
   return { board, rect };
 }
 
