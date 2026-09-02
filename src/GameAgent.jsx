@@ -2561,11 +2561,19 @@ export default function GameAgent() {
       addLog(`Loaded memory: ${mem.sessions} sessions, best score: ${mem.bestScore ?? "?"}`, "info");
     }
 
-    // Research phase
+    // Decided before the prompt is built: when a solver plays the game, the
+    // model's remaining job is small and its instructions can be far shorter.
+    const activePlugin = useSolver ? findPlugin(gameDesc) : null;
+
+    // Research phase. Strategy notes only matter when the model is choosing the
+    // moves; with a solver playing they are never consulted, so asking for them
+    // costs a request and then sits in every later prompt for nothing.
     let research = null;
-    if (!skipResearch) {
+    if (!skipResearch && !activePlugin) {
       research = await runResearch(apiKey);
       if (stopRef.current) { setRunning(false); setPhase("idle"); return; }
+    } else if (activePlugin && !skipResearch) {
+      addLog("Skipping research — the solver picks the moves, so strategy notes are not used.", "info");
     }
 
     // Build system prompt
@@ -2589,7 +2597,27 @@ export default function GameAgent() {
 
     const controlDesc = controlSchemeDescription(controlScheme, pauseActive, gridEnabled);
 
-    const systemPrompt = `You are an autonomous AI game-playing agent playing "${gameDesc}" on the user's screen.
+    // With a solver playing, the model is only called to start a new game or to
+    // cover a board that is briefly unreadable. The full playing brief — goals,
+    // memory, progress reporting, token-efficiency advice — is dead weight in
+    // that mode, and it is resent on every request, so it is cut down to the job
+    // that is actually left.
+    const solverSystemPrompt = `You are helping run the game "${gameDesc}" on the user's screen.
+A deterministic solver reads the board and chooses the moves. You are called only
+when it cannot act — usually to start a new game, or when the board is briefly
+unreadable.
+
+INPUT CONTROLS (${schemeCfg.label}) — use ONLY these:
+${controlDesc}
+
+Each turn, do ONE of these:
+- If a "Try again" or "New Game" button is visible, click it to start a game.
+- Otherwise press a single arrow key to keep the game moving.
+- Call signal_game_end if the game is clearly over and no button is visible.
+
+Say in one short sentence what you see before you act.${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
+
+    const fullSystemPrompt = `You are an autonomous AI game-playing agent playing "${gameDesc}" on the user's screen.
 
 Your goal: Play as well as possible — maximize score and try to win.
 
@@ -2625,12 +2653,16 @@ REASONING STYLE (for analyse_game_state):
 - Be concise: 1-3 sentences max
 - State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
 
-    // The system prompt is resent every request. On a local 4096-token context a
-    // bloated one leaves no room for the screenshot, and llama.cpp cannot shift
-    // the KV cache — it reprocesses everything and the turn stalls.
+    const systemPrompt = activePlugin ? solverSystemPrompt : fullSystemPrompt;
+
+    // The system prompt is resent every request. On a small local context a
+    // bloated one leaves little room for the screenshot, and llama.cpp cannot
+    // shift the KV cache — it reprocesses everything and the turn stalls. This
+    // only bites when the model is doing the playing; with a solver it is called
+    // rarely and the prompt is already short.
     const promptTokEst = Math.round(systemPrompt.length / 4);
-    addLog(`System prompt ≈ ${promptTokEst} tokens`, "info");
-    if (isLocal && promptTokEst > 1200) {
+    addLog(`System prompt ≈ ${promptTokEst} tokens${activePlugin ? " (short form — solver is playing)" : ""}`, "info");
+    if (isLocal && !activePlugin && promptTokEst > 1200) {
       addLog(`⚠ System prompt is large (≈${promptTokEst} tok) for a local model — turns may stall. Enable "Skip research phase" and/or Clear Memory to shrink it.`, "warn");
     }
 
@@ -2692,7 +2724,7 @@ REASONING STYLE (for analyse_game_state):
     let finalOutcome = "ended";
     let finalScore = null;
     const totalGames = Math.max(1, gamesPerSession || 1);
-    const activePlugin = useSolver ? findPlugin(gameDesc) : null;
+
     solverActiveRef.current = !!activePlugin;
     if (activePlugin) {
       addLog(`⚙ Solver active: ${activePlugin.label} — reading the board from pixels and choosing moves by search.`, "success");
