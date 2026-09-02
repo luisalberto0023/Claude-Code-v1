@@ -350,7 +350,9 @@ export function looksLikeNewGame(state) {
 // Sample fractions chosen from measured pixels: 0.20-0.80 lands on tile
 // background across the cell, while the gaps between tiles sit outside that
 // range and the printed digits sit in the middle.
-const SAMPLE_FRACS = [0.16, 0.26, 0.36, 0.50, 0.64, 0.74, 0.84];
+// Corner patches, inset past the rounded corners and clear of the centred
+// number: background for every tile whatever it shows.
+const CORNER_FRACS = [0.12, 0.18, 0.24, 0.76, 0.82, 0.88];
 const TEXT_LIGHT = [249, 246, 242];
 const TEXT_DARK = [119, 110, 101];
 
@@ -409,12 +411,41 @@ function readTileNumber(data, w, h, cx, cy, cw, ch) {
   return n;
 }
 
-function readCell(data, w, h, cx, cy, cw, ch) {
+// What a failed read saw, so the log can say why rather than only that it failed.
+const lastFailure = { cells: [] };
+
+export function lastReadFailure() {
+  if (!lastFailure.cells.length) return null;
+  return lastFailure.cells
+    .map(c => `r${c.r}c${c.c} rgb(${c.rgb.join(",")})`)
+    .join("  ");
+}
+
+// The same corner sampling readCell uses, for reporting a failure.
+function sampleCellColour(data, w, h, cx, cy, cw, ch) {
   const rs = [], gs = [], bs = [];
-  for (const fy of SAMPLE_FRACS) {
-    for (const fx of SAMPLE_FRACS) {
-      // Skip the middle of the tile, where the number is drawn
-      if (fx > 0.36 && fx < 0.64 && fy > 0.36 && fy < 0.64) continue;
+  for (const fy of CORNER_FRACS) {
+    for (const fx of CORNER_FRACS) {
+      const px = Math.round(cx + cw * fx), py = Math.round(cy + ch * fy);
+      if (px < 0 || py < 0 || px >= w || py >= h) continue;
+      const i = (py * w + px) * 4;
+      rs.push(data[i]); gs.push(data[i + 1]); bs.push(data[i + 2]);
+    }
+  }
+  if (!rs.length) return [0, 0, 0];
+  const mid = a => { a.sort((x, y) => x - y); return a[a.length >> 1]; };
+  return [mid(rs), mid(gs), mid(bs)];
+}
+
+function readCell(data, w, h, cx, cy, cw, ch) {
+  // Sample only the four corner patches. The number is drawn centred, so a ring
+  // around it still catches the glyph when the number is wide or the font large
+  // — a "4" sampled that way returned the dark text colour, matched nothing in
+  // the palette, and took the whole board down with it. The corners are
+  // background for every tile regardless of how many digits it has.
+  const rs = [], gs = [], bs = [];
+  for (const fy of CORNER_FRACS) {
+    for (const fx of CORNER_FRACS) {
       const px = Math.round(cx + cw * fx);
       const py = Math.round(cy + ch * fy);
       if (px < 0 || py < 0 || px >= w || py >= h) continue;
@@ -424,7 +455,7 @@ function readCell(data, w, h, cx, cy, cw, ch) {
       rs.push(c[0]); gs.push(c[1]); bs.push(c[2]);
     }
   }
-  if (rs.length < 8) return null;
+  if (rs.length < 6) return null;
   const mid = arr => { arr.sort((a, b) => a - b); return arr[arr.length >> 1]; };
   const avg = [mid(rs), mid(gs), mid(bs)];
 
@@ -434,10 +465,8 @@ function readCell(data, w, h, cx, cy, cw, ch) {
     if (d < bestD) { secondD = bestD; bestD = d; best = t; }
     else if (d < secondD) { secondD = d; }
   }
-  if (bestD > 900) return null;                 // nothing in the palette fits
-
   // An empty cell is far from every tile colour, so colour alone settles it.
-  if (best.v === 0 && bestD * 4 <= secondD) return 0;
+  if (best.v === 0 && bestD <= 900 && bestD * 4 <= secondD) return 0;
 
   // Otherwise trust the printed number over the colour. The high tiles are only
   // about 17 apart in colour and a near-miss there used to be recorded as an
@@ -445,6 +474,8 @@ function readCell(data, w, h, cx, cy, cw, ch) {
   const printed = readTileNumber(data, w, h, cx, cy, cw, ch);
   if (printed !== null) return printed;
 
+  // No number read: fall back to colour, but only when it is unambiguous.
+  if (bestD > 900) return null;                 // nothing in the palette fits
   if (bestD * 4 > secondD) return null;         // colour too close to call
   return best.v;
 }
@@ -467,11 +498,21 @@ export function readState(canvasEl) {
   const cw = rect.w / 4, ch = rect.h / 4;
   const board = [];
   let unread = 0;
+  lastFailure.cells = [];
   for (let r = 0; r < 4; r++) {
     const row = [];
     for (let c = 0; c < 4; c++) {
       const v = readCell(data, w, h, rect.x + c * cw, rect.y + r * ch, cw, ch);
-      if (v === null) { unread++; row.push(0); } else row.push(v);
+      if (v === null) {
+        unread++;
+        row.push(0);
+        // Record what the cell actually looked like so a failure can be
+        // diagnosed from the log instead of guessed at.
+        if (lastFailure.cells.length < 4) {
+          lastFailure.cells.push({ r, c, rgb: sampleCellColour(data, w, h,
+            rect.x + c * cw, rect.y + r * ch, cw, ch) });
+        }
+      } else row.push(v);
     }
     board.push(row);
   }
@@ -873,6 +914,7 @@ export const plugin = {
   label: "2048 (board reader + expectimax solver)",
   match, readState, chooseMove, isTerminal, describeState, applyMove, legalMoves,
   diagnose, findRestartButton, isGameOverScreen, looksLikeNewGame,
+  readScores, lastReadFailure,
 };
 
 export default plugin;

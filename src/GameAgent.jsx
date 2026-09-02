@@ -1970,10 +1970,17 @@ export default function GameAgent() {
     // silently treated as empty, so give the tiles a moment and look again
     // before giving up on the board.
     let state = plugin.readState(canvas);
-    for (let retry = 0; !state && retry < 2; retry++) {
-      await new Promise(r => setTimeout(r, 120));
+    for (let retry = 0; !state && retry < 5; retry++) {
+      await new Promise(r => setTimeout(r, 100 + retry * 120));
       captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
       state = plugin.readState(canvas);
+    }
+    if (!state && plugin.lastReadFailure) {
+      // Say which cells could not be read and what colour they were, so a
+      // failure is diagnosable from the log rather than only visible as a
+      // fallback to the model.
+      const why = plugin.lastReadFailure();
+      if (why) addLog(`Board read failed on: ${why}`, "warn");
     }
 
     if (state) {
