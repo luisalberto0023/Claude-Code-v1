@@ -63,12 +63,20 @@ function nearestTileInfo(rgb) {
 
 // Locate the board by finding the bounding box of the board's background colour.
 // Returns null when too few matching pixels are found (board not on screen).
-// Is this pixel part of a 2048 board? The board is made of its background
-// colour plus empty cells plus tiles, so match against the whole palette.
+// Is this pixel part of the board's frame?
+//
+// Only the board's own background counts — not the tiles. Tiles from 128 up cast
+// a glow, `box-shadow: 0 0 30px 10px rgba(243,215,116,...)`, and that colour sits
+// about 10 from the 128 tile itself, so matching the whole palette swallowed the
+// glow and stretched the detected board ~50px past its real edges. Every tile
+// position then shifted and reads failed — but only once the board had grown a
+// 128, which is exactly when it went wrong in play.
+//
+// The background is always visible regardless: 2048 draws a 15px border around
+// the grid and a 15px gap between every cell, so it forms a connected lattice
+// whose bounding box is the board, however full the board gets.
 function isBoardPixel(rgb, tol) {
-  if (dist2(rgb, BOARD_BG) <= tol) return true;
-  for (const t of TILE_COLORS) if (dist2(rgb, t.rgb) <= tol) return true;
-  return false;
+  return dist2(rgb, BOARD_BG) <= tol;
 }
 
 /**
@@ -350,9 +358,33 @@ export function looksLikeNewGame(state) {
 // Sample fractions chosen from measured pixels: 0.20-0.80 lands on tile
 // background across the cell, while the gaps between tiles sit outside that
 // range and the printed digits sit in the middle.
-// Corner patches, inset past the rounded corners and clear of the centred
-// number: background for every tile whatever it shows.
-const CORNER_FRACS = [0.12, 0.18, 0.24, 0.76, 0.82, 0.88];
+// The board is not four equal quarters. 2048 lays out 106.25px cells with a
+// 15px gap on every side, so a board of width B has
+//   gap  = B * 15 / (4*106.25 + 5*15) = B * 0.03
+//   cell = B * 106.25 / (...)         = B * 0.2125
+// Dividing the board by four instead put every sample progressively off, and for
+// the top row it landed them exactly on the tile's edge — which is why reads
+// failed there and nowhere else.
+const GAP_FRAC = 15 / (4 * 106.25 + 5 * 15);
+const CELL_FRAC = 106.25 / (4 * 106.25 + 5 * 15);
+
+function tileRect(rect, r, c) {
+  const gap = rect.w * GAP_FRAC;
+  const cw = rect.w * CELL_FRAC, chh = rect.h * CELL_FRAC;
+  const gy = rect.h * GAP_FRAC;
+  return {
+    x: rect.x + gap + c * (cw + gap),
+    y: rect.y + gy + r * (chh + gy),
+    w: cw, h: chh,
+  };
+}
+
+// Sampled inside the tile, in the bands above and below the centred number and
+// clear of the 1px white inset border every tile draws just inside its edge
+// (`inset 0 0 0 1px rgba(255,255,255,...)`), plus the glow that tiles from 128
+// up cast over their neighbours.
+const SAMPLE_XS = [0.22, 0.32, 0.42, 0.58, 0.68, 0.78];
+const SAMPLE_YS = [0.16, 0.21, 0.26, 0.74, 0.79, 0.84];
 const TEXT_LIGHT = [249, 246, 242];
 const TEXT_DARK = [119, 110, 101];
 
@@ -385,9 +417,9 @@ function isTextPixel(rgb) {
  * the digits need the resolution.
  */
 function readTileNumber(data, w, h, cx, cy, cw, ch) {
-  // Inset past the rounded corners and any border glow.
-  const x0 = Math.round(cx + cw * 0.10), x1 = Math.round(cx + cw * 0.90);
-  const y0 = Math.round(cy + ch * 0.10), y1 = Math.round(cy + ch * 0.90);
+  // Inset past the rounded corners and the 1px white inset border.
+  const x0 = Math.round(cx + cw * 0.06), x1 = Math.round(cx + cw * 0.94);
+  const y0 = Math.round(cy + ch * 0.06), y1 = Math.round(cy + ch * 0.94);
   const bw = x1 - x0, bh = y1 - y0;
   if (bw < 12 || bh < 12) return null;
 
@@ -424,8 +456,8 @@ export function lastReadFailure() {
 // The same corner sampling readCell uses, for reporting a failure.
 function sampleCellColour(data, w, h, cx, cy, cw, ch) {
   const rs = [], gs = [], bs = [];
-  for (const fy of CORNER_FRACS) {
-    for (const fx of CORNER_FRACS) {
+  for (const fy of SAMPLE_YS) {
+    for (const fx of SAMPLE_XS) {
       const px = Math.round(cx + cw * fx), py = Math.round(cy + ch * fy);
       if (px < 0 || py < 0 || px >= w || py >= h) continue;
       const i = (py * w + px) * 4;
@@ -444,8 +476,8 @@ function readCell(data, w, h, cx, cy, cw, ch) {
   // the palette, and took the whole board down with it. The corners are
   // background for every tile regardless of how many digits it has.
   const rs = [], gs = [], bs = [];
-  for (const fy of CORNER_FRACS) {
-    for (const fx of CORNER_FRACS) {
+  for (const fy of SAMPLE_YS) {
+    for (const fx of SAMPLE_XS) {
       const px = Math.round(cx + cw * fx);
       const py = Math.round(cy + ch * fy);
       if (px < 0 || py < 0 || px >= w || py >= h) continue;
@@ -495,22 +527,22 @@ export function readState(canvasEl) {
   const rect = findBoardRect(data, w, h);
   if (!rect) return null;
 
-  const cw = rect.w / 4, ch = rect.h / 4;
   const board = [];
   let unread = 0;
   lastFailure.cells = [];
   for (let r = 0; r < 4; r++) {
     const row = [];
     for (let c = 0; c < 4; c++) {
-      const v = readCell(data, w, h, rect.x + c * cw, rect.y + r * ch, cw, ch);
+      const t = tileRect(rect, r, c);
+      const v = readCell(data, w, h, t.x, t.y, t.w, t.h);
       if (v === null) {
         unread++;
         row.push(0);
         // Record what the cell actually looked like so a failure can be
         // diagnosed from the log instead of guessed at.
         if (lastFailure.cells.length < 4) {
-          lastFailure.cells.push({ r, c, rgb: sampleCellColour(data, w, h,
-            rect.x + c * cw, rect.y + r * ch, cw, ch) });
+          lastFailure.cells.push({ r, c,
+            rgb: sampleCellColour(data, w, h, t.x, t.y, t.w, t.h) });
         }
       } else row.push(v);
     }
@@ -742,6 +774,11 @@ export function readScores(canvasEl, rectHint = null) {
   // SCORE is the left box, BEST the right one.
   return { score: values[0] ?? null, best: values.length > 1 ? values[values.length - 1] : null };
 }
+
+// Exposed so the digit reader can be unit-tested directly. Reading numbers off
+// the screen is the part most likely to break on an unfamiliar font, and testing
+// it only through a whole board read makes a failure hard to place.
+export const __ocr = { readNumber, classifyDigit, readTileNumber, tileRect };
 
 const DIRS = ["up", "down", "left", "right"];
 
