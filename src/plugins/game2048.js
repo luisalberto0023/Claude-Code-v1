@@ -137,7 +137,61 @@ function findBoardRect(data, w, h, tol = 900) {
   const ratio = bw / bh;
   if (ratio < 0.75 || ratio > 1.33) return null; // the board is square
   if (bw < 60 || bh < 60) return null;
-  return { x, y, w: bw, h: bh };
+  return refineRect(data, w, h, { x, y, w: bw, h: bh }, tol);
+}
+
+/**
+ * Tighten a detected board rectangle to its true pixel edges.
+ *
+ * The search above works on a coarse mask, so its rectangle can overshoot by a
+ * step in each direction. Cell positions are derived from that rectangle, so the
+ * error accumulates across the grid and lands worst on the far cells — a board
+ * measured 6px too wide was enough to cut the digit off the last tile and fail
+ * the read. The board's border is a solid band of its background colour, so the
+ * real edge is where a row or column stops being mostly that colour.
+ */
+function refineRect(data, w, h, rect, tol = 900) {
+  const isBg = (x, y) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return false;
+    const i = (y * w + x) * 4;
+    return dist2([data[i], data[i + 1], data[i + 2]], BOARD_BG) <= tol;
+  };
+  const margin = Math.ceil(Math.min(w, h) / 180) + 2;
+  const rowFrac = y => {
+    let n = 0, t = 0;
+    for (let x = rect.x; x < rect.x + rect.w; x += 2) { t++; if (isBg(x, y)) n++; }
+    return t ? n / t : 0;
+  };
+  const colFrac = x => {
+    let n = 0, t = 0;
+    for (let y = rect.y; y < rect.y + rect.h; y += 2) { t++; if (isBg(x, y)) n++; }
+    return t ? n / t : 0;
+  };
+  const scan = (from, to, frac) => {
+    const dir = to > from ? 1 : -1;
+    for (let v = from; dir > 0 ? v <= to : v >= to; v += dir) if (frac(v) > 0.6) return v;
+    return null;
+  };
+  const top = scan(rect.y - margin, rect.y + margin, rowFrac);
+  const bottom = scan(rect.y + rect.h + margin, rect.y + rect.h - margin, rowFrac);
+  const left = scan(rect.x - margin, rect.x + margin, colFrac);
+  const right = scan(rect.x + rect.w + margin, rect.x + rect.w - margin, colFrac);
+  if (top == null || bottom == null || left == null || right == null) return rect;
+  const out = { x: left, y: top, w: right - left + 1, h: bottom - top + 1 };
+  if (out.w < 40 || out.h < 40) return rect;
+  return out;
+}
+
+// Where the board was last seen. The game-over overlay washes the board
+// background toward its own colour, so detection fails exactly when the overlay
+// is up — which is precisely when the "Try again" button needs locating. The
+// board does not move, so the last good rectangle stands in.
+let lastGoodRect = null;
+
+function boardRectOrLast(data, w, h) {
+  const found = findBoardRect(data, w, h);
+  if (found) { lastGoodRect = found; return found; }
+  return lastGoodRect;
 }
 
 /**
@@ -278,6 +332,7 @@ export function findRestartButton(canvasEl, rectHint = null, exclude = []) {
     data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
   } catch { return null; }
 
+  const known = rectHint || boardRectOrLast(data, w, h);
   let clusters = buttonClusters(data, w, h);
   // Skip buttons already tried: both "Try again" and "New Game" restart the
   // game, so if the preferred one does not work we must be able to fall through
@@ -290,7 +345,7 @@ export function findRestartButton(canvasEl, rectHint = null, exclude = []) {
   }
   if (!clusters.length) return null;
 
-  const rect = rectHint ?? findBoardRect(data, w, h);
+  const rect = known;
   const centre = c => ({ x: Math.round((c.minX + c.maxX) / 2), y: Math.round((c.minY + c.maxY) / 2) });
 
   if (rect) {
@@ -331,7 +386,7 @@ export function isGameOverScreen(canvasEl) {
   try {
     data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
   } catch { return false; }
-  const rect = findBoardRect(data, w, h);
+  const rect = boardRectOrLast(data, w, h);
   if (!rect) return false;
   return buttonClusters(data, w, h).some(c => {
     const cx = (c.minX + c.maxX) / 2, cy = (c.minY + c.maxY) / 2;
@@ -416,26 +471,30 @@ function isTextPixel(rgb) {
  * and colour is only the fallback. Requires the capture not to be downscaled —
  * the digits need the resolution.
  */
-function readTileNumber(data, w, h, cx, cy, cw, ch) {
+function readTileNumber(data, w, h, cx, cy, cw, ch, bgColour) {
   // Inset past the rounded corners and the 1px white inset border.
   const x0 = Math.round(cx + cw * 0.06), x1 = Math.round(cx + cw * 0.94);
   const y0 = Math.round(cy + ch * 0.06), y1 = Math.round(cy + ch * 0.94);
   const bw = x1 - x0, bh = y1 - y0;
   if (bw < 12 || bh < 12) return null;
 
+  // The number is whatever contrasts with this tile's own background, rather
+  // than a specific ink colour. Different 2048 sites use different palettes and
+  // different text colours, and matching fixed ones ties the reader to one
+  // site's stylesheet; contrast against the measured background does not care
+  // what either colour actually is.
   const mask = new Uint8Array(bw * bh);
   let ink = 0;
   for (let y = 0; y < bh; y++) {
     for (let x = 0; x < bw; x++) {
       const i = ((y0 + y) * w + (x0 + x)) * 4;
-      const c = [data[i], data[i + 1], data[i + 2]];
-      // Tiles up to 4 print dark text, the rest light.
-      const on = dist2(c, TEXT_LIGHT) <= 400 || dist2(c, TEXT_DARK) <= 400;
-      mask[y * bw + x] = on ? 1 : 0;
-      if (on) ink++;
+      const on = dist2([data[i], data[i + 1], data[i + 2]], bgColour) > 4000 ? 1 : 0;
+      mask[y * bw + x] = on;
+      ink += on;
     }
   }
-  if (ink < 20) return null;                 // no number here
+  // Too little contrast anywhere means no number is drawn — an empty cell.
+  if (ink < bw * bh * 0.02) return 0;
   const n = readNumber(mask, bw, bh);
   if (n === null) return null;
   // Only powers of two from 2 up are real tiles; anything else is a misread.
@@ -491,25 +550,20 @@ function readCell(data, w, h, cx, cy, cw, ch) {
   const mid = arr => { arr.sort((a, b) => a - b); return arr[arr.length >> 1]; };
   const avg = [mid(rs), mid(gs), mid(bs)];
 
-  let best = null, bestD = Infinity, secondD = Infinity;
-  for (const t of TILE_COLORS) {
-    const d = dist2(avg, t.rgb);
-    if (d < bestD) { secondD = bestD; bestD = d; best = t; }
-    else if (d < secondD) { secondD = d; }
-  }
-  // An empty cell is far from every tile colour, so colour alone settles it.
-  if (best.v === 0 && bestD <= 900 && bestD * 4 <= secondD) return 0;
-
-  // Otherwise trust the printed number over the colour. The high tiles are only
-  // about 17 apart in colour and a near-miss there used to be recorded as an
-  // empty square, which told the solver it had space where a large tile sat.
-  const printed = readTileNumber(data, w, h, cx, cy, cw, ch);
+  // The printed number decides, and nothing overrides it.
+  //
+  // Colour cannot identify a tile on its own: neighbouring values differ by only
+  // about 17 (128/256, 256/512, 512/1024, and 2/4 by 18), which is inside
+  // capture noise, and the palette differs between 2048 sites anyway. Falling
+  // back to the nearest colour did not fail loudly — it returned a real but
+  // wrong tile, so a 512 was recorded as a 256 and the solver kept trying to
+  // merge a pair that was not there.
+  const printed = readTileNumber(data, w, h, cx, cy, cw, ch, avg);
   if (printed !== null) return printed;
 
-  // No number read: fall back to colour, but only when it is unambiguous.
-  if (bestD > 900) return null;                 // nothing in the palette fits
-  if (bestD * 4 > secondD) return null;         // colour too close to call
-  return best.v;
+  // Unreadable. The colour is reported so the log can say what was actually on
+  // screen, but it is never used as the answer.
+  return null;
 }
 
 /**
@@ -526,6 +580,7 @@ export function readState(canvasEl) {
 
   const rect = findBoardRect(data, w, h);
   if (!rect) return null;
+  lastGoodRect = rect;
 
   const board = [];
   let unread = 0;

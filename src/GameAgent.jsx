@@ -1919,10 +1919,30 @@ export default function GameAgent() {
     }
 
     if (toolName === "signal_game_end") {
-      gameEndRef.current = toolInput;
-      setGameResult({ outcome: toolInput.outcome, finalScore: toolInput.finalScore, reason: toolInput.reason });
-      addLog(`Game ended: ${toolInput.outcome} — ${toolInput.reason ?? ""}`, toolInput.outcome === "won" ? "success" : "warn");
-      return toolResult(`Game end recorded: ${toolInput.outcome}`);
+      // The model may report that the game ended, but not what happened in it.
+      // Asked to end a 2048 game it had never played, it reported a win with a
+      // final score of 2048 — the number in the site's name — and that
+      // overwrote the real result, identically, in every game of a session.
+      // Facts the agent measured itself win over anything reported here.
+      const end = { ...toolInput };
+      if (solverActiveRef.current) {
+        const measured = screenScoreRef.current ?? solverScoreRef.current;
+        if (measured != null && end.finalScore !== measured) {
+          if (end.finalScore != null) {
+            addLog(`Ignoring reported score ${end.finalScore} — the game showed ${measured}.`, "warn");
+          }
+          end.finalScore = measured;
+        }
+        // A win in 2048 means a 2048 tile was actually built.
+        if (end.outcome === "win" && gameBestTileRef.current < 2048) {
+          addLog(`Reported a win, but the highest tile built was ${gameBestTileRef.current || "none"} — recording as ended.`, "warn");
+          end.outcome = "ended";
+        }
+      }
+      gameEndRef.current = end;
+      setGameResult({ outcome: end.outcome, finalScore: end.finalScore, reason: end.reason });
+      addLog(`Game ended: ${end.outcome} — ${end.reason ?? ""}`, end.outcome === "win" ? "success" : "warn");
+      return toolResult(`Game end recorded: ${end.outcome}`);
     }
 
     return toolResult(`Unknown tool: ${toolName}`);
