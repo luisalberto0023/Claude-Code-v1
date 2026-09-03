@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import game2048 from "./plugins/game2048.js";
+import { findClickableCandidates } from "./vision/buttons.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
@@ -1264,7 +1265,7 @@ export default function GameAgent() {
   const [bestTile, setBestTile] = useState(0);
   const [bestScore, setBestScore] = useState(null);
   // What to do when the game reaches a point where it asks how to continue.
-  const [decisionPolicy, setDecisionPolicy] = useState("ask");
+  const [decisionPolicy, setDecisionPolicy] = useState("auto-routine");
   const [pendingDecision, setPendingDecision] = useState(null);
   const [gameResult, setGameResult] = useState(null);
   const [memoryData, setMemoryData] = useState(null);
@@ -1334,7 +1335,7 @@ export default function GameAgent() {
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
   const gameBestTileRef = useRef(0);           // highest tile merged this game
-  const decisionPolicyRef = useRef("ask");
+  const decisionPolicyRef = useRef("auto-routine");
   const decisionResolverRef = useRef(null);    // resolves once a choice is made
   const decisionTimerRef = useRef(null);
   const fullLogRef = useRef([]);               // every log line, uncapped
@@ -1980,6 +1981,93 @@ export default function GameAgent() {
   // Returns { ok } | { gameOver } | { fallback, reason } so the caller can hand
   // the turn back to the LLM if perception fails.
   /**
+   * Work out what is on screen when the game stops responding, for any game.
+   *
+   * Whatever is blocking play — a game-over panel, a level-complete dialog, a
+   * win that offers to continue — the two things needed are where the controls
+   * are and what they mean. Those come from different places: positions are
+   * measured from the frame, because a coordinate has to be exact, and meaning
+   * is asked of the model, because pixels cannot say what "Keep going" implies.
+   * Asking a model to estimate coordinates instead is how agents end up clicking
+   * nothing.
+   *
+   * Returns a decision, or null when nothing clickable is on screen.
+   */
+  const analyseStuckScreen = useCallback(async (plugin, apiKey) => {
+    const canvas = solverCanvasRef.current;
+    if (!canvas) return null;
+    captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
+
+    // A plugin that knows this game answers exactly and for free.
+    const known = plugin?.readOverlay?.(canvas);
+    if (known) {
+      return {
+        kind: known.kind,
+        summary: known.kind === "win"
+          ? `Won — reached the ${gameBestTileRef.current} tile. The game is offering to keep playing this board.`
+          : "The game is over and is offering to start again.",
+        options: known.options,
+        // Losing has one sensible answer; winning is a choice about the run.
+        needsHuman: known.kind === "win",
+        recommended: known.kind === "win" ? "keep-going" : "try-again",
+      };
+    }
+
+    // Otherwise: measure the controls, then ask what they are.
+    const found = findClickableCandidates(canvas);
+    if (!found.length) return null;
+    addLog(`Stuck — found ${found.length} thing${found.length > 1 ? "s" : ""} that can be clicked. Looking at the screen…`, "info");
+
+    let labelled = null;
+    try {
+      const frame = await grabFrame();
+      const list = found.map((b, i) => `${i}: at ${b.cx},${b.cy}, ${b.w}x${b.h}px`).join("\n");
+      const sys = `You are looking at a game that has stopped responding to input.
+The clickable controls have already been located for you — do not guess coordinates,
+only say what each one is.
+Reply with ONLY a JSON object, no other text:
+{"situation":"<one short sentence describing what is on screen>",
+ "buttons":[{"index":<number from the list>,"label":"<the words on that control>"}],
+ "recommended":<index of the control that continues play, or null if unsure>,
+ "needsHuman":<true if choosing wrongly would lose progress or end the run, else false>}`;
+      const res = await callAI(
+        providerKey, model, sys,
+        [{
+          role: "user",
+          content: [
+            ...(frame ? [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } }] : []),
+            { type: "text", text: `Controls found on screen:\n${list}\n\nWhat is happening, and what is each control?` },
+          ],
+        }],
+        [], apiKey,
+      );
+      const text = (res?.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n");
+      const m = text.match(/\{[\s\S]*\}/);
+      if (m) labelled = JSON.parse(m[0]);
+    } catch (e) {
+      addLog(`Could not interpret the screen (${e.message}) — will ask you instead.`, "warn");
+    }
+
+    const options = found.map((b, i) => {
+      const hit = labelled?.buttons?.find(x => Number(x.index) === i);
+      return {
+        id: `btn-${i}`,
+        label: hit?.label || `Button at ${b.cx},${b.cy}`,
+        x: b.cx, y: b.cy,
+      };
+    });
+    const recIdx = Number.isInteger(labelled?.recommended) ? labelled.recommended : null;
+    return {
+      kind: "stuck",
+      summary: labelled?.situation || "The game has stopped responding and something is on screen.",
+      options,
+      // Anything not understood is worth asking about rather than clicking.
+      needsHuman: labelled?.needsHuman !== false || recIdx == null,
+      recommended: recIdx != null && options[recIdx] ? options[recIdx].id : null,
+    };
+  }, [addLog, providerKey, model, grabFrame]);
+
+  /**
    * Handle a point where the game asks what to do next.
    *
    * Winning 2048 is not the end of the game — the board is still playable and
@@ -1991,56 +2079,75 @@ export default function GameAgent() {
    *
    * Returns "keep-going", "next-game" or "stop".
    */
-  const resolveDecision = useCallback(async (decision, plugin) => {
-    const isWin = decision.kind === "win";
-    if (isWin) addLog(`🏆 Won — reached the ${gameBestTileRef.current} tile.`, "success");
+  const resolveDecision = useCallback(async (decision) => {
+    if (decision.kind === "win") addLog(`🏆 Won — reached the ${gameBestTileRef.current} tile.`, "success");
+    addLog(decision.summary, "info");
 
-    const act = async (choice) => {
-      if (choice !== "keep-going") return choice;
-      const opt = decision.options.find(o => o.id === "keep-going");
-      if (!opt) {
-        addLog("No 'Keep going' control found — starting the next game instead.", "warn");
-        return "next-game";
-      }
+    const clickOption = async (id) => {
+      const opt = decision.options.find(o => o.id === id);
+      if (!opt) return false;
       const scale = solverScaleRef.current;
       const sx = Math.round(opt.x / (scale.scale || 1));
       const sy = Math.round(opt.y / (scale.scale || 1));
-      addLog(`Continuing this game — clicking "${opt.label}" at ${sx},${sy}.`, "info");
+      addLog(`Clicking "${opt.label}" at ${sx},${sy}.`, "info");
       await backend("/mouse/click", { x: sx, y: sy, button: "left" });
-      await new Promise(r => setTimeout(r, 500));
-      return "keep-going";
+      await new Promise(r => setTimeout(r, 600));
+      return true;
     };
 
-    let policy = decisionPolicyRef.current;
-    if (policy !== "ask") return act(policy);
+    // "keep-going" continues the same game; anything else ends this game and the
+    // games loop takes over, which already knows how to start the next one.
+    const finish = async (choice) => {
+      if (choice === "stop") return "stop";
+      if (choice === "next-game") return "next-game";
+      if (await clickOption(choice)) {
+        return choice === "keep-going" ? "keep-going" : "next-game";
+      }
+      addLog(`Could not act on "${choice}" — starting the next game instead.`, "warn");
+      return "next-game";
+    };
 
-    // Ask, and wait for an answer.
+    const policy = decisionPolicyRef.current;
+
+    // Handle it without asking when the situation is routine and the policy
+    // allows it. A lost game has one sensible answer; a won one does not.
+    if (policy === "auto" || (policy === "auto-routine" && !decision.needsHuman)) {
+      const pick = decision.recommended ?? "try-again";
+      addLog(`Handling this automatically: ${pick}.`, "info");
+      return finish(pick);
+    }
+    if (policy === "keep-going" || policy === "next-game" || policy === "stop") {
+      return finish(policy);
+    }
+
+    // Ask.
     const waitSec = 90;
-    addLog(`Waiting for your choice (continues with "${DECISION_DEFAULT}" in ${waitSec}s)…`, "info");
+    addLog(`Waiting for your choice (continues with the recommended option in ${waitSec}s)…`, "info");
     setPendingDecision({
       kind: decision.kind,
+      summary: decision.summary,
       score: currentScoreRef.current,
       bestTile: gameBestTileRef.current,
-      canKeepGoing: decision.options.some(o => o.id === "keep-going"),
-      deadline: Date.now() + waitSec * 1000,
+      options: decision.options,
+      recommended: decision.recommended,
     });
     setPhase("waiting");
 
     const chosen = await new Promise(resolve => {
       decisionResolverRef.current = resolve;
-      const timer = setTimeout(() => {
+      decisionTimerRef.current = setTimeout(() => {
         if (decisionResolverRef.current) {
           decisionResolverRef.current = null;
-          addLog(`No answer in ${waitSec}s — continuing with "${DECISION_DEFAULT}".`, "info");
-          resolve(DECISION_DEFAULT);
+          const fallback = decision.recommended ?? DECISION_DEFAULT;
+          addLog(`No answer in ${waitSec}s — continuing with "${fallback}".`, "info");
+          resolve(fallback);
         }
       }, waitSec * 1000);
-      decisionTimerRef.current = timer;
     });
     clearTimeout(decisionTimerRef.current);
     setPendingDecision(null);
     setPhase("playing");
-    return act(chosen);
+    return finish(chosen);
   }, [addLog]);
 
   // Record the biggest tile seen, from every board that reads successfully.
@@ -2188,9 +2295,8 @@ export default function GameAgent() {
         // whether to keep going. Reporting that as "no legal moves" threw away a
         // won board and clicked whatever button happened to be found.
         captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
-        const overlay = plugin.readOverlay?.(canvas);
-        if (overlay) {
-          return { decision: overlay, board: state.board };
+        if (plugin.readOverlay?.(canvas)) {
+          return { stuck: true, board: state.board };
         }
         return { gameOver: true, reason: "every direction blocked", board: state.board };
       }
@@ -2921,19 +3027,26 @@ REASONING STYLE (for analyse_game_state):
 
         // The game reached a point where it is asking what to do next — in 2048,
         // winning, which offers to keep playing the same board.
-        if (sr.decision) {
-          const choice = await resolveDecision(sr.decision, activePlugin);
+        if (sr.stuck) {
+          const decision = await analyseStuckScreen(activePlugin, apiKey);
+          if (!decision) {
+            gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+            addLog("The game stopped responding and nothing on screen can be clicked.", "warn");
+            break;
+          }
+          const choice = await resolveDecision(decision);
           if (choice === "keep-going") {
             solverBlockedRef.current = new Set();
             noOpStreakRef.current = 0;
             continue;                       // same game, same board
           }
+          const won = gameBestTileRef.current >= 2048;
           if (choice === "stop") {
-            gameOutcome = sr.decision.kind === "win" ? "win" : "ended";
+            gameOutcome = won ? "win" : "ended";
             stopRef.current = true;
             break;
           }
-          gameOutcome = sr.decision.kind === "win" ? "win" : "ended";
+          gameOutcome = won ? "win" : "ended";
           break;                            // finish this game; the loop restarts
         }
 
@@ -2955,7 +3068,20 @@ REASONING STYLE (for analyse_game_state):
           // A solver move that changes nothing means the board read is stale or
           // wrong; a few in a row and we hand back to the model.
           if (!sr.changed && noOpStreakRef.current >= 4) {
-            addLog("Solver moves are not changing the board — falling back to the model.", "warn");
+            addLog("Moves are not changing the board — looking at what is on screen.", "warn");
+            const decision = await analyseStuckScreen(activePlugin, apiKey);
+            if (decision) {
+              const choice = await resolveDecision(decision);
+              if (choice === "keep-going") {
+                solverBlockedRef.current = new Set();
+                noOpStreakRef.current = 0;
+                continue;
+              }
+              if (choice === "stop") { stopRef.current = true; break; }
+              gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+              break;
+            }
+            addLog("Nothing clickable on screen — falling back to the model.", "warn");
             solverFailRef.current = 99;
           }
           if (solverFailRef.current < 3) continue;
@@ -3157,7 +3283,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
       gamesPerSession, attemptRestart, useSolver, solverTurn,
-      providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog]);
+      providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -3447,13 +3573,17 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`,
                            borderRadius: 4, padding: "3px 6px", fontFamily: "inherit", fontSize: 12 }}
                 >
-                  <option value="ask">Ask me what to do</option>
+                  <option value="auto-routine">Handle routine screens, ask about the rest</option>
+                  <option value="ask">Ask me every time</option>
+                  <option value="auto">Handle everything itself</option>
                   <option value="keep-going">Always keep playing the same board</option>
                   <option value="next-game">Always start the next game</option>
                   <option value="stop">Always stop the session</option>
                 </select>
                 <span style={{ fontSize: 9, color: C.dim }}>
-                  Asking waits 90s, then keeps playing so an unattended run continues.
+                  Routine means one sensible way forward, such as a lost game offering to try
+                  again. Winning is not routine — continuing or restarting is your call.
+                  A question waits 90s, then takes the recommended option.
                 </span>
               </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
@@ -3751,23 +3881,28 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             <div style={{ fontWeight: 700, color: C.accentL, marginBottom: 4 }}>
               {pendingDecision.kind === "win"
                 ? `You reached the ${pendingDecision.bestTile} tile — the game is won.`
-                : "The game has stopped and is asking what to do."}
+                : "The game has stopped. What should the agent do?"}
             </div>
             <div style={{ fontSize: 11, color: C.dim, marginBottom: 10 }}>
-              {pendingDecision.score != null && `Score ${pendingDecision.score}. `}
-              What should the agent do? Continuing plays on from this board.
+              {pendingDecision.summary}
+              {pendingDecision.score != null && ` (score ${pendingDecision.score})`}
             </div>
             <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {pendingDecision.canKeepGoing && (
-                <button onClick={() => answerDecision("keep-going")} style={decisionBtn(C.green)}>
-                  Keep going
+              {(pendingDecision.options ?? []).map(o => (
+                <button
+                  key={o.id}
+                  onClick={() => answerDecision(o.id)}
+                  style={decisionBtn(o.id === pendingDecision.recommended ? C.green : C.accentL)}
+                  title={`Clicks "${o.label}" in the game`}
+                >
+                  {o.label}{o.id === pendingDecision.recommended ? " ✓" : ""}
                 </button>
-              )}
+              ))}
               <button onClick={() => answerDecision("next-game")} style={decisionBtn(C.accentL)}>
                 Start the next game
               </button>
               <button onClick={() => answerDecision("stop")} style={decisionBtn(C.dim)}>
-                Stop here
+                Stop the session
               </button>
             </div>
           </div>
