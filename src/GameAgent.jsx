@@ -1933,6 +1933,24 @@ export default function GameAgent() {
   // confirm by re-reading the board. No model call at all: reliable and ~instant.
   // Returns { ok } | { gameOver } | { fallback, reason } so the caller can hand
   // the turn back to the LLM if perception fails.
+  // Record the biggest tile seen, from every board that reads successfully.
+  //
+  // Score and highest tile are different achievements — a game can score well
+  // past 2048 without ever merging a 2048 tile — and the tile is what says how
+  // far the game got. Taking it only from the read that follows a move loses it
+  // whenever that particular read fails or the game-over overlay covers the
+  // board, even though the tile was plainly there: a 512 could be on screen
+  // while the display still read 256.
+  const noteBestTile = useCallback((board) => {
+    if (!board) return;
+    let max = gameBestTileRef.current;
+    for (const row of board) for (const v of row) if (v > max) max = v;
+    if (max !== gameBestTileRef.current) {
+      gameBestTileRef.current = max;
+      setBestTile(max);
+    }
+  }, []);
+
   // Read SCORE and BEST from the boxes above the board, from a capture that is
   // not downscaled. Passing the board rectangle avoids locating the board a
   // second time at full resolution.
@@ -1984,6 +2002,8 @@ export default function GameAgent() {
     }
 
     if (state) {
+      // Count this board before anything else can go wrong with the turn.
+      noteBestTile(state.board);
       if (plugin.isTerminal(state)) {
         return { gameOver: true, board: state.board };
       }
@@ -2041,13 +2061,7 @@ export default function GameAgent() {
 
       currentScoreRef.current = screenScoreRef.current ?? solverScoreRef.current;
       setCurrentScore(currentScoreRef.current);
-      // Track the biggest tile built this game. Score and highest tile are
-      // different achievements — a game can score well above 2048 without ever
-      // merging a 2048 tile — and the tile is what says how far the game got.
-      for (const row of after.board) {
-        for (const v of row) if (v > gameBestTileRef.current) gameBestTileRef.current = v;
-      }
-      setBestTile(gameBestTileRef.current);
+      noteBestTile(after.board);
       noOpStreakRef.current = 0;
       lastFailedMovesRef.current.clear();
       solverBlockedRef.current.clear();
@@ -2064,7 +2078,7 @@ export default function GameAgent() {
 
     addAction(`solver.${move.key}`, { key: move.key }, { ok: true, changed });
     return { ok: true, key: move.key, changed, reason: move.reason, board: state.board };
-  }, [getTiming, addLog, addAction, readScoresFromScreen]);
+  }, [getTiming, addLog, addAction, readScoresFromScreen, noteBestTile]);
 
   // ── Restart the game after it ends ──────────────────────────────────────────
   // General pattern: detect terminal state -> click the restart control -> verify.
