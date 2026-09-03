@@ -379,19 +379,64 @@ export function findRestartButton(canvasEl, rectHint = null, exclude = []) {
  * still works when the overlay has washed out the tile colours enough that the
  * board itself cannot be read.
  */
-export function isGameOverScreen(canvasEl) {
-  if (!canvasEl || !canvasEl.width) return false;
+/**
+ * Read the overlay covering the board, if any, and what it offers.
+ *
+ * 2048 puts up two different overlays and they are told apart by how many
+ * buttons sit over the board: winning offers "Keep going" and "Try again", while
+ * losing offers only "Try again". That difference matters because the two are
+ * not interchangeable — on a win the game is still playable and its board is
+ * worth keeping, and clicking the wrong control throws it away.
+ *
+ * Returns { kind: "win" | "over", options: [...] }, where each option carries
+ * where to click. "New Game" sits above the board and is always offered.
+ */
+export function readOverlay(canvasEl, rectHint = null) {
+  if (!canvasEl || !canvasEl.width) return null;
   const w = canvasEl.width, h = canvasEl.height;
   let data;
   try {
     data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
-  } catch { return false; }
-  const rect = boardRectOrLast(data, w, h);
-  if (!rect) return false;
-  return buttonClusters(data, w, h).some(c => {
-    const cx = (c.minX + c.maxX) / 2, cy = (c.minY + c.maxY) / 2;
-    return cx >= rect.x && cx <= rect.x + rect.w && cy >= rect.y && cy <= rect.y + rect.h;
-  });
+  } catch { return null; }
+  const rect = rectHint || boardRectOrLast(data, w, h);
+  if (!rect) return null;
+
+  const centre = c => ({ x: Math.round((c.minX + c.maxX) / 2), y: Math.round((c.minY + c.maxY) / 2) });
+  const clusters = buttonClusters(data, w, h);
+  const inside = clusters
+    .filter(c => {
+      const p = centre(c);
+      return p.x >= rect.x && p.x <= rect.x + rect.w && p.y >= rect.y && p.y <= rect.y + rect.h;
+    })
+    .sort((a, b) => a.minX - b.minX);   // left to right
+  if (!inside.length) return null;
+
+  const above = clusters
+    .filter(c => {
+      const p = centre(c);
+      return p.y < rect.y && p.y > rect.y - rect.h &&
+             p.x > rect.x - rect.w * 0.3 && p.x < rect.x + rect.w * 1.3;
+    })
+    .sort((a, b) => b.minY - a.minY)[0];
+  const newGame = above ? { id: "new-game", label: "New Game", ...centre(above) } : null;
+
+  if (inside.length >= 2) {
+    // Win: "Keep going" is drawn to the left of "Try again".
+    const options = [
+      { id: "keep-going", label: "Keep going", ...centre(inside[0]) },
+      { id: "try-again", label: "Try again", ...centre(inside[1]) },
+    ];
+    if (newGame) options.push(newGame);
+    return { kind: "win", options };
+  }
+
+  const options = [{ id: "try-again", label: "Try again", ...centre(inside[0]) }];
+  if (newGame) options.push(newGame);
+  return { kind: "over", options };
+}
+
+export function isGameOverScreen(canvasEl) {
+  return readOverlay(canvasEl) !== null;
 }
 
 /** A freshly started 2048 game has only two tiles on the board. */
@@ -1006,7 +1051,7 @@ export const plugin = {
   label: "2048 (board reader + expectimax solver)",
   match, readState, chooseMove, isTerminal, describeState, applyMove, legalMoves,
   diagnose, findRestartButton, isGameOverScreen, looksLikeNewGame,
-  readScores, lastReadFailure,
+  readScores, lastReadFailure, readOverlay,
 };
 
 export default plugin;

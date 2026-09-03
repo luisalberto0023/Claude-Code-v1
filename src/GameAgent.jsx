@@ -424,6 +424,16 @@ function setFrameQuality(q) { FRAME_QUALITY = Math.max(0.3, Math.min(0.95, q)) |
 // be downscaled: at 1280 the digits lose the detail that tells 256 from 128.
 const SOLVER_CAPTURE_W = 4000;
 
+// Chosen for an unattended run: a won board is worth continuing, and continuing
+// cannot lose anything that has already been recorded.
+const DECISION_DEFAULT = "keep-going";
+
+const decisionBtn = (colour) => ({
+  background: "transparent", color: colour, border: `1px solid ${colour}`,
+  borderRadius: 5, padding: "5px 12px", fontSize: 12, cursor: "pointer",
+  fontFamily: "inherit", fontWeight: 600,
+});
+
 function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
   if (!videoEl || !canvasEl || videoEl.readyState < 2) return null;
   const realW = videoEl.videoWidth;
@@ -1253,6 +1263,9 @@ export default function GameAgent() {
   const [currentScore, setCurrentScore] = useState(null);
   const [bestTile, setBestTile] = useState(0);
   const [bestScore, setBestScore] = useState(null);
+  // What to do when the game reaches a point where it asks how to continue.
+  const [decisionPolicy, setDecisionPolicy] = useState("ask");
+  const [pendingDecision, setPendingDecision] = useState(null);
   const [gameResult, setGameResult] = useState(null);
   const [memoryData, setMemoryData] = useState(null);
   const [milestones, setMilestones] = useState([]);
@@ -1321,11 +1334,24 @@ export default function GameAgent() {
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
   const gameBestTileRef = useRef(0);           // highest tile merged this game
+  const decisionPolicyRef = useRef("ask");
+  const decisionResolverRef = useRef(null);    // resolves once a choice is made
+  const decisionTimerRef = useRef(null);
   const fullLogRef = useRef([]);               // every log line, uncapped
   const logQueueRef = useRef([]);              // lines not yet written to disk
   const logSessionRef = useRef(
     new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
   );
+
+  useEffect(() => { decisionPolicyRef.current = decisionPolicy; }, [decisionPolicy]);
+
+  const answerDecision = useCallback((choice) => {
+    if (!decisionResolverRef.current) return;
+    const resolve = decisionResolverRef.current;
+    decisionResolverRef.current = null;
+    clearTimeout(decisionTimerRef.current);
+    resolve(choice);
+  }, []);
 
   const getTiming = useCallback(() => {
     return timingProfile === "custom" ? customTiming : (TIMING_PROFILES[timingProfile] ?? TIMING_PROFILES.arcade);
@@ -1953,6 +1979,70 @@ export default function GameAgent() {
   // confirm by re-reading the board. No model call at all: reliable and ~instant.
   // Returns { ok } | { gameOver } | { fallback, reason } so the caller can hand
   // the turn back to the LLM if perception fails.
+  /**
+   * Handle a point where the game asks what to do next.
+   *
+   * Winning 2048 is not the end of the game — the board is still playable and
+   * often worth continuing, and that is a judgement call rather than something
+   * the agent should make silently. Which is why it asks. An unattended run
+   * still has to make progress though, so the wait is bounded and falls back to
+   * the configured default; setting a policy other than "ask" skips the question
+   * entirely.
+   *
+   * Returns "keep-going", "next-game" or "stop".
+   */
+  const resolveDecision = useCallback(async (decision, plugin) => {
+    const isWin = decision.kind === "win";
+    if (isWin) addLog(`🏆 Won — reached the ${gameBestTileRef.current} tile.`, "success");
+
+    const act = async (choice) => {
+      if (choice !== "keep-going") return choice;
+      const opt = decision.options.find(o => o.id === "keep-going");
+      if (!opt) {
+        addLog("No 'Keep going' control found — starting the next game instead.", "warn");
+        return "next-game";
+      }
+      const scale = solverScaleRef.current;
+      const sx = Math.round(opt.x / (scale.scale || 1));
+      const sy = Math.round(opt.y / (scale.scale || 1));
+      addLog(`Continuing this game — clicking "${opt.label}" at ${sx},${sy}.`, "info");
+      await backend("/mouse/click", { x: sx, y: sy, button: "left" });
+      await new Promise(r => setTimeout(r, 500));
+      return "keep-going";
+    };
+
+    let policy = decisionPolicyRef.current;
+    if (policy !== "ask") return act(policy);
+
+    // Ask, and wait for an answer.
+    const waitSec = 90;
+    addLog(`Waiting for your choice (continues with "${DECISION_DEFAULT}" in ${waitSec}s)…`, "info");
+    setPendingDecision({
+      kind: decision.kind,
+      score: currentScoreRef.current,
+      bestTile: gameBestTileRef.current,
+      canKeepGoing: decision.options.some(o => o.id === "keep-going"),
+      deadline: Date.now() + waitSec * 1000,
+    });
+    setPhase("waiting");
+
+    const chosen = await new Promise(resolve => {
+      decisionResolverRef.current = resolve;
+      const timer = setTimeout(() => {
+        if (decisionResolverRef.current) {
+          decisionResolverRef.current = null;
+          addLog(`No answer in ${waitSec}s — continuing with "${DECISION_DEFAULT}".`, "info");
+          resolve(DECISION_DEFAULT);
+        }
+      }, waitSec * 1000);
+      decisionTimerRef.current = timer;
+    });
+    clearTimeout(decisionTimerRef.current);
+    setPendingDecision(null);
+    setPhase("playing");
+    return act(chosen);
+  }, [addLog]);
+
   // Record the biggest tile seen, from every board that reads successfully.
   //
   // Score and highest tile are different achievements — a game can score well
@@ -2092,6 +2182,16 @@ export default function GameAgent() {
       // something else instead of repeating it.
       solverBlockedRef.current.add(move.key);
       if (solverBlockedRef.current.size >= 4) {
+        // Every direction stopped working. On a board that still has room this
+        // is not a finished game — it is an overlay swallowing the input, which
+        // is what winning looks like: the game pauses behind "You win!" and asks
+        // whether to keep going. Reporting that as "no legal moves" threw away a
+        // won board and clicked whatever button happened to be found.
+        captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
+        const overlay = plugin.readOverlay?.(canvas);
+        if (overlay) {
+          return { decision: overlay, board: state.board };
+        }
         return { gameOver: true, reason: "every direction blocked", board: state.board };
       }
     }
@@ -2099,6 +2199,7 @@ export default function GameAgent() {
     addAction(`solver.${move.key}`, { key: move.key }, { ok: true, changed });
     return { ok: true, key: move.key, changed, reason: move.reason, board: state.board };
   }, [getTiming, addLog, addAction, readScoresFromScreen, noteBestTile]);
+
 
   // ── Restart the game after it ends ──────────────────────────────────────────
   // General pattern: detect terminal state -> click the restart control -> verify.
@@ -2818,9 +2919,31 @@ REASONING STYLE (for analyse_game_state):
       if (activePlugin) {
         const sr = await solverTurn(activePlugin);
 
+        // The game reached a point where it is asking what to do next — in 2048,
+        // winning, which offers to keep playing the same board.
+        if (sr.decision) {
+          const choice = await resolveDecision(sr.decision, activePlugin);
+          if (choice === "keep-going") {
+            solverBlockedRef.current = new Set();
+            noOpStreakRef.current = 0;
+            continue;                       // same game, same board
+          }
+          if (choice === "stop") {
+            gameOutcome = sr.decision.kind === "win" ? "win" : "ended";
+            stopRef.current = true;
+            break;
+          }
+          gameOutcome = sr.decision.kind === "win" ? "win" : "ended";
+          break;                            // finish this game; the loop restarts
+        }
+
         if (sr.gameOver) {
-          gameOutcome = "ended";
-          addLog(`Board full — no legal moves. Final score ${solverScoreRef.current}.`, "warn");
+          gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+          const full = sr.board && !sr.board.some(row => row.some(v => v === 0));
+          addLog(
+            full ? `Board full — no legal moves. Final score ${solverScoreRef.current}.`
+                 : `No move changes the board. Final score ${solverScoreRef.current}.`,
+            "warn");
           if (sr.board) addLog(activePlugin.describeState({ board: sr.board }), "info");
           break;
         }
@@ -3316,6 +3439,23 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
                 Reads the board from pixels and picks moves by search — far more accurate than a small vision model, and uses no tokens. The model still handles game-over and restarts.
               </div>
+              <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12, color: C.text }}>
+                <span>When the game is won or asks how to continue</span>
+                <select
+                  value={decisionPolicy}
+                  onChange={e => setDecisionPolicy(e.target.value)}
+                  style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`,
+                           borderRadius: 4, padding: "3px 6px", fontFamily: "inherit", fontSize: 12 }}
+                >
+                  <option value="ask">Ask me what to do</option>
+                  <option value="keep-going">Always keep playing the same board</option>
+                  <option value="next-game">Always start the next game</option>
+                  <option value="stop">Always stop the session</option>
+                </select>
+                <span style={{ fontSize: 9, color: C.dim }}>
+                  Asking waits 90s, then keeps playing so an unattended run continues.
+                </span>
+              </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase
@@ -3603,6 +3743,35 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             ⬇ Save full log
           </button>
         </div>
+        {pendingDecision && (
+          <div style={{
+            margin: "8px 12px", padding: "12px 14px", borderRadius: 8,
+            border: `1px solid ${C.accentL}`, background: "rgba(120,180,255,0.08)",
+          }}>
+            <div style={{ fontWeight: 700, color: C.accentL, marginBottom: 4 }}>
+              {pendingDecision.kind === "win"
+                ? `You reached the ${pendingDecision.bestTile} tile — the game is won.`
+                : "The game has stopped and is asking what to do."}
+            </div>
+            <div style={{ fontSize: 11, color: C.dim, marginBottom: 10 }}>
+              {pendingDecision.score != null && `Score ${pendingDecision.score}. `}
+              What should the agent do? Continuing plays on from this board.
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {pendingDecision.canKeepGoing && (
+                <button onClick={() => answerDecision("keep-going")} style={decisionBtn(C.green)}>
+                  Keep going
+                </button>
+              )}
+              <button onClick={() => answerDecision("next-game")} style={decisionBtn(C.accentL)}>
+                Start the next game
+              </button>
+              <button onClick={() => answerDecision("stop")} style={decisionBtn(C.dim)}>
+                Stop here
+              </button>
+            </div>
+          </div>
+        )}
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px" }}>
           {log.map(entry => (
             <div key={entry.id} style={{ marginBottom: 3, lineHeight: 1.5 }}>
