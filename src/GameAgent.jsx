@@ -1267,6 +1267,8 @@ export default function GameAgent() {
   // What to do when the game reaches a point where it asks how to continue.
   const [decisionPolicy, setDecisionPolicy] = useState("auto-routine");
   const [pendingDecision, setPendingDecision] = useState(null);
+  const [decisionChoice, setDecisionChoice] = useState("");
+  const [decisionSecondsLeft, setDecisionSecondsLeft] = useState(null);
   const [gameResult, setGameResult] = useState(null);
   const [memoryData, setMemoryData] = useState(null);
   const [milestones, setMilestones] = useState([]);
@@ -1345,6 +1347,18 @@ export default function GameAgent() {
   );
 
   useEffect(() => { decisionPolicyRef.current = decisionPolicy; }, [decisionPolicy]);
+
+  // Preselect what the agent would do on its own, so accepting is one click.
+  useEffect(() => {
+    if (!pendingDecision) { setDecisionSecondsLeft(null); return; }
+    setDecisionChoice(pendingDecision.recommended ?? pendingDecision.options?.[0]?.id ?? "next-game");
+    const until = pendingDecision.deadline;
+    if (!until) return;
+    const tick = () => setDecisionSecondsLeft(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [pendingDecision]);
 
   const answerDecision = useCallback((choice) => {
     if (!decisionResolverRef.current) return;
@@ -2130,6 +2144,7 @@ Reply with ONLY a JSON object, no other text:
       bestTile: gameBestTileRef.current,
       options: decision.options,
       recommended: decision.recommended,
+      deadline: Date.now() + waitSec * 1000,
     });
     setPhase("waiting");
 
@@ -2222,6 +2237,7 @@ Reply with ONLY a JSON object, no other text:
       // Count this board before anything else can go wrong with the turn.
       noteBestTile(state.board);
       if (plugin.isTerminal(state)) {
+        if (plugin.readOverlay?.(canvas)) return { stuck: true, board: state.board };
         return { gameOver: true, board: state.board };
       }
       // A readable board with legal moves means the game is live, whatever the
@@ -2235,7 +2251,13 @@ Reply with ONLY a JSON object, no other text:
 
     // Don't re-issue a move that just failed to change anything.
     const move = plugin.chooseMove(state, [...solverBlockedRef.current]);
-    if (!move) return { gameOver: true, board: state.board };
+    if (!move) {
+      // No move helps. That is a finished game only if nothing is covering the
+      // board — a win pauses the game behind an overlay, and the board read
+      // underneath it can look like one with nothing left to do.
+      if (plugin.readOverlay?.(canvas)) return { stuck: true, board: state.board };
+      return { gameOver: true, board: state.board };
+    }
 
     const timing = getTiming();
     const res = await backend("/keyboard/press", { key: move.key });
@@ -3051,6 +3073,24 @@ REASONING STYLE (for analyse_game_state):
         }
 
         if (sr.gameOver) {
+          // Reaching the goal tile is a decision point whether or not the
+          // overlay was recognised: the board is still playable and continuing
+          // or restarting is the player's call. Relying on spotting the overlay
+          // meant a win could end the game silently, which is what happened.
+          if (gameBestTileRef.current >= 2048) {
+            const decision = await analyseStuckScreen(activePlugin, apiKey);
+            if (decision) {
+              const choice = await resolveDecision({ ...decision, kind: "win", needsHuman: true });
+              if (choice === "keep-going") {
+                solverBlockedRef.current = new Set();
+                noOpStreakRef.current = 0;
+                continue;
+              }
+              if (choice === "stop") { gameOutcome = "win"; stopRef.current = true; break; }
+              gameOutcome = "win";
+              break;
+            }
+          }
           gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
           const full = sr.board && !sr.board.some(row => row.some(v => v === 0));
           addLog(
@@ -3873,40 +3913,6 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             ⬇ Save full log
           </button>
         </div>
-        {pendingDecision && (
-          <div style={{
-            margin: "8px 12px", padding: "12px 14px", borderRadius: 8,
-            border: `1px solid ${C.accentL}`, background: "rgba(120,180,255,0.08)",
-          }}>
-            <div style={{ fontWeight: 700, color: C.accentL, marginBottom: 4 }}>
-              {pendingDecision.kind === "win"
-                ? `You reached the ${pendingDecision.bestTile} tile — the game is won.`
-                : "The game has stopped. What should the agent do?"}
-            </div>
-            <div style={{ fontSize: 11, color: C.dim, marginBottom: 10 }}>
-              {pendingDecision.summary}
-              {pendingDecision.score != null && ` (score ${pendingDecision.score})`}
-            </div>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {(pendingDecision.options ?? []).map(o => (
-                <button
-                  key={o.id}
-                  onClick={() => answerDecision(o.id)}
-                  style={decisionBtn(o.id === pendingDecision.recommended ? C.green : C.accentL)}
-                  title={`Clicks "${o.label}" in the game`}
-                >
-                  {o.label}{o.id === pendingDecision.recommended ? " ✓" : ""}
-                </button>
-              ))}
-              <button onClick={() => answerDecision("next-game")} style={decisionBtn(C.accentL)}>
-                Start the next game
-              </button>
-              <button onClick={() => answerDecision("stop")} style={decisionBtn(C.dim)}>
-                Stop the session
-              </button>
-            </div>
-          </div>
-        )}
         <div style={{ flex: 1, overflowY: "auto", padding: "8px 12px" }}>
           {log.map(entry => (
             <div key={entry.id} style={{ marginBottom: 3, lineHeight: 1.5 }}>
@@ -3972,6 +3978,76 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           ))}
         </div>
       </div>
+      {/* A stopping point the player should decide. Rendered as a modal over the
+          whole app: the previous version put this inline in the log, where it
+          scrolled past unnoticed while the run waited on it. */}
+      {pendingDecision && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: "rgba(0,0,0,0.62)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <div style={{
+            width: 480, maxWidth: "92vw", background: C.panel,
+            border: `1px solid ${C.accentL}`, borderRadius: 10, padding: 22,
+            boxShadow: "0 18px 50px rgba(0,0,0,0.55)",
+          }}>
+            <div style={{ fontSize: 17, fontWeight: 700, color: C.accentL, marginBottom: 6 }}>
+              {pendingDecision.kind === "win"
+                ? `Game won — reached the ${pendingDecision.bestTile} tile`
+                : "The game is waiting for a decision"}
+            </div>
+            <div style={{ fontSize: 12, color: C.text, marginBottom: 4, lineHeight: 1.5 }}>
+              {pendingDecision.summary}
+            </div>
+            {pendingDecision.score != null && (
+              <div style={{ fontSize: 12, color: C.dim, marginBottom: 14 }}>
+                Score {pendingDecision.score}
+                {pendingDecision.bestTile ? ` · highest tile ${pendingDecision.bestTile}` : ""}
+              </div>
+            )}
+
+            <label style={{ fontSize: 11, color: C.dim, display: "block", marginBottom: 5 }}>
+              What should the agent do?
+            </label>
+            <select
+              value={decisionChoice}
+              onChange={e => setDecisionChoice(e.target.value)}
+              style={{
+                width: "100%", background: C.bg, color: C.text,
+                border: `1px solid ${C.border}`, borderRadius: 6,
+                padding: "9px 10px", fontSize: 13, fontFamily: "inherit", marginBottom: 16,
+              }}
+            >
+              {(pendingDecision.options ?? []).map(o => (
+                <option key={o.id} value={o.id}>
+                  {o.label}{o.id === pendingDecision.recommended ? "  (recommended)" : ""}
+                </option>
+              ))}
+              <option value="next-game">Start the next game</option>
+              <option value="stop">Stop the session</option>
+            </select>
+
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <button
+                onClick={() => answerDecision(decisionChoice)}
+                style={{
+                  flex: 1, background: C.accentL, color: "#04121f", border: "none",
+                  borderRadius: 6, padding: "10px 0", fontSize: 13, fontWeight: 700,
+                  cursor: "pointer", fontFamily: "inherit",
+                }}
+              >
+                Continue
+              </button>
+              <span style={{ fontSize: 11, color: C.dim, whiteSpace: "nowrap" }}>
+                {decisionSecondsLeft != null
+                  ? `auto in ${decisionSecondsLeft}s`
+                  : "waiting"}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
