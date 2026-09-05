@@ -1264,8 +1264,6 @@ export default function GameAgent() {
   const [currentScore, setCurrentScore] = useState(null);
   const [bestTile, setBestTile] = useState(0);
   const [bestScore, setBestScore] = useState(null);
-  // What to do when the game reaches a point where it asks how to continue.
-  const [decisionPolicy, setDecisionPolicy] = useState("auto-routine");
   const [pendingDecision, setPendingDecision] = useState(null);
   const [decisionChoice, setDecisionChoice] = useState("");
   const [decisionSecondsLeft, setDecisionSecondsLeft] = useState(null);
@@ -1337,7 +1335,6 @@ export default function GameAgent() {
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
   const gameBestTileRef = useRef(0);           // highest tile merged this game
-  const decisionPolicyRef = useRef("auto-routine");
   const decisionResolverRef = useRef(null);    // resolves once a choice is made
   const decisionTimerRef = useRef(null);
   const fullLogRef = useRef([]);               // every log line, uncapped
@@ -1345,8 +1342,6 @@ export default function GameAgent() {
   const logSessionRef = useRef(
     new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
   );
-
-  useEffect(() => { decisionPolicyRef.current = decisionPolicy; }, [decisionPolicy]);
 
   // Preselect what the agent would do on its own, so accepting is one click.
   useEffect(() => {
@@ -2021,9 +2016,9 @@ export default function GameAgent() {
           ? `Won — reached the ${gameBestTileRef.current} tile. The game is offering to keep playing this board.`
           : "The game is over and is offering to start again.",
         options: known.options,
-        // Losing has one sensible answer; winning is a choice about the run.
-        needsHuman: known.kind === "win",
-        recommended: known.kind === "win" ? "keep-going" : "try-again",
+        // Left for resolveDecision to work out from the options themselves.
+        needsHuman: null,
+        recommended: known.options.some(o => o.id === "keep-going") ? "keep-going" : "try-again",
       };
     }
 
@@ -2121,17 +2116,23 @@ Reply with ONLY a JSON object, no other text:
       return "next-game";
     };
 
-    const policy = decisionPolicyRef.current;
+    // Ask only when there is a real choice to make.
+    //
+    // If every option throws the board away — "Try again", "New Game" — they
+    // amount to the same thing and there is nothing to consult about, so the
+    // agent just acts. If one of them carries on from where the game is, that
+    // leads somewhere genuinely different and is the player's call. This comes
+    // from what is on screen rather than a setting, so a game that offers a
+    // checkpoint gets the question and a game that does not never interrupts.
+    const canContinue = decision.options.some(o => o.restarts === false);
+    const canRestart = decision.options.some(o => o.restarts !== false);
+    const realChoice = decision.needsHuman ?? (canContinue && canRestart);
 
-    // Handle it without asking when the situation is routine and the policy
-    // allows it. A lost game has one sensible answer; a won one does not.
-    if (policy === "auto" || (policy === "auto-routine" && !decision.needsHuman)) {
-      const pick = decision.recommended ?? "try-again";
-      addLog(`Handling this automatically: ${pick}.`, "info");
+    if (!realChoice) {
+      const pick = decision.recommended ?? decision.options[0]?.id ?? "next-game";
+      const opt = decision.options.find(o => o.id === pick);
+      addLog(`Only one way forward here — taking it${opt ? `: ${opt.label}` : ""}.`, "info");
       return finish(pick);
-    }
-    if (policy === "keep-going" || policy === "next-game" || policy === "stop") {
-      return finish(policy);
     }
 
     // Ask.
@@ -3605,27 +3606,6 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
                 Reads the board from pixels and picks moves by search — far more accurate than a small vision model, and uses no tokens. The model still handles game-over and restarts.
               </div>
-              <label style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 12, color: C.text }}>
-                <span>When the game is won or asks how to continue</span>
-                <select
-                  value={decisionPolicy}
-                  onChange={e => setDecisionPolicy(e.target.value)}
-                  style={{ background: C.panel, color: C.text, border: `1px solid ${C.border}`,
-                           borderRadius: 4, padding: "3px 6px", fontFamily: "inherit", fontSize: 12 }}
-                >
-                  <option value="auto-routine">Handle routine screens, ask about the rest</option>
-                  <option value="ask">Ask me every time</option>
-                  <option value="auto">Handle everything itself</option>
-                  <option value="keep-going">Always keep playing the same board</option>
-                  <option value="next-game">Always start the next game</option>
-                  <option value="stop">Always stop the session</option>
-                </select>
-                <span style={{ fontSize: 9, color: C.dim }}>
-                  Routine means one sensible way forward, such as a lost game offering to try
-                  again. Winning is not routine — continuing or restarting is your call.
-                  A question waits 90s, then takes the recommended option.
-                </span>
-              </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={skipResearch} onChange={e => setSkipResearch(e.target.checked)} />
                 Skip research phase

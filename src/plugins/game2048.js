@@ -291,18 +291,50 @@ function buttonClusters(data, w, h) {
     }
   }
   if (pts.length < 20) return [];
+
+  // Group by actual adjacency rather than by distance to a growing bounding box.
+  //
+  // The old grouping merged anything within 40px, which was wide enough to
+  // bridge the label splitting a button's fill — and also wide enough to swallow
+  // the next button along. "Keep going" and "Try again" sit about 13px apart, so
+  // they became a single cluster, and one button over the board reads as a lost
+  // game rather than a won one. A flood fill does not need that slack: a
+  // button's fill is connected around its own label, and a real gap separates
+  // two buttons.
+  const gw = Math.ceil(w / step), gh = Math.ceil(h / step);
+  const mask = new Uint8Array(gw * gh);
+  for (const [x, y] of pts) mask[Math.floor(y / step) * gw + Math.floor(x / step)] = 1;
+
+  const seen = new Uint8Array(gw * gh);
+  const queue = new Int32Array(gw * gh);
   const clusters = [];
-  for (const [x, y] of pts) {
-    let placed = false;
-    for (const cl of clusters) {
-      if (x >= cl.minX - 40 && x <= cl.maxX + 40 && y >= cl.minY - 25 && y <= cl.maxY + 25) {
-        cl.minX = Math.min(cl.minX, x); cl.maxX = Math.max(cl.maxX, x);
-        cl.minY = Math.min(cl.minY, y); cl.maxY = Math.max(cl.maxY, y);
-        cl.n++; placed = true; break;
+  for (let s = 0; s < mask.length; s++) {
+    if (!mask[s] || seen[s]) continue;
+    let head = 0, tail = 0;
+    queue[tail++] = s; seen[s] = 1;
+    let minX = gw, minY = gh, maxX = -1, maxY = -1, n = 0;
+    while (head < tail) {
+      const p = queue[head++];
+      const px = p % gw, py = (p / gw) | 0;
+      n++;
+      if (px < minX) minX = px; if (px > maxX) maxX = px;
+      if (py < minY) minY = py; if (py > maxY) maxY = py;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = px + dx, ny = py + dy;
+          if (nx < 0 || ny < 0 || nx >= gw || ny >= gh) continue;
+          const q = ny * gw + nx;
+          if (mask[q] && !seen[q]) { seen[q] = 1; queue[tail++] = q; }
+        }
       }
     }
-    if (!placed) clusters.push({ minX: x, maxX: x, minY: y, maxY: y, n: 1 });
+    clusters.push({
+      minX: minX * step, maxX: maxX * step,
+      minY: minY * step, maxY: maxY * step,
+      n,
+    });
   }
+
   return clusters.filter(c => {
     if (c.n < 15 || (c.maxX - c.minX) <= 30 || (c.maxY - c.minY) <= 10) return false;
     // A button is a SOLID rectangle, so nearly every sample inside its bounds
@@ -418,19 +450,22 @@ export function readOverlay(canvasEl, rectHint = null) {
              p.x > rect.x - rect.w * 0.3 && p.x < rect.x + rect.w * 1.3;
     })
     .sort((a, b) => b.minY - a.minY)[0];
-  const newGame = above ? { id: "new-game", label: "New Game", ...centre(above) } : null;
+  const newGame = above ? { id: "new-game", label: "New Game", restarts: true, ...centre(above) } : null;
 
+  // `restarts` is what decides whether a human is needed: when every option
+  // throws the board away they are interchangeable and the agent can just act,
+  // but an option that carries on from here is a genuinely different outcome.
   if (inside.length >= 2) {
     // Win: "Keep going" is drawn to the left of "Try again".
     const options = [
-      { id: "keep-going", label: "Keep going", ...centre(inside[0]) },
-      { id: "try-again", label: "Try again", ...centre(inside[1]) },
+      { id: "keep-going", label: "Keep going", restarts: false, ...centre(inside[0]) },
+      { id: "try-again", label: "Try again", restarts: true, ...centre(inside[1]) },
     ];
     if (newGame) options.push(newGame);
     return { kind: "win", options };
   }
 
-  const options = [{ id: "try-again", label: "Try again", ...centre(inside[0]) }];
+  const options = [{ id: "try-again", label: "Try again", restarts: true, ...centre(inside[0]) }];
   if (newGame) options.push(newGame);
   return { kind: "over", options };
 }
