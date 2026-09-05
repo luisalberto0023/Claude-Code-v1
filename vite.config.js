@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
@@ -7,10 +8,23 @@ import { VitePWA } from 'vite-plugin-pwa'
 // worker can't register.
 const standalone = process.env.STANDALONE === '1'
 
+// Short commit of the build, shown in the home-screen footer so you can tell
+// at a glance which build a device is actually running (CI sets GITHUB_SHA).
+const buildId = (() => {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 7)
+  try {
+    return execSync('git rev-parse --short HEAD', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString().trim()
+  } catch {
+    return 'dev'
+  }
+})()
+
 export default defineConfig({
   // Relative base so the build works whether served from a domain root,
   // a GitHub Pages subpath, or bundled inside the Capacitor APK.
   base: './',
+  define: { __BUILD_ID__: JSON.stringify(buildId) },
   // The standalone single-file build can't load split chunks over file://,
   // so collapse everything (incl. the lazy online code) into one bundle.
   // The normal web/APK build keeps code-splitting (online stays a lazy chunk).

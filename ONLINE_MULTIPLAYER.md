@@ -88,8 +88,8 @@ node server/test-playtest.mjs
 
 - **Phase 1 (done):** authoritative server, private rooms + quick match,
   server-side validation. *Classic mode, 2 players.*
-- **Phase 2 (next):** accounts, ELO ranked queue, leaderboard (Postgres on a
-  free tier such as Neon/Supabase).
+- **Phase 2 (done):** device accounts, ELO ranked queue, leaderboard (Postgres
+  on a free tier such as Neon/Supabase — see the setup section above).
 - **Phase 3:** Play Store (signed AAB) + iOS App Store (Capacitor iOS via a
   cloud-Mac build + TestFlight).
 

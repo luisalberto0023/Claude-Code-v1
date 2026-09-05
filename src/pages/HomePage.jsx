@@ -134,7 +134,7 @@ export default function HomePage({ onPlay, onTutorial, onOnline }) {
       </div>
 
       <footer style={{ textAlign: 'center', padding: '1rem', color: '#181838', fontSize: '0.55rem', fontFamily: 'Orbitron', letterSpacing: '0.18em', position: 'relative', zIndex: 1 }}>
-        NEXUS GRID © 2026
+        NEXUS GRID © 2026 · BUILD {__BUILD_ID__}
       </footer>
     </div>
   );
