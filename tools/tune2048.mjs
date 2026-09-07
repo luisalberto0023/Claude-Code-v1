@@ -77,10 +77,19 @@ function assess(params, seeds) {
   setTuning(params);
   const results = seeds.map(playGame);
   const scores = results.map(r => r.score);
+  const sorted = scores.slice().sort((a, b) => a - b);
   return {
     params,
-    // Median, not mean: one lucky game should not carry a setting.
-    median: scores.slice().sort((a, b) => a - b)[scores.length >> 1],
+    // Judged on how far the games got, averaged over their tiles.
+    //
+    // Not on the median score, which was the first choice and turned out to be
+    // the worst available. Scores here cluster around whether a game managed a
+    // 4096, so the middle game sits on one side of that gap or the other and the
+    // median jumps 30% between settings whose averages differ by 7% — it reports
+    // which side of the gap a single game landed, not which setting is better.
+    // The exponent is steady because it is bounded and every game contributes.
+    progress: results.reduce((a, r) => a + (r.max ? Math.log2(r.max) : 0), 0) / results.length,
+    median: sorted[sorted.length >> 1],
     mean: Math.round(scores.reduce((a, b) => a + b, 0) / scores.length),
     reached2048: results.filter(r => r.max >= 2048).length,
     reached4096: results.filter(r => r.max >= 4096).length,
@@ -120,7 +129,7 @@ const rand = rng(20260905);
 let best = assess({ ...DEFAULT_TUNING }, searchSeeds);
 let bestCheck = assess(best.params, checkSeeds);
 console.log(`current : ${fmt(best.params)}`);
-console.log(`          median ${best.median} / ${bestCheck.median} on the two sets, 2048 in ${best.reached2048}/${best.n}\n`);
+console.log(`          progress ${best.progress.toFixed(2)} / ${bestCheck.progress.toFixed(2)} on the two sets, mean ${best.mean}\n`);
 
 for (let round = 1; round <= ROUNDS; round++) {
   // Narrow the search as it goes: broad early, refining around the leader later.
@@ -130,22 +139,22 @@ for (let round = 1; round <= ROUNDS; round++) {
 
   let note = "";
   let promote = false;
-  if (candidate.median > best.median) {
+  if (candidate.progress > best.progress) {
     // Promising on the first set — check it against the second before believing it.
     const second = assess(params, checkSeeds);
-    promote = second.median > bestCheck.median;
+    promote = second.progress > bestCheck.progress;
     note = promote
-      ? `   <- leads (holds at ${second.median})`
-      : `   (only on one set: ${second.median} vs ${bestCheck.median})`;
+      ? `   <- leads (holds at ${second.progress.toFixed(2)})`
+      : `   (only on one set: ${second.progress.toFixed(2)} vs ${bestCheck.progress.toFixed(2)})`;
     if (promote) { best = candidate; bestCheck = second; }
   }
   console.log(
     `${String(round).padStart(3)}/${ROUNDS}  ${fmt(params).padEnd(46)} ` +
-    `median ${String(candidate.median).padStart(6)}  2048 ${candidate.reached2048}/${candidate.n}${note}`);
+    `progress ${candidate.progress.toFixed(2)}  mean ${String(candidate.mean).padStart(6)}  4096 ${candidate.reached4096}/${candidate.n}${note}`);
 }
 
 console.log(`\nBest from the search: ${fmt(best.params)}`);
-console.log(`  median ${best.median}, mean ${best.mean}, 2048 in ${best.reached2048}/${best.n}`);
+console.log(`  progress ${best.progress.toFixed(2)}, mean ${best.mean}, 2048 in ${best.reached2048}/${best.n}`);
 
 // Confirm on games the search never saw, so a setting cannot win by having been
 // lucky on the seeds it was selected against.
@@ -153,21 +162,21 @@ const holdout = Array.from({ length: Math.max(GAMES, 60) }, (_, i) => 90000 + i)
 console.log(`\nConfirming on ${holdout.length} fresh games…`);
 const incumbentH = assess({ ...DEFAULT_TUNING }, holdout);
 const candidateH = assess(best.params, holdout);
-const report = r => `median ${String(r.median).padStart(6)}  mean ${String(r.mean).padStart(6)}  2048 ${r.reached2048}/${r.n}  4096 ${r.reached4096}/${r.n}`;
+const report = r => `progress ${r.progress.toFixed(2)}  mean ${String(r.mean).padStart(6)}  2048 ${r.reached2048}/${r.n}  4096 ${r.reached4096}/${r.n}`;
 console.log(`  current : ${report(incumbentH)}`);
 console.log(`  tuned   : ${report(candidateH)}`);
 
-const gain = candidateH.median - incumbentH.median;
-const wins = candidateH.reached2048 >= incumbentH.reached2048;
+const gain = candidateH.progress - incumbentH.progress;
+const wins = candidateH.reached4096 >= incumbentH.reached4096;
 const accept = gain > 0 && wins;
 
 setTuning(DEFAULT_TUNING);   // leave the module as it was found
 
 if (!accept) {
-  console.log(`\nKeeping the current weights — the candidate did not hold up (median ${gain >= 0 ? "+" : ""}${gain}).`);
+  console.log(`\nKeeping the current weights — the candidate did not hold up (progress ${gain >= 0 ? "+" : ""}${gain.toFixed(2)}).`);
   process.exit(0);
 }
-console.log(`\nTuned weights win by ${gain} median points and reach 2048 at least as often.`);
+console.log(`\nTuned weights get further (progress +${gain.toFixed(2)}) and reach 4096 at least as often.`);
 
 if (!WRITE) {
   console.log("Run again with --write to store this in the agent's memory.");
@@ -183,11 +192,13 @@ const entry = memory[key] || { gameKey: key, gameDesc: "2048" };
 entry.tuning = {
   ...best.params,
   measuredAt: new Date().toISOString(),
+  holdoutProgress: Number(candidateH.progress.toFixed(3)),
   holdoutMedian: candidateH.median,
   holdoutMean: candidateH.mean,
   holdoutGames: candidateH.n,
   reached2048: candidateH.reached2048,
   reached4096: candidateH.reached4096,
+  previousProgress: Number(incumbentH.progress.toFixed(3)),
   previousMedian: incumbentH.median,
 };
 memory[key] = entry;
