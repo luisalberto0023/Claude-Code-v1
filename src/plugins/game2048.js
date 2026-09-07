@@ -187,11 +187,41 @@ function refineRect(data, w, h, rect, tol = 900) {
 // is up — which is precisely when the "Try again" button needs locating. The
 // board does not move, so the last good rectangle stands in.
 let lastGoodRect = null;
+let layoutCapture = null;   // frame size the remembered rectangle belongs to
 
 function boardRectOrLast(data, w, h) {
   const found = findBoardRect(data, w, h);
-  if (found) { lastGoodRect = found; return found; }
-  return lastGoodRect;
+  if (found) { lastGoodRect = found; layoutCapture = { w, h }; return found; }
+  // Only reuse a remembered rectangle for a frame of the same size — the board
+  // sits somewhere else entirely if the capture resolution changed.
+  if (lastGoodRect && layoutCapture && layoutCapture.w === w && layoutCapture.h === h) {
+    return lastGoodRect;
+  }
+  return null;
+}
+
+/**
+ * What the agent has worked out about where this game sits on screen.
+ *
+ * Worth keeping between sessions for two reasons. The board is in the same place
+ * every time, so starting from a known position makes the first read immediate
+ * instead of a search. More usefully, the game-over and win overlays wash the
+ * board out, and locating the board is exactly what fails then — so without a
+ * remembered position the very first thing that happens after a win cannot be
+ * interpreted at all.
+ */
+export function getLayout() {
+  if (!lastGoodRect || !layoutCapture) return null;
+  return { boardRect: { ...lastGoodRect }, capture: { ...layoutCapture } };
+}
+
+export function setLayout(layout) {
+  if (!layout?.boardRect || !layout?.capture) return false;
+  const { x, y, w, h } = layout.boardRect;
+  if (![x, y, w, h].every(n => Number.isFinite(n)) || w < 40 || h < 40) return false;
+  lastGoodRect = { x, y, w, h };
+  layoutCapture = { w: layout.capture.w, h: layout.capture.h };
+  return true;
 }
 
 /**
@@ -661,6 +691,7 @@ export function readState(canvasEl) {
   const rect = findBoardRect(data, w, h);
   if (!rect) return null;
   lastGoodRect = rect;
+  layoutCapture = { w, h };
 
   const board = [];
   let unread = 0;
@@ -987,30 +1018,63 @@ export function isTerminal(state) {
 // ── Evaluation ────────────────────────────────────────────────────────────────
 // Gradient weights keep the largest tile pinned in one corner and the rest of
 // the board ordered around it — the standard winning shape for 2048.
-const WEIGHTS = [
-  [ 65536, 32768, 16384,  8192],
-  [   512,  1024,  2048,  4096],
-  [   256,   128,    64,    32],
-  [     2,     4,     8,    16],
-];
+/**
+ * How the solver judges a board — as numbers that can be measured and improved,
+ * rather than constants chosen by hand.
+ *
+ * The gradient runs along a snake through the grid, so the largest tile is
+ * pinned in a corner and the rest descend in an order that can actually be
+ * merged. `ratio` is how sharply it descends, `base` how much the gradient
+ * counts against the other terms, `empty` the value of a free cell and `smooth`
+ * the penalty for neighbours of very different size.
+ *
+ * These defaults are the values the solver has been playing with; the tuner
+ * searches for better ones by self-play and stores what it finds, so the agent
+ * gets better at a game by playing it rather than by being re-programmed.
+ */
+export const DEFAULT_TUNING = { base: 2, ratio: 2, empty: 12000, smooth: 2000 };
+
+let tuning = { ...DEFAULT_TUNING };
+let WEIGHTS = snakeWeights(tuning.base, tuning.ratio);
+
+// Weights along a boustrophedon path: right across the top row, back along the
+// next, and so on. Adjacent cells in the path are adjacent on the board, which
+// is what makes the ordering reachable by real moves.
+function snakeWeights(base, ratio) {
+  const w = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+  const path = [];
+  for (let r = 3; r >= 0; r--) {
+    const cols = (3 - r) % 2 === 0 ? [0, 1, 2, 3] : [3, 2, 1, 0];
+    for (const c of cols) path.push([r, c]);
+  }
+  let v = base;
+  for (const [r, c] of path) { w[r][c] = v; v *= ratio; }
+  return w;
+}
+
+export function setTuning(next) {
+  tuning = { ...DEFAULT_TUNING, ...(next || {}) };
+  WEIGHTS = snakeWeights(tuning.base, tuning.ratio);
+  return { ...tuning };
+}
+
+export function getTuning() { return { ...tuning }; }
 
 function evaluate(b) {
   let score = 0;
   let empty = 0;
   let smooth = 0;
-  let maxV = 0;
   for (let r = 0; r < 4; r++) {
     for (let c = 0; c < 4; c++) {
       const v = b[r][c];
       if (v === 0) { empty++; continue; }
       score += v * WEIGHTS[r][c];
-      if (v > maxV) maxV = v;
       // Penalise neighbouring tiles of very different magnitude (rough surface)
       if (c + 1 < 4 && b[r][c + 1] !== 0) smooth -= Math.abs(Math.log2(v) - Math.log2(b[r][c + 1]));
       if (r + 1 < 4 && b[r + 1][c] !== 0) smooth -= Math.abs(Math.log2(v) - Math.log2(b[r + 1][c]));
     }
   }
-  return score + empty * 12000 + smooth * 2000;
+  return score + empty * tuning.empty + smooth * tuning.smooth;
 }
 
 function expectimax(b, depth, isChance) {
@@ -1087,6 +1151,7 @@ export const plugin = {
   match, readState, chooseMove, isTerminal, describeState, applyMove, legalMoves,
   diagnose, findRestartButton, isGameOverScreen, looksLikeNewGame,
   readScores, lastReadFailure, readOverlay,
+  setTuning, getTuning, DEFAULT_TUNING, getLayout, setLayout,
 };
 
 export default plugin;

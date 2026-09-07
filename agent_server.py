@@ -490,6 +490,12 @@ def slugify(text: str) -> str:
 
 class MemoryPatch(BaseModel):
     gameDesc: str
+    # What the agent has learned about this game, as opposed to what happened in
+    # one session: weights proven better by self-play, and where the game's
+    # furniture sits on screen. Both are replaced wholesale rather than appended,
+    # because only the current best is worth keeping.
+    tuning: Optional[Dict[str, Any]] = None
+    layout: Optional[Dict[str, Any]] = None
     outcome: Optional[str] = None
     score: Optional[float] = None
     strategy: Optional[str] = None
@@ -542,6 +548,11 @@ def memory_patch(game_key: str, patch: MemoryPatch):
             "session": entry["sessions"],
         })
         entry["scoreHistory"] = history[-20:]
+
+    if patch.tuning:
+        entry["tuning"] = patch.tuning
+    if patch.layout:
+        entry["layout"] = patch.layout
 
     if patch.turnCount:
         entry["totalTurns"] = entry.get("totalTurns", 0) + patch.turnCount

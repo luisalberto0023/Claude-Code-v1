@@ -2821,8 +2821,31 @@ Reply with ONLY a JSON object, no other text:
     // Load prior memory
     const mem = await loadMemory(gameKey);
     setMemoryData(Object.keys(mem).length ? mem : null);
-    if (mem?.strategies?.length) {
-      addLog(`Loaded memory: ${mem.sessions} sessions, best score: ${mem.bestScore ?? "?"}`, "info");
+    if (mem?.sessions) {
+      addLog(`Memory: ${mem.sessions} sessions, best score ${mem.bestScore ?? "?"}`, "info");
+    }
+
+    // What the agent has learned about this game, as opposed to what happened in
+    // one session. Both are optional: with nothing stored it plays exactly as it
+    // did before, which is the behaviour these were measured against.
+    const learnPlugin = findPlugin(gameDesc);
+    if (learnPlugin?.setTuning) {
+      if (mem?.tuning) {
+        const t = learnPlugin.setTuning(mem.tuning);
+        addLog(
+          `Using tuned weights from self-play: ratio ${t.ratio.toFixed(2)}, empty ${Math.round(t.empty)}, ` +
+          `smooth ${Math.round(t.smooth)}` +
+          (mem.tuning.holdoutMedian ? ` (median ${mem.tuning.holdoutMedian} over ${mem.tuning.holdoutGames} test games)` : ""),
+          "success");
+      } else {
+        learnPlugin.setTuning(learnPlugin.DEFAULT_TUNING);
+      }
+    }
+    if (mem?.layout && learnPlugin?.setLayout) {
+      if (learnPlugin.setLayout(mem.layout)) {
+        const r = mem.layout.boardRect;
+        addLog(`Remembered board position: ${r.w}x${r.h} at ${r.x},${r.y}.`, "info");
+      }
     }
 
     // Decided before the prompt is built: when a solver plays the game, the
@@ -3309,6 +3332,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
         strategyReason: analysis?.strategyReason ?? analysis?.nextSessionRule,
         discoveries: analysis?.discoveries,
         avoidPatterns: analysis?.mistakes,
+        // Where this game turned out to sit on screen, so the next session
+        // starts from a known position instead of searching for it — and can
+        // still locate the board once an overlay has washed it out.
+        layout: activePlugin?.getLayout?.() ?? undefined,
       });
       const updatedMem = await loadMemory(gameKey);
       setMemoryData(updatedMem);
