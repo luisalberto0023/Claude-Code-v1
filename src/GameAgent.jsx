@@ -2023,7 +2023,24 @@ export default function GameAgent() {
     }
 
     // Otherwise: measure the controls, then ask what they are.
-    const found = findClickableCandidates(canvas);
+    //
+    // Confine the search to the game when we know where it is. Searching the
+    // whole screen picked up browser chrome and page links alongside the game's
+    // own buttons, and the resulting list offered choices like "left" and
+    // "right" that had nothing to do with the game. The region is the board plus
+    // generous margins, since controls sit above it and overlays sit on it.
+    const layout = plugin?.getLayout?.();
+    let region = null;
+    if (layout?.boardRect && layout.capture?.w === canvas.width) {
+      const r = layout.boardRect;
+      region = {
+        x: Math.max(0, r.x - r.w * 0.35),
+        y: Math.max(0, r.y - r.h * 0.45),
+        w: r.w * 1.7,
+        h: r.h * 1.75,
+      };
+    }
+    const found = findClickableCandidates(canvas, region);
     if (!found.length) return null;
     addLog(`Stuck — found ${found.length} thing${found.length > 1 ? "s" : ""} that can be clicked. Looking at the screen…`, "info");
 

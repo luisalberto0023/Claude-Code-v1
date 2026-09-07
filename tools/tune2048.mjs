@@ -104,23 +104,44 @@ const fmt = p => `ratio ${p.ratio.toFixed(2)}, empty ${Math.round(p.empty)}, smo
 
 console.log(`Tuning 2048 by self-play — ${ROUNDS} candidates x ${GAMES} games each.\n`);
 
+// Two independent sets of games. A candidate that looks better on the first has
+// to prove it on the second before it takes the lead.
+//
+// This is not caution for its own sake. A tuning run on 24 games promoted a
+// setting that scored 61% above the incumbent there and then came in 30% BELOW
+// it on fresh games — the search had simply found weights that suited those
+// particular boards. Scores in 2048 vary so widely that a single set of games
+// will keep handing out results like that, and a search that chases them walks
+// away from a good setting rather than toward a better one.
 const searchSeeds = Array.from({ length: GAMES }, (_, i) => 5000 + i);
+const checkSeeds = Array.from({ length: GAMES }, (_, i) => 40000 + i);
 const rand = rng(20260905);
 
 let best = assess({ ...DEFAULT_TUNING }, searchSeeds);
+let bestCheck = assess(best.params, checkSeeds);
 console.log(`current : ${fmt(best.params)}`);
-console.log(`          median ${best.median}, mean ${best.mean}, 2048 in ${best.reached2048}/${best.n}\n`);
+console.log(`          median ${best.median} / ${bestCheck.median} on the two sets, 2048 in ${best.reached2048}/${best.n}\n`);
 
 for (let round = 1; round <= ROUNDS; round++) {
   // Narrow the search as it goes: broad early, refining around the leader later.
   const strength = 0.55 * (1 - round / (ROUNDS + 1)) + 0.08;
-  const candidate = assess(jitter(best.params, rand, strength), searchSeeds);
-  const better = candidate.median > best.median;
+  const params = jitter(best.params, rand, strength);
+  const candidate = assess(params, searchSeeds);
+
+  let note = "";
+  let promote = false;
+  if (candidate.median > best.median) {
+    // Promising on the first set — check it against the second before believing it.
+    const second = assess(params, checkSeeds);
+    promote = second.median > bestCheck.median;
+    note = promote
+      ? `   <- leads (holds at ${second.median})`
+      : `   (only on one set: ${second.median} vs ${bestCheck.median})`;
+    if (promote) { best = candidate; bestCheck = second; }
+  }
   console.log(
-    `${String(round).padStart(3)}/${ROUNDS}  ${fmt(candidate.params).padEnd(46)} ` +
-    `median ${String(candidate.median).padStart(6)}  2048 ${candidate.reached2048}/${candidate.n}` +
-    (better ? "   <- leads" : ""));
-  if (better) best = candidate;
+    `${String(round).padStart(3)}/${ROUNDS}  ${fmt(params).padEnd(46)} ` +
+    `median ${String(candidate.median).padStart(6)}  2048 ${candidate.reached2048}/${candidate.n}${note}`);
 }
 
 console.log(`\nBest from the search: ${fmt(best.params)}`);

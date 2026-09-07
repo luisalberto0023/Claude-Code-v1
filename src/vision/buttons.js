@@ -41,10 +41,12 @@ export function findClickableCandidates(canvasEl, region = null) {
     data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
   } catch { return []; }
 
-  const rx = Math.max(0, region?.x ?? 0);
-  const ry = Math.max(0, region?.y ?? 0);
-  const rw = Math.min(w - rx, region?.w ?? w);
-  const rh = Math.min(h - ry, region?.h ?? h);
+  // Whole pixels: a fractional origin makes every sampled index land between
+  // pixels, which reads as nothing matching anywhere in the region.
+  const rx = Math.max(0, Math.floor(region?.x ?? 0));
+  const ry = Math.max(0, Math.floor(region?.y ?? 0));
+  const rw = Math.min(w - rx, Math.floor(region?.w ?? w));
+  const rh = Math.min(h - ry, Math.floor(region?.h ?? h));
   if (rw < 20 || rh < 20) return [];
 
   // Work on a coarse grid: buttons are large relative to a pixel, and this keeps
