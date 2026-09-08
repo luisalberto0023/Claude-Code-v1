@@ -1270,6 +1270,13 @@ export default function GameAgent() {
   const [tokenCount, setTokenCount] = useState({ input: 0, output: 0 });
   const [currentScore, setCurrentScore] = useState(null);
   const [bestTile, setBestTile] = useState(0);
+  // What the solver currently believes is on screen, shown live in the HUD.
+  // Watching a run has meant watching a log of decisions with no way to tell a
+  // right one from a wrong one, because the board behind them was never
+  // visible. A board that reads as untouched is obvious at a glance and
+  // indistinguishable in text.
+  const [boardView, setBoardView] = useState(null);
+  const [showBoard, setShowBoard] = useState(true);
   const [bestScore, setBestScore] = useState(null);
   const [pendingDecision, setPendingDecision] = useState(null);
   const [decisionChoice, setDecisionChoice] = useState("");
@@ -2324,6 +2331,9 @@ Reply with ONLY a JSON object, no other text:
       }
       readClashRef.current = 0;
       lastBoardRef.current = state;
+      if (plugin.renderBoard) {
+        setBoardView({ text: plugin.renderBoard(state.board), summary: plugin.describeState(state) });
+      }
 
       // Count this board before anything else can go wrong with the turn — but
       // only where "highest tile" means something. Running it on Minesweeper is
@@ -2938,6 +2948,7 @@ Reply with ONLY a JSON object, no other text:
     gameScoresRef.current = [];
     setGameScores([]);
     setGameNumber(0);
+    setBoardView(null);          // the last run's board is not this run's board
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
     noToolsRef.current = noToolsMode;
@@ -4053,6 +4064,29 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             </div>
             {gameResult.finalScore != null && <div style={{ fontSize: 12, color: C.text }}>Score: {gameResult.finalScore}</div>}
             {gameResult.reason && <div style={{ fontSize: 11, color: C.textDim, marginTop: 2 }}>{gameResult.reason}</div>}
+          </div>
+        )}
+
+        {/* What the solver is reading, live.
+            The log says what was decided; this says what it was decided from,
+            which is the half that has been missing every time a run went wrong. */}
+        {boardView && (
+          <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
+            <button onClick={() => setShowBoard(a => !a)}
+              style={{ background: "none", border: "none", color: C.textDim, cursor: "pointer", fontSize: 11, padding: 0 }}>
+              {showBoard ? "▾" : "▸"} BOARD AS READ
+            </button>
+            {showBoard && (
+              <>
+                <div style={{ fontSize: 10, color: C.textDim, margin: "4px 0" }}>{boardView.summary}</div>
+                <pre style={{
+                  margin: 0, fontSize: 9, lineHeight: 1.15, color: C.text,
+                  fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+                  background: "#0b0b0d", padding: 6, borderRadius: 3,
+                  overflowX: "auto", whiteSpace: "pre",
+                }}>{boardView.text}</pre>
+              </>
+            )}
           </div>
         )}
 

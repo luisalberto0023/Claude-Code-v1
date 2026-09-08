@@ -832,7 +832,7 @@ export const plugin = {
   findGrid, levelOf, LEVELS, MINE, findRestartButton, diagnose,
   // Reading and reporting: the agent uses these to check its own perception and
   // to describe a run in Minesweeper's terms rather than 2048's.
-  resetGrid, getGrid, lastReadFailure, contradicts, renderBoard,
+  resetGrid, getGrid, lastReadFailure, lastGridSearch, contradicts, renderBoard,
   outcomeOf, scoreOf, tally,
   // "Highest tile" means something in 2048 and nothing here, where the same
   // numbers count neighbouring mines. There is no running score either — what a
