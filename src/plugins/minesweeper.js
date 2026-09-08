@@ -639,7 +639,7 @@ export const plugin = {
   id: "minesweeper",
   label: "Minesweeper (board reader + constraint solver)",
   match, readState, chooseMove, isTerminal, describeState,
-  findGrid, levelOf, LEVELS, MINE, findRestartButton,
+  findGrid, levelOf, LEVELS, MINE, findRestartButton, diagnose,
 };
 
 export default plugin;
