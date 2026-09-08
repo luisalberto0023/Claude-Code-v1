@@ -4,34 +4,34 @@
 // drives it through. The reasoning lives in minesweeper-solver.js and knows
 // nothing about pixels.
 //
-// The board is a regular lattice, so nothing here assumes a cell size: the pitch
-// is measured from the picture. minesweeper.online has a zoom control, the
-// classic skin sizes cells to it, and hard-coding 24px would break the moment
-// anyone touched it — the same mistake as assuming 2048's stylesheet, which cost
-// several rounds there.
+// Nothing here is matched against a fixed palette. An earlier version encoded
+// the classic greys — 192 for a cell, 255 for its highlight, 128 for its shadow
+// — and read every test board perfectly while failing on the real site every
+// single time. The tests were rendered with the same numbers the reader was
+// looking for, so they could only ever agree with it. What a skin actually uses
+// is not knowable in advance, and 2048 taught the same lesson twice.
 //
-// Two properties of the classic skin do the work:
+// So the reader measures relationships that hold whatever the colours are:
 //
-//   Unopened squares are drawn raised — white along the top and left edges, dark
-//   grey along the bottom and right. That bevel is what separates "not yet
-//   opened" from "opened and empty", which are otherwise the same flat grey.
+//   A covered square is drawn raised: its top and left edges are LIGHTER than
+//   its bottom and right. An opened square is not. Comparing one edge against
+//   the other says which it is without knowing either value.
 //
-//   Numbers have their own colours, and unlike 2048's near-identical tiles these
-//   are far apart: 1 is blue, 2 green, 3 red, 4 navy, 5 maroon, 6 teal, 7 black,
-//   8 grey. A number can be identified from the colour of its strokes alone,
-//   which is far more reliable at a 24px cell than reading the shape.
+//   A grid shows up as evenly spaced edges. The spacing is recovered from where
+//   brightness changes sharply, which does not depend on the colours either side.
+//
+//   A number is whatever contrasts with the square it is drawn on, and which of
+//   the eight it is comes from hue: 1 blue, 2 green, 3 red, 4 navy, 5 maroon,
+//   6 teal, 7 black, 8 grey. Those are consistent across Minesweeper skins in a
+//   way that greys are not.
 
 import { solve, UNKNOWN, FLAG } from "./minesweeper-solver.js";
 
 export { UNKNOWN, FLAG };
 export const MINE = -3;
 
-const FACE = [192, 192, 192];       // cell fill and board background
-const HIGHLIGHT = [255, 255, 255];  // top/left bevel of an unopened square
-const SHADOW = [128, 128, 128];     // bottom/right bevel, and grid lines
-
-// Classic number colours. 8 shares grey with the shadow, so it is only ever
-// accepted from the middle of a cell, never near an edge.
+// Only used to name a number once its ink has been separated from its
+// background, never to find anything on screen.
 const NUMBER_COLOURS = [
   { n: 1, rgb: [0, 0, 255] },
   { n: 2, rgb: [0, 128, 0] },
@@ -53,43 +53,43 @@ function dist2(a, b) {
   const dr = a[0] - b[0], dg = a[1] - b[1], db = a[2] - b[2];
   return dr * dr + dg * dg + db * db;
 }
-
 const px = (data, w, x, y) => {
   const i = (y * w + x) * 4;
   return [data[i], data[i + 1], data[i + 2]];
 };
+const lum = c => (c[0] * 299 + c[1] * 587 + c[2] * 114) / 1000;
+const sat = c => Math.max(...c) - Math.min(...c);
+
+function imageData(canvasEl) {
+  if (!canvasEl || !canvasEl.width || !canvasEl.height) return null;
+  try {
+    return {
+      data: canvasEl.getContext("2d", { willReadFrequently: true })
+        .getImageData(0, 0, canvasEl.width, canvasEl.height).data,
+      w: canvasEl.width, h: canvasEl.height,
+    };
+  } catch { return null; }
+}
 
 /**
- * Find the grid: where it starts, how big a cell is, and how many there are.
+ * The largest block of flat grey on screen — the board and its frame.
  *
- * Cell edges repeat, so the columns carrying bevel pixels form a comb whose
- * spacing is the cell pitch. Measuring the spacing between those columns is
- * enough to recover the geometry without knowing the zoom level or the level
- * being played.
+ * Grey rather than a particular grey: a Minesweeper board is drawn almost
+ * entirely without colour, while pages around it are white and their chrome is
+ * either brighter or coloured. The band excludes both ends so the page itself
+ * cannot be mistaken for the board, which is what happened when white counted.
  */
-export function findGrid(canvasEl) {
-  if (!canvasEl || !canvasEl.width) return null;
-  const w = canvasEl.width, h = canvasEl.height;
-  let data;
-  try {
-    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
-  } catch { return null; }
-
-  // Where is the playfield? Take the largest block of squares drawn in the
-  // classic greys — the page around it is white and the chrome is not this
-  // colour at this scale.
+function boardRegion(data, w, h) {
   const step = Math.max(1, Math.round(Math.min(w, h) / 400));
   const gw = Math.floor(w / step), gh = Math.floor(h / step);
   if (gw < 12 || gh < 12) return null;
-  // Only the grey face counts. The bevel highlight is pure white, which is also
-  // the page behind the game, so including it merges the board into the whole
-  // page — the same way 2048's glow once stretched its board past its edges.
-  // Every square contributes face pixels whatever state it is in, so the face
-  // alone still covers the playfield.
+
   const mask = new Uint8Array(gw * gh);
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
-      if (dist2(px(data, w, gx * step, gy * step), FACE) <= 400) mask[gy * gw + gx] = 1;
+      const c = px(data, w, gx * step, gy * step);
+      const l = lum(c);
+      if (sat(c) <= 26 && l >= 96 && l <= 232) mask[gy * gw + gx] = 1;
     }
   }
   const seen = new Uint8Array(gw * gh);
@@ -114,259 +114,433 @@ export function findGrid(canvasEl) {
     if (!best || n > best.n) best = { n, minX, minY, maxX, maxY };
   }
   if (!best || best.n < 200) return null;
-
   const area = {
     x: best.minX * step, y: best.minY * step,
     w: (best.maxX - best.minX + 1) * step,
     h: (best.maxY - best.minY + 1) * step,
   };
-  if (area.w < 60 || area.h < 60) return null;
+  return (area.w >= 60 && area.h >= 60) ? area : null;
+}
 
-  // Cell edges repeat, so the count of bevel pixels along each column and row is
-  // a periodic signal whose period is the cell size. Measured by how strongly
-  // the signal matches itself when shifted, rather than by looking for peaks:
-  // the mine counter, the timer and the frame all produce peaks of their own,
-  // and picking those gave a plausible-looking but wrong grid.
-  const isEdge = (x, y) => {
-    const c = px(data, w, x, y);
-    return dist2(c, HIGHLIGHT) <= 300 || dist2(c, SHADOW) <= 500;
-  };
-  const signalAlong = (along, across, sample) => {
-    const s = new Float64Array(along);
-    for (let i = 0; i < along; i++) {
-      let n = 0;
-      for (let j = 0; j < across; j += 2) if (sample(i, j)) n++;
-      s[i] = n;
+// How sharply brightness changes across each column and row. A grid of squares
+// puts a change at every cell edge whatever the squares are drawn in, so this
+// carries the spacing without depending on any colour.
+function edgeProfiles(data, w, h, area) {
+  const cols = new Float64Array(area.w);
+  const rows = new Float64Array(area.h);
+  for (let i = 1; i < area.w; i++) {
+    let acc = 0;
+    for (let j = 0; j < area.h; j += 2) {
+      acc += Math.abs(lum(px(data, w, area.x + i, area.y + j)) -
+                      lum(px(data, w, area.x + i - 1, area.y + j)));
     }
-    const mean = s.reduce((a, b) => a + b, 0) / along;
-    for (let i = 0; i < along; i++) s[i] -= mean;
-    return s;
-  };
-  const periodOf = (s) => {
-    const hi = Math.min(64, Math.floor(s.length / 4));
-    const scores = new Map();
-    let bestScore = 0, best = null;
-    for (let p = 8; p <= hi; p++) {
-      let acc = 0, n = 0;
-      for (let i = 0; i + p < s.length; i++) { acc += s[i] * s[i + p]; n++; }
-      // Normalised so long periods are not favoured simply by overlapping less.
-      const score = n ? acc / n : 0;
-      scores.set(p, score);
-      if (score > bestScore) { bestScore = score; best = p; }
+    cols[i] = acc;
+  }
+  for (let j = 1; j < area.h; j++) {
+    let acc = 0;
+    for (let i = 0; i < area.w; i += 2) {
+      acc += Math.abs(lum(px(data, w, area.x + i, area.y + j)) -
+                      lum(px(data, w, area.x + i, area.y + j - 1)));
     }
-    if (bestScore <= 0 || best == null) return null;
-    // A signal repeating every cell also repeats every two cells, and twice the
-    // pitch can score higher when rows alternate — covered rows carry more bevel
-    // than opened ones — which measured the grid at double its true size and put
-    // every cell in the wrong place. Only whole fractions of the best period can
-    // be the real one, so those are the only alternatives considered; anything
-    // else that happens to score well is a different signal, not this one.
-    for (let k = 8; k >= 2; k--) {
-      const candidate = best / k;
-      if (!Number.isInteger(candidate) || candidate < 8) continue;
-      if ((scores.get(candidate) ?? 0) >= bestScore * 0.8) return candidate;
-    }
-    return best;
+    rows[j] = acc;
+  }
+  const centre = s => {
+    const mean = s.reduce((a, b) => a + b, 0) / s.length;
+    const out = new Float64Array(s.length);
+    for (let i = 0; i < s.length; i++) out[i] = s[i] - mean;
+    return out;
   };
-  const phaseOf = (s, p) => {
-    let best = 0, bestSum = -Infinity;
-    for (let off = 0; off < p; off++) {
-      let sum = 0;
-      for (let i = off; i < s.length; i += p) sum += s[i];
-      if (sum > bestSum) { bestSum = sum; best = off; }
-    }
-    return best;
-  };
+  return { cols: centre(cols), rows: centre(rows) };
+}
 
-  const colSig = signalAlong(area.w, area.h, (i, j) => isEdge(area.x + i, area.y + j));
-  const rowSig = signalAlong(area.h, area.w, (i, j) => isEdge(area.x + j, area.y + i));
-  const pitchX = periodOf(colSig), pitchY = periodOf(rowSig);
-  if (!pitchX && !pitchY) return null;
+function periodCandidates(signal) {
+  const hi = Math.min(72, Math.floor(signal.length / 4));
+  const scores = [];
+  for (let p = 8; p <= hi; p++) {
+    let acc = 0, n = 0;
+    for (let i = 0; i + p < signal.length; i++) { acc += signal[i] * signal[i + p]; n++; }
+    scores.push({ p, score: n ? acc / n : 0 });
+  }
+  scores.sort((a, b) => b.score - a.score);
+  return scores.filter(s => s.score > 0).slice(0, 6).map(s => s.p);
+}
 
-  // Try the pitches the two axes suggest, and their halves, and keep whichever
-  // actually produces a grid of cells.
+function phaseOf(signal, p) {
+  let best = 0, bestSum = -Infinity;
+  for (let off = 0; off < p; off++) {
+    let sum = 0;
+    for (let i = off; i < signal.length; i += p) sum += signal[i];
+    if (sum > bestSum) { bestSum = sum; best = off; }
+  }
+  return best;
+}
+
+/**
+ * Is this square covered?
+ *
+ * By comparing its own edges against each other, not against a known colour: a
+ * raised square is lit from the top left, so that side is brighter than the
+ * bottom right. The difference is what matters, so any skin that draws squares
+ * as raised at all will read correctly.
+ */
+function bevel(data, w, h, x, y, pitch) {
+  const inset = Math.max(1, Math.round(pitch * 0.10));
+  const from = Math.round(pitch * 0.25), to = Math.round(pitch * 0.75);
+  let tl = 0, br = 0, n = 0;
+  for (let k = from; k < to; k++) {
+    tl += lum(px(data, w, x + k, y + inset));
+    tl += lum(px(data, w, x + inset, y + k));
+    br += lum(px(data, w, x + k, y + pitch - 1 - inset));
+    br += lum(px(data, w, x + pitch - 1 - inset, y + k));
+    n += 2;
+  }
+  return n ? (tl - br) / n : 0;
+}
+
+/**
+ * How strongly this square is outlined, whatever it contains.
+ *
+ * The bevel says whether a square is covered, but it is measured inset from the
+ * edge and so reads zero on an opened square — whose only marking is a one-pixel
+ * line right on the border — which makes an opened square indistinguishable from
+ * bare frame. This looks at the border itself against the square's own middle,
+ * so both kinds of square register and the frame does not.
+ */
+function edgeContrast(data, w, h, x, y, pitch) {
+  const from = Math.round(pitch * 0.3), to = Math.round(pitch * 0.7);
+  let top = 0, left = 0, n = 0;
+  for (let k = from; k < to; k++) {
+    top += lum(px(data, w, x + k, y));
+    left += lum(px(data, w, x, y + k));
+    n++;
+  }
+  if (!n) return 0;
+  const inner = [];
+  for (const [fx, fy] of [[0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7], [0.5, 0.28], [0.5, 0.72]]) {
+    inner.push(lum(px(data, w, x + Math.round(pitch * fx), y + Math.round(pitch * fy))));
+  }
+  inner.sort((a, b) => a - b);
+  const mid = inner[inner.length >> 1];
+  return Math.max(Math.abs(top / n - mid), Math.abs(left / n - mid));
+}
+
+function cellInterior(data, w, h, x, y, pitch) {
+  const lo = Math.round(pitch * 0.22), hi = Math.round(pitch * 0.78);
+  const out = [];
+  for (let dy = lo; dy < hi; dy++) {
+    for (let dx = lo; dx < hi; dx++) out.push(px(data, w, x + dx, y + dy));
+  }
+  return out;
+}
+
+/** Read one square, given how raised squares look on this board. */
+function classifyCell(data, w, h, x, y, pitch, thresholds) {
+  const raisedThreshold = typeof thresholds === "number" ? thresholds : thresholds.raised;
+  const outlineCut = typeof thresholds === "number" ? 0 : thresholds.outline;
+  const lift = bevel(data, w, h, x, y, pitch);
+  const raised = lift >= raisedThreshold;
+  const inside = cellInterior(data, w, h, x, y, pitch);
+  if (!inside.length) return null;
+
+  // The square's own background, taken from its inner corners.
   //
-  // The signal is not always trustworthy on its own: a board whose covered and
-  // opened rows alternate repeats every two rows as well as every one, so an
-  // axis can lock onto twice the pitch, and a short axis can lock onto nothing
-  // meaningful at all. Rather than deciding from the signal and hoping, each
-  // candidate is laid over the picture and judged by whether the squares it
-  // implies actually look like cells. That check already exists, and it is a far
-  // better arbiter than the strength of a correlation.
-  const candidates = [...new Set([
-    pitchX, pitchY,
-    pitchX && pitchY ? Math.round((pitchX + pitchY) / 2) : null,
-    pitchX ? Math.round(pitchX / 2) : null,
-    pitchY ? Math.round(pitchY / 2) : null,
-  ].filter(p => p && p >= 8))].sort((a, b) => a - b);
+  // Not from the middle: whatever is drawn here is drawn centred, and a mine
+  // fills enough of the middle that the median there IS the mine — so the
+  // background came out black, almost nothing differed from it, and the square
+  // read as unclassifiable. The corners are clear of both digits and discs.
+  const mid = arr => { const s = arr.slice().sort((a, b) => a - b); return s[s.length >> 1]; };
+  const corners = [];
+  for (const fx of [0.20, 0.28, 0.72, 0.80]) {
+    for (const fy of [0.20, 0.28, 0.72, 0.80]) {
+      corners.push(px(data, w, x + Math.round(pitch * fx), y + Math.round(pitch * fy)));
+    }
+  }
+  const bg = [mid(corners.map(c => c[0])), mid(corners.map(c => c[1])), mid(corners.map(c => c[2]))];
+  const ink = inside.filter(c => dist2(c, bg) > 2200);
+  const inkFrac = ink.length / inside.length;
+
+  if (raised) {
+    const red = ink.filter(c => c[0] > 110 && c[0] - c[1] > 45 && c[0] - c[2] > 45).length;
+    return red >= Math.max(3, ink.length * 0.15) ? FLAG : UNKNOWN;
+  }
+  if (inkFrac < 0.04) {
+    // Nothing raised, nothing drawn: an empty opened square, or bare frame. The
+    // square has a line along its border and the frame does not, which is the
+    // only thing separating them — and without the check, a frame drawn close
+    // enough in colour reads as a column of empty squares and the board grows an
+    // extra column.
+    if (outlineCut > 0 && edgeContrast(data, w, h, x, y, pitch) < outlineCut) return null;
+    return 0;
+  }
+
+  // A mine is a filled disc of neutral black covering most of the square. Both
+  // parts matter: judging by darkness alone made a maroon 5 a mine, since its
+  // ink is dark too — but it is strongly coloured, and a mine is not. Judging by
+  // size alone would confuse it with a 7, which is also black but only strokes.
+  const neutralDark = ink.filter(c => lum(c) < 70 && sat(c) < 40).length;
+  if (neutralDark / inside.length > 0.45) return MINE;
+
+  const votes = new Map();
+  for (const c of ink) {
+    let best = null, bestD = Infinity;
+    for (const t of NUMBER_COLOURS) {
+      const d = dist2(c, t.rgb);
+      if (d < bestD) { bestD = d; best = t.n; }
+    }
+    if (bestD <= 9000) votes.set(best, (votes.get(best) ?? 0) + 1);
+  }
+  let picked = null, most = 0;
+  for (const [n, count] of votes) if (count > most) { most = count; picked = n; }
+  return (picked != null && most >= ink.length * 0.3) ? picked : null;
+}
+
+/**
+ * Find the grid, and how raised squares look on this particular board.
+ *
+ * Candidate spacings are laid over the picture and judged by whether the squares
+ * they imply actually behave like cells — that is a far better arbiter than the
+ * strength of a correlation, which can lock onto twice the pitch when covered
+ * and opened rows alternate.
+ */
+export function findGrid(canvasEl) {
+  const img = imageData(canvasEl);
+  if (!img) return null;
+  const { data, w, h } = img;
+  const area = boardRegion(data, w, h);
+  if (!area) return null;
+
+  const { cols: colSig, rows: rowSig } = edgeProfiles(data, w, h, area);
+  const candidates = [...new Set([...periodCandidates(colSig), ...periodCandidates(rowSig)])]
+    .filter(p => p >= 8).sort((a, b) => a - b);
 
   let bestGrid = null;
   for (const pitch of candidates) {
     const x0 = area.x + phaseOf(colSig, pitch);
     const y0 = area.y + phaseOf(rowSig, pitch);
 
-    const looksLikeCell = (cx, cy) => {
-      if (cx + pitch > w || cy + pitch > h) return false;
-      if (isRaised(data, w, h, cx, cy, pitch)) return true;
-      // An opened cell carries a grid line along its top or left edge. What is
-      // drawn inside says nothing — a large number covers most of the middle and
-      // a mine covers more still, so any requirement to be mostly-grey there
-      // rejects exactly the cells carrying the information. The frame has no
-      // grid lines, which is what it needs to be told apart from.
-      let line = 0, lineN = 0;
-      for (let k = Math.round(pitch * 0.3); k < pitch * 0.7; k += 2) {
-        lineN += 2;
-        if (dist2(px(data, w, cx + k, cy), SHADOW) <= 900) line++;
-        if (dist2(px(data, w, cx, cy + k), SHADOW) <= 900) line++;
+    // How strongly are edges drawn on this board? Measured here rather than
+    // assumed, and used both to tell squares from the frame and to tell covered
+    // squares from opened ones.
+    //
+    // The sign carries the meaning. A covered square is lit from the top left,
+    // so that edge is brighter: strongly positive. An opened square has a thin
+    // dark line along the same edge: strongly negative. The frame has neither
+    // and sits near zero. So the magnitude says "this is a square" and the sign
+    // says which kind — measured against this board's own contrast, so a skin
+    // drawn in any greys reads the same way.
+    const samples = [];
+    for (let gy = y0; gy + pitch <= area.y + area.h; gy += pitch) {
+      for (let gx = x0; gx + pitch <= area.x + area.w; gx += pitch) {
+        samples.push(bevel(data, w, h, gx, gy, pitch));
       }
-      return lineN > 0 && line / lineN > 0.3;
+    }
+    if (samples.length < 25) continue;
+    const magnitudes = samples.map(Math.abs).sort((a, b) => a - b);
+    const scale = magnitudes[Math.floor(magnitudes.length * 0.9)];
+    if (scale < 12) continue;
+    const threshold = scale * 0.35;
+    const outlineSamples = [];
+    for (let gy = y0; gy + pitch <= area.y + area.h; gy += pitch) {
+      for (let gx = x0; gx + pitch <= area.x + area.w; gx += pitch) {
+        outlineSamples.push(edgeContrast(data, w, h, gx, gy, pitch));
+      }
+    }
+    outlineSamples.sort((a, b) => a - b);
+    const outlineScale = outlineSamples[Math.floor(outlineSamples.length * 0.75)];
+    const thresholds = { raised: threshold, outline: Math.max(6, outlineScale * 0.3) };
+
+    // The board's extent comes from its grid lines, not from testing squares one
+    // at a time.
+    //
+    // A per-square test kept failing on the squares that matter: a digit fills
+    // the middle, so sampling there to compare against the border reads almost
+    // no difference, and rows full of numbers were rejected as "not cells" while
+    // empty rows passed. The lines themselves are the strongest thing on the
+    // board — long, continuous, and running the full width — and they are
+    // already measured. The board is simply the run of evenly spaced lines.
+    const lineAt = (sig, at) => (at >= 0 && at < sig.length ? sig[at] : -Infinity);
+    const runOf = (sig, start, limit, base) => {
+      const positions = [];
+      for (let v = start; v <= limit; v += pitch) positions.push({ v, s: lineAt(sig, v - base) });
+      const finite = positions.map(p2 => p2.s).filter(Number.isFinite).sort((a, b) => a - b);
+      if (finite.length < 6) return null;
+      const strong = finite[Math.floor(finite.length * 0.75)];
+      if (strong <= 0) return null;
+      const cut = strong * 0.35;
+      const isStrong = positions.map(p2 => p2.s >= cut);
+
+      // Tolerate the occasional faint line rather than stopping at it.
+      //
+      // How visible a line is depends on what sits either side of it: where a
+      // covered row meets an opened one, the covered row's dark lower edge abuts
+      // the opened row's dark upper line and there is almost nothing to see. One
+      // such boundary in the middle of a board split the run in two and neither
+      // half was long enough to count, so a perfectly ordinary board looked like
+      // no board at all.
+      let best = null;
+      for (let a = 0; a < positions.length; a++) {
+        if (!isStrong[a]) continue;
+        for (let b = positions.length - 1; b > a; b--) {
+          if (!isStrong[b]) continue;
+          const span = b - a + 1;
+          if (span < 6) break;
+          let hits = 0;
+          for (let i = a; i <= b; i++) if (isStrong[i]) hits++;
+          if (hits / span >= 0.7 && (!best || span > best.n)) {
+            best = { from: positions[a].v, to: positions[b].v, n: span };
+          }
+          break;   // longest b for this a is enough
+        }
+      }
+      return best && best.n >= 6 ? best : null;
     };
-    const rowOk = (gy) => {
-      let ok = 0, n = 0;
-      for (let gx = x0; gx + pitch <= area.x + area.w; gx += pitch) { n++; if (looksLikeCell(gx, gy)) ok++; }
-      return n >= 5 && ok / n > 0.8;
+
+    const vRun = runOf(rowSig, y0, area.y + area.h - 1, area.y);
+    const hRun = runOf(colSig, x0, area.x + area.w - 1, area.x);
+    if (!vRun || !hRun) continue;
+
+    const top = vRun.from, left = hRun.from;
+
+    // How many squares a run of lines bounds depends on whether the board's far
+    // edge drew a line of its own, which is not something to rely on: the same
+    // board gave ten lines down and nine across, so counting them as n-1 either
+    // way lost a column. Both readings are tried and the one whose squares
+    // actually read as squares is kept.
+    const readable = (rowCount, colCount) => {
+      if (rowCount < 5 || colCount < 5 || rowCount > 40 || colCount > 40) return -1;
+      if (top + rowCount * pitch > area.y + area.h + pitch) return -1;
+      if (left + colCount * pitch > area.x + area.w + pitch) return -1;
+      let known = 0, total = 0;
+      for (let r = 0; r < rowCount; r++) {
+        for (let c = 0; c < colCount; c++) {
+          total++;
+          if (classifyCell(data, w, h, left + c * pitch, top + r * pitch, pitch, thresholds) !== null) known++;
+        }
+      }
+      return total ? known / total : -1;
     };
-    const colOk = (gx, top, bottom) => {
-      let ok = 0, n = 0;
-      for (let gy = top; gy + pitch <= bottom; gy += pitch) { n++; if (looksLikeCell(gx, gy)) ok++; }
-      return n >= 5 && ok / n > 0.8;
-    };
+    let rows = 0, cols = 0, bestFrac = -1;
+    for (const rc of [vRun.n - 1, vRun.n]) {
+      for (const cc of [hRun.n - 1, hRun.n]) {
+        const frac = readable(rc, cc);
+        if (frac < 0) continue;
+        // A column of frame beside the board reads exactly like a column of
+        // empty squares — the boundary at its left really is the last square's
+        // right edge, so no measurement separates them. What does is that
+        // Minesweeper boards come in known shapes: 9x9, 16x16, 16x30. A reading
+        // that is one of those is preferred over one that is not, and a board of
+        // some other size is still accepted when nothing standard fits.
+        const known = levelOf(rc, cc) ? 1 : 0;
+        const rank = frac + known;
+        if (rank > bestFrac || (rank === bestFrac && rc * cc > rows * cols)) {
+          bestFrac = rank; rows = rc; cols = cc;
+        }
+      }
+    }
+    if (bestFrac < 0.95) continue;
+    bestFrac = Math.min(bestFrac, 1);
 
-    let top = y0;
-    while (top + pitch <= area.y + area.h && !rowOk(top)) top += pitch;
-    let bottom = top;
-    while (bottom + pitch <= area.y + area.h && rowOk(bottom)) bottom += pitch;
-    if (bottom - top < pitch * 5) continue;
-
-    let left = x0;
-    while (left + pitch <= area.x + area.w && !colOk(left, top, bottom)) left += pitch;
-    let right = left;
-    while (right + pitch <= area.x + area.w && colOk(right, top, bottom)) right += pitch;
-    if (right - left < pitch * 5) continue;
-
-    const cols = Math.round((right - left) / pitch);
-    const rows = Math.round((bottom - top) / pitch);
-    if (cols < 5 || rows < 5 || cols > 40 || rows > 40) continue;
-
-    // Prefer the candidate covering the most of the board: a pitch that is too
-    // large still validates, over fewer, larger squares.
-    const covered = rows * cols * pitch * pitch;
-    if (!bestGrid || covered > bestGrid.covered) {
-      bestGrid = { x: left, y: top, pitch, rows, cols, covered };
+    // Prefer the reading that classifies the most squares. A wrong spacing can
+    // still line up with something; it cannot also produce squares that read as
+    // Minesweeper squares.
+    const score = bestFrac * rows * cols;
+    if (!bestGrid || score > bestGrid.score) {
+      bestGrid = { x: left, y: top, pitch, rows, cols, threshold, thresholds, score };
     }
   }
-  if (!bestGrid) return null;
-  const { x: left, y: top, pitch, rows, cols } = bestGrid;
-  return { x: left, y: top, pitch, rows, cols };
-}
-
-/** Is this square still covered? The bevel says so, whatever is drawn on it. */
-function isRaised(data, w, h, x, y, pitch) {
-  const inset = Math.max(1, Math.round(pitch * 0.08));
-  let light = 0, dark = 0, n = 0;
-  for (let k = Math.round(pitch * 0.25); k < pitch * 0.75; k += 2) {
-    const top = px(data, w, x + k, y + inset);
-    const left = px(data, w, x + inset, y + k);
-    const bottom = px(data, w, x + k, y + pitch - 1 - inset);
-    const right = px(data, w, x + pitch - 1 - inset, y + k);
-    n += 2;
-    if (dist2(top, HIGHLIGHT) <= 900) light++;
-    if (dist2(left, HIGHLIGHT) <= 900) light++;
-    if (dist2(bottom, SHADOW) <= 900) dark++;
-    if (dist2(right, SHADOW) <= 900) dark++;
-  }
-  if (!n) return false;
-  return light / n > 0.5 && dark / n > 0.4;
-}
-
-/** Read one square. */
-function readCell(data, w, h, x, y, pitch) {
-  const raised = isRaised(data, w, h, x, y, pitch);
-
-  // Anything that is not the cell's own grey, taken from the middle so the
-  // bevel never contributes.
-  const lo = Math.round(pitch * 0.22), hi = Math.round(pitch * 0.78);
-  const marks = [];
-  for (let dy = lo; dy < hi; dy++) {
-    for (let dx = lo; dx < hi; dx++) {
-      const c = px(data, w, x + dx, y + dy);
-      if (dist2(c, FACE) > 1500 && dist2(c, HIGHLIGHT) > 900) marks.push(c);
-    }
-  }
-
-  if (raised) {
-    // A covered square with red on it is flagged; the flag is the only red thing
-    // drawn on an unopened cell.
-    const red = marks.filter(c => c[0] > 120 && c[1] < 90 && c[2] < 90).length;
-    return red >= Math.max(3, marks.length * 0.12) ? FLAG : UNKNOWN;
-  }
-
-  // Opened. Few marks means an empty square.
-  const area = (hi - lo) * (hi - lo);
-  if (marks.length < area * 0.04) return 0;
-
-  // A mine is a filled disc, so it covers far more of the cell than any digit
-  // does. Without this it reads as a 7 — both are black — and a lost game looks
-  // like a playable one.
-  // The disc covers roughly two thirds of the sampled middle; a digit's strokes
-  // cover a quarter at most. At 0.3 a bold 7 crossed the line and a playable
-  // board looked lost.
-  const dark = marks.filter(c => c[0] < 90 && c[1] < 90 && c[2] < 90).length;
-  if (dark > area * 0.45) return MINE;
-
-  // Which number, by the colour of its strokes: a vote over the mark pixels,
-  // which is steadier than reading the digit's shape at this size.
-  const votes = new Map();
-  for (const c of marks) {
-    let best = null, bestD = Infinity;
-    for (const t of NUMBER_COLOURS) {
-      const d = dist2(c, t.rgb);
-      if (d < bestD) { bestD = d; best = t.n; }
-    }
-    if (bestD <= 6000) votes.set(best, (votes.get(best) ?? 0) + 1);
-  }
-  let picked = null, most = 0;
-  for (const [n, count] of votes) if (count > most) { most = count; picked = n; }
-  if (picked == null || most < marks.length * 0.35) return null;
-  return picked;
+  return bestGrid;
 }
 
 /**
  * Read the whole board.
- * Returns { board, rows, cols, grid } or null when the grid cannot be found.
+ * Returns { board, rows, cols, grid } or null when it cannot be read.
  */
 export function readState(canvasEl, gridHint = null) {
   const grid = gridHint || findGrid(canvasEl);
   if (!grid) return null;
-  const w = canvasEl.width, h = canvasEl.height;
-  let data;
-  try {
-    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
-  } catch { return null; }
+  const img = imageData(canvasEl);
+  if (!img) return null;
+  const { data, w, h } = img;
 
   const board = [];
   let unread = 0;
   for (let r = 0; r < grid.rows; r++) {
     const row = [];
     for (let c = 0; c < grid.cols; c++) {
-      const v = readCell(data, w, h, grid.x + c * grid.pitch, grid.y + r * grid.pitch, grid.pitch);
+      const v = classifyCell(data, w, h, grid.x + c * grid.pitch, grid.y + r * grid.pitch,
+        grid.pitch, grid.thresholds ?? grid.threshold);
       if (v === null) { unread++; row.push(UNKNOWN); } else row.push(v);
     }
     board.push(row);
   }
   // A square that cannot be read must not pass as covered: the solver would
-  // treat it as somewhere still to explore and reason from a board that is not
-  // there. Same rule as 2048 — an incomplete read is no read.
+  // treat it as somewhere still to explore and reason about a board that is not
+  // there. An incomplete read is no read.
   if (unread > 0) return null;
   return { board, rows: grid.rows, cols: grid.cols, grid };
 }
 
-// Exposed for tests: reading one square is where a skin difference shows up
-// first, and diagnosing that through a whole-board read hides which cell failed.
-export function __readCellAt(canvasEl, grid, r, c) {
-  const w = canvasEl.width, h = canvasEl.height;
-  const data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
-  return readCell(data, w, h, grid.x + c * grid.pitch, grid.y + r * grid.pitch, grid.pitch);
+/**
+ * Report what is actually on screen, for when a read fails.
+ *
+ * Written because the alternative is guessing at a site's appearance, which cost
+ * several rounds on 2048 and again here. This reports measurements, not verdicts.
+ */
+export function diagnose(canvasEl) {
+  const out = { ok: false, notes: [] };
+  const img = imageData(canvasEl);
+  if (!img) { out.notes.push("no canvas / getImageData failed"); return out; }
+  const { data, w, h } = img;
+  out.canvas = `${w}×${h}`;
+
+  const buckets = new Map();
+  const st = Math.max(1, Math.floor(Math.min(w, h) / 120));
+  for (let y = 0; y < h; y += st) for (let x = 0; x < w; x += st) {
+    const c = px(data, w, x, y);
+    const key = `${c[0] >> 4},${c[1] >> 4},${c[2] >> 4}`;
+    buckets.set(key, (buckets.get(key) ?? 0) + 1);
+  }
+  out.topColors = [...buckets.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
+    .map(([k, n]) => { const [r, g, b] = k.split(",").map(Number); return `rgb(${r * 16},${g * 16},${b * 16})×${n}`; });
+
+  const area = boardRegion(data, w, h);
+  if (!area) {
+    out.notes.push("no large flat-grey region found — is the board on screen and uncovered?");
+    return out;
+  }
+  out.area = `${area.w}×${area.h} at ${area.x},${area.y}`;
+
+  const { cols: colSig, rows: rowSig } = edgeProfiles(data, w, h, area);
+  out.colPeriods = periodCandidates(colSig).join(", ") || "none";
+  out.rowPeriods = periodCandidates(rowSig).join(", ") || "none";
+
+  const grid = findGrid(canvasEl);
+  if (!grid) {
+    out.notes.push("no spacing produced a usable grid of cells");
+    return out;
+  }
+  out.grid = `${grid.cols}×${grid.rows}, cell ${grid.pitch}px at ${grid.x},${grid.y}`;
+  out.raisedThreshold = grid.threshold.toFixed(1);
+
+  // What each of the first few squares measured, so a misread can be placed.
+  out.cells = [];
+  for (let r = 0; r < Math.min(3, grid.rows); r++) {
+    for (let c = 0; c < Math.min(6, grid.cols); c++) {
+      const x = grid.x + c * grid.pitch, y = grid.y + r * grid.pitch;
+      const b = bevel(data, w, h, x, y, grid.pitch);
+      const inside = cellInterior(data, w, h, x, y, grid.pitch);
+      const mid = arr => { const s = arr.slice().sort((p, q) => p - q); return s[s.length >> 1]; };
+      const bg = [mid(inside.map(k => k[0])), mid(inside.map(k => k[1])), mid(inside.map(k => k[2]))];
+      const ink = inside.filter(k => dist2(k, bg) > 2200).length / inside.length;
+      const v = classifyCell(data, w, h, x, y, grid.pitch, grid.thresholds ?? grid.threshold);
+      out.cells.push(`r${r}c${c} bg rgb(${bg.join(",")}) bevel ${b.toFixed(1)} ink ${(ink * 100).toFixed(0)}% → ${v === null ? "UNREADABLE" : v === UNKNOWN ? "covered" : v === FLAG ? "flag" : v === MINE ? "mine" : v}`);
+    }
+  }
+  const state = readState(canvasEl, grid);
+  out.ok = !!state;
+  if (state) { out.board = state.board; out.state = state; }
+  else out.notes.push("some squares could not be classified — see the cell measurements above");
+  return out;
 }
 
 /** Which level is this board? Recognised by its shape. */

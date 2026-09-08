@@ -2534,19 +2534,30 @@ Reply with ONLY a JSON object, no other text:
     try { setPreviewSrc(canvas.toDataURL("image/jpeg", 0.8)); } catch {}
 
     const d = plug.diagnose(canvas);
-    addLog(`── Solver diagnostic ──`, "info");
+    addLog(`── Solver diagnostic: ${plug.label} ──`, "info");
     addLog(`capture: ${d.canvas} (see the image below — is the game board in it?)`, "info");
     if (d.topColors) addLog(`dominant colours: ${d.topColors.join("  ")}`, "info");
-    if (d.rect) addLog(`board found at x${d.rect.x} y${d.rect.y} ${d.rect.w}×${d.rect.h} (tolerance ${d.boardTolerance})`, "info");
+    // Each game reports what it measured; print whatever came back rather than
+    // fields only one of them has.
+    for (const [key, label] of [
+      ["rect", "board"], ["area", "grey region"], ["grid", "grid"],
+      ["colPeriods", "column spacings tried"], ["rowPeriods", "row spacings tried"],
+      ["raisedThreshold", "raised-square threshold"], ["boardTolerance", "colour tolerance"],
+    ]) {
+      const v = d[key];
+      if (v == null) continue;
+      addLog(`${label}: ${typeof v === "object" ? JSON.stringify(v) : v}`, "info");
+    }
     (d.cells ?? []).forEach(c => addLog(`   ${c}`, "info"));
     (d.notes ?? []).forEach(n => addLog(`   note: ${n}`, "warn"));
     if (d.ok) {
       addLog("✓ Board read successfully:", "success");
-      addLog(plug.describeState({ board: d.board }), "success");
-      const mv = plug.chooseMove({ board: d.board });
-      addLog(mv ? `solver would play: ${mv.reason}` : "no legal move (game over)", "success");
+      const state = d.state ?? { board: d.board };
+      addLog(plug.describeState(state), "success");
+      const mv = plug.chooseMove(state);
+      addLog(mv ? `solver would play: ${mv.reason}` : "no move available", "success");
     } else {
-      addLog("✗ Board NOT readable — copy the lines above so the palette can be corrected.", "error");
+      addLog("✗ Board NOT readable — send these lines so the reader can be corrected.", "error");
     }
     const btn = plug.findRestartButton?.(canvas);
     addLog(btn ? `restart button found at image ${btn.x},${btn.y}` : "restart button not found by colour", btn ? "success" : "warn");
@@ -2933,8 +2944,9 @@ INPUT CONTROLS (${schemeCfg.label}) — use ONLY these:
 ${controlDesc}
 
 Each turn, do ONE of these:
-- If a "Try again" or "New Game" button is visible, click it to start a game.
-- Otherwise press a single arrow key to keep the game moving.
+- If a button that starts or restarts a game is visible, click it.
+- Otherwise take a single ordinary move in this game, using the controls above.
+  Do not invent a control the game does not use.
 - Call signal_game_end if the game is clearly over and no button is visible.
 
 Say in one short sentence what you see before you act.${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
