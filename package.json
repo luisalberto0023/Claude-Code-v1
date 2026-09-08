@@ -5,7 +5,11 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "check": "node tools/check-plugins.mjs && node tools/check-minesweeper.mjs && node tools/minesweeper-sim.mjs --level expert --games 200",
+    "check:plugins": "node tools/check-plugins.mjs",
+    "check:minesweeper": "node tools/check-minesweeper.mjs",
+    "sim:minesweeper": "node tools/minesweeper-sim.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

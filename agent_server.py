@@ -252,10 +252,26 @@ def mouse_move(b: MoveBody):
         return {"ok": False, "error": str(e)}
 
 
+def _on_screen(x: int, y: int) -> tuple:
+    """Keep the pointer inside the screen, and out of its corners.
+
+    pyautogui clamps an out-of-range move to the edge and then treats a pointer
+    sitting in a corner as the user's abort signal — so one bad coordinate does
+    not just miss, it makes every later click raise "fail-safe triggered" until
+    something moves the mouse back. An off-screen request is a bug worth
+    reporting rather than quietly rounding to the nearest pixel, so say so.
+    """
+    if not (0 <= x < SCREEN_W and 0 <= y < SCREEN_H):
+        raise ValueError(
+            f"({x},{y}) is outside the {SCREEN_W}x{SCREEN_H} screen")
+    return max(1, min(SCREEN_W - 2, x)), max(1, min(SCREEN_H - 2, y))
+
+
 @app.post("/mouse/click")
 def mouse_click(b: ClickBody):
     try:
-        pyautogui.moveTo(b.x, b.y, duration=b.move_duration)
+        x, y = _on_screen(b.x, b.y)
+        pyautogui.moveTo(x, y, duration=b.move_duration)
         pyautogui.click(button=b.button, clicks=b.clicks, interval=0.05)
         return {"ok": True}
     except Exception as e:
@@ -446,6 +462,43 @@ def log_append(b: LogLines):
             for line in b.lines:
                 fh.write(line.rstrip("\n") + "\n")
         return {"ok": True, "path": str(path), "bytes": path.stat().st_size}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ── Snapshots: what the agent was actually looking at ─────────────────────────
+# Troubleshooting a run from its log alone has meant guessing at what the screen
+# looked like, and the guesses have been wrong more than once. A board misread as
+# untouched and a board that IS untouched write the same line. So when a read
+# fails or a game ends, the frame and the board as it was read are written side
+# by side under logs/snapshots/, and the pair settles it.
+
+
+class Snapshot(BaseModel):
+    session: str
+    tag: str
+    png: Optional[str] = None     # base64, without the data: prefix
+    text: Optional[str] = None
+
+
+@app.post("/log/snapshot")
+def log_snapshot(b: Snapshot):
+    try:
+        stamp = datetime.datetime.now().strftime("%H%M%S")
+        safe_session = re.sub(r"[^A-Za-z0-9_-]+", "-", b.session)[:60] or "session"
+        safe_tag = re.sub(r"[^A-Za-z0-9_-]+", "-", b.tag)[:40] or "snap"
+        folder = LOG_DIR / "snapshots" / safe_session
+        folder.mkdir(parents=True, exist_ok=True)
+        written = []
+        if b.png:
+            path = folder / f"{stamp}-{safe_tag}.png"
+            path.write_bytes(base64.b64decode(b.png))
+            written.append(str(path))
+        if b.text:
+            path = folder / f"{stamp}-{safe_tag}.txt"
+            path.write_text(b.text, encoding="utf-8")
+            written.append(str(path))
+        return {"ok": True, "files": written}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

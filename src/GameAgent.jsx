@@ -430,6 +430,12 @@ const SOLVER_CAPTURE_W = 4000;
 // cannot lose anything that has already been recorded.
 const DECISION_DEFAULT = "keep-going";
 
+// How many times to re-read a board before treating the read as hopeless. Reads
+// fail mostly because the frame caught the board mid-redraw, so the answer is
+// usually to look again — the retries back off, and six of them span about five
+// seconds, which is longer than any redraw.
+const SOLVER_RETRIES = 6;
+
 const decisionBtn = (colour) => ({
   background: "transparent", color: colour, border: `1px solid ${colour}`,
   borderRadius: 5, padding: "5px 12px", fontSize: 12, cursor: "pointer",
@@ -1340,6 +1346,9 @@ export default function GameAgent() {
   const decisionTimerRef = useRef(null);
   const fullLogRef = useRef([]);               // every log line, uncapped
   const logQueueRef = useRef([]);              // lines not yet written to disk
+  const lastBoardRef = useRef(null);           // last board accepted as read
+  const readClashRef = useRef(0);              // reads running against the last one
+  const snapshotsRef = useRef(0);              // frames written this game
   const logSessionRef = useRef(
     new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
   );
@@ -1406,6 +1415,38 @@ export default function GameAgent() {
     a.click();
     URL.revokeObjectURL(url);
   }, []);
+
+  /**
+   * Keep what the agent was looking at, next to what it made of it.
+   *
+   * Every round of troubleshooting so far has started from a log that records
+   * decisions but not evidence, and the reconstruction has been wrong more than
+   * once — a board misread as untouched and a board that IS untouched produce
+   * the same line. A frame plus the board as read settles it in one look, so
+   * both are written to disk at the moments worth explaining: a read that
+   * failed, a read that contradicted the one before it, and the end of a game.
+   */
+  const snapshot = useCallback(async (tag, text) => {
+    // A failing run can fail every turn; a handful of examples explains it just
+    // as well as two hundred and does not fill the disk.
+    if (snapshotsRef.current >= 6) return;
+    snapshotsRef.current++;
+    const canvas = solverCanvasRef.current;
+    let png = null;
+    if (canvas) {
+      try {
+        png = canvas.toDataURL("image/png").split(",")[1];
+      } catch { /* tainted or oversized canvas — the text alone is still useful */ }
+    }
+    try {
+      const res = await backend("/log/snapshot", {
+        session: logSessionRef.current, tag, png, text: text ?? null,
+      });
+      if (res?.ok && res.files?.length) {
+        addLog(`📷 Saved what the agent saw → ${res.files[res.files.length - 1]}`, "info");
+      }
+    } catch { /* backend down; the log line above is the only casualty */ }
+  }, [addLog]);
 
   const addAction = useCallback((name, args, result) => {
     setActions(a => [...a.slice(-60), { id: uid(), ts: ts(), name, args, result }]);
@@ -2253,11 +2294,45 @@ Reply with ONLY a JSON object, no other text:
     }
 
     if (state) {
-      // Count this board before anything else can go wrong with the turn.
-      noteBestTile(state.board);
+      // A read that argues with the one before it is the reader being wrong,
+      // not the game changing.
+      //
+      // Some games only move one way — a Minesweeper square that has been
+      // opened stays open and keeps its number — and that makes a whole class
+      // of misread detectable for free. It matters because a wrong board still
+      // yields a legal-looking move: a board misread as untouched offers a
+      // blind guess, the agent plays it, and the run ends on a mine with the
+      // log reporting nothing worse than bad luck. Re-read instead, and say so.
+      const clash = plugin.contradicts?.(lastBoardRef.current, state);
+      if (clash) {
+        readClashRef.current++;
+        addLog(`Discarding this read — ${clash}.`, "warn");
+        if (readClashRef.current >= 3) {
+          // Three in a row is not a flicker: the geometry itself is wrong.
+          readClashRef.current = 0;
+          plugin.resetGrid?.();
+          addLog("Re-measuring the board from scratch.", "warn");
+          await snapshot("read-clash", [
+            clash, "",
+            "board as just read:",
+            plugin.renderBoard?.(state.board) ?? "",
+            "", "previous board:",
+            plugin.renderBoard?.(lastBoardRef.current?.board) ?? "",
+          ].join("\n"));
+        }
+        return { fallback: true, reason: "read disagreed with the previous board", soft: true };
+      }
+      readClashRef.current = 0;
+      lastBoardRef.current = state;
+
+      // Count this board before anything else can go wrong with the turn — but
+      // only where "highest tile" means something. Running it on Minesweeper is
+      // how a run came to report "highest tile 8": that 8 counts neighbouring
+      // mines and says nothing about how the game went.
+      if (plugin.tracksTiles) noteBestTile(state.board);
       if (plugin.isTerminal(state)) {
         if (plugin.readOverlay?.(canvas)) return { stuck: true, board: state.board };
-        return { gameOver: true, board: state.board };
+        return { gameOver: true, board: state.board, state };
       }
       // A readable board with legal moves means the game is live, whatever the
       // overlay heuristic thinks.
@@ -2265,6 +2340,7 @@ Reply with ONLY a JSON object, no other text:
       if (plugin.isGameOverScreen?.(canvas)) {
         return { gameOver: true, reason: "game-over overlay (board unreadable)" };
       }
+      await snapshot("unreadable", plugin.lastReadFailure?.() ?? "board not readable");
       return { fallback: true, reason: "board not readable" };
     }
 
@@ -2275,7 +2351,22 @@ Reply with ONLY a JSON object, no other text:
       // board — a win pauses the game behind an overlay, and the board read
       // underneath it can look like one with nothing left to do.
       if (plugin.readOverlay?.(canvas)) return { stuck: true, board: state.board };
-      return { gameOver: true, board: state.board };
+      return { gameOver: true, board: state.board, state };
+    }
+    // A move is named by whatever identifies it in this game: a direction in
+    // 2048, a square in Minesweeper. It has to be something, or every move
+    // looks like the same one and the repeat guard blocks all of them at once.
+    const moveId = move.key ?? move.actions?.map(a => a.label).join(" ") ?? move.reason ?? "move";
+
+    // A guess is the one move that can end the run outright, so record what the
+    // board looked like when it was taken. Losing on a 20% guess is ordinary
+    // Minesweeper; losing on a guess the board never called for is a bug, and
+    // the two are indistinguishable without the board.
+    if (move.certain === false) {
+      await snapshot("guess", [
+        `guessing: ${move.reason}`, "",
+        plugin.renderBoard?.(state.board) ?? "",
+      ].join("\n"));
     }
 
     const timing = getTiming();
@@ -2337,15 +2428,16 @@ Reply with ONLY a JSON object, no other text:
       // "Highest tile" means something in 2048 and nothing in Minesweeper, where
       // the same numbers count neighbouring mines.
       if (plugin.tracksTiles) noteBestTile(after.board);
+      lastBoardRef.current = after;
       noOpStreakRef.current = 0;
       lastFailedMovesRef.current.clear();
       solverBlockedRef.current.clear();
     } else {
       noOpStreakRef.current++;
-      lastFailedMovesRef.current.add(move.key);
-      // Remember that this direction did nothing so the next search picks
-      // something else instead of repeating it.
-      solverBlockedRef.current.add(move.key);
+      lastFailedMovesRef.current.add(moveId);
+      // Remember that this move did nothing so the next search picks something
+      // else instead of repeating it.
+      solverBlockedRef.current.add(moveId);
       if (solverBlockedRef.current.size >= 4) {
         // Every direction stopped working. On a board that still has room this
         // is not a finished game — it is an overlay swallowing the input, which
@@ -2356,13 +2448,13 @@ Reply with ONLY a JSON object, no other text:
         if (plugin.readOverlay?.(canvas)) {
           return { stuck: true, board: state.board };
         }
-        return { gameOver: true, reason: "every direction blocked", board: state.board };
+        return { gameOver: true, reason: "every move blocked", board: state.board, state };
       }
     }
 
-    addAction(`solver.${move.key}`, { key: move.key }, { ok: true, changed });
-    return { ok: true, key: move.key, changed, reason: move.reason, board: state.board };
-  }, [getTiming, addLog, addAction, readScoresFromScreen, noteBestTile]);
+    addAction(`solver.${moveId}`, { move: moveId }, { ok: true, changed });
+    return { ok: true, key: moveId, changed, reason: move.reason, board: state.board, state };
+  }, [getTiming, addLog, addAction, readScoresFromScreen, noteBestTile, snapshot]);
 
 
   // ── Restart the game after it ends ──────────────────────────────────────────
@@ -3106,6 +3198,12 @@ REASONING STYLE (for analyse_game_state):
       gameBestTileRef.current = 0;
       setBestTile(0);
       screenScoreRef.current = null;   // the game resets SCORE, but not BEST
+      // A new board is emptier than the one before it, which the read-consistency
+      // check would otherwise see as squares un-opening themselves and reject
+      // every frame of the new game.
+      lastBoardRef.current = null;
+      readClashRef.current = 0;
+      snapshotsRef.current = 0;
       let gameOutcome = "ended";
 
     while (!stopRef.current) {
@@ -3162,13 +3260,37 @@ REASONING STYLE (for analyse_game_state):
               break;
             }
           }
-          gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
-          const full = sr.board && !sr.board.some(row => row.some(v => v === 0));
-          addLog(
-            full ? `Board full — no legal moves. Final score ${solverScoreRef.current}.`
-                 : `No move changes the board. Final score ${solverScoreRef.current}.`,
-            "warn");
-          if (sr.board) addLog(activePlugin.describeState({ board: sr.board }), "info");
+          // Say what happened in this game's own terms.
+          //
+          // "Board full — no legal moves. Final score 0. Highest tile 8" is 2048
+          // talking, and on a Minesweeper run it hid the only thing worth
+          // knowing: whether the game ended on a mine, and how much of the board
+          // had been cleared first. A plugin that can describe its own ending
+          // does; the rest keep the 2048 wording, which is where it came from.
+          const ending = sr.state && activePlugin.outcomeOf?.(sr.state);
+          if (ending) {
+            gameOutcome = ending.result === "won" ? "win" : ending.result === "lost" ? "lost" : "ended";
+            addLog(`Game over — ${ending.detail}.`, ending.result === "won" ? "success" : "warn");
+            if (activePlugin.scoreOf) {
+              currentScoreRef.current = activePlugin.scoreOf(sr.state);
+              setCurrentScore(currentScoreRef.current);
+            }
+          } else {
+            gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+            const full = sr.board && !sr.board.some(row => row.some(v => v === 0));
+            addLog(
+              full ? `Board full — no legal moves. Final score ${solverScoreRef.current}.`
+                   : `No move changes the board. Final score ${solverScoreRef.current}.`,
+              "warn");
+          }
+          if (sr.state ?? sr.board) addLog(activePlugin.describeState(sr.state ?? { board: sr.board }), "info");
+          if (sr.board) {
+            await snapshot("game-over", [
+              ending?.detail ?? "game over",
+              "",
+              activePlugin.renderBoard?.(sr.board) ?? "",
+            ].join("\n"));
+          }
           break;
         }
         if (sr.ok) {
@@ -3198,8 +3320,31 @@ REASONING STYLE (for analyse_game_state):
           if (solverFailRef.current < 3) continue;
         } else {
           solverFailRef.current++;
-          addLog(`Solver could not act (${sr.reason}) — attempt ${solverFailRef.current}/3.`, "warn");
-          if (solverFailRef.current < 3) { await new Promise(r => setTimeout(r, 400)); continue; }
+          addLog(`Solver could not act (${sr.reason}) — attempt ${solverFailRef.current}/${SOLVER_RETRIES}.`, "warn");
+          if (solverFailRef.current < SOLVER_RETRIES) {
+            // Back off a little further each time: a read usually fails because
+            // the frame caught the board mid-redraw, and waiting fixes that
+            // where retrying immediately does not.
+            await new Promise(r => setTimeout(r, 250 * solverFailRef.current));
+            continue;
+          }
+          // Handing a blind turn to the model is safe in 2048, where a wrong
+          // arrow key does nothing, and ruinous in Minesweeper, where every
+          // click is irreversible and a wrong one ends the game. Last run the
+          // model invented coordinates — (100,100), (600,600) — that were not
+          // even on the board; one of them left the pointer in a corner, which
+          // tripped pyautogui's fail-safe and broke every click after it. The
+          // model cannot see where the squares are, so it must not be asked to
+          // click them.
+          if (activePlugin.blindMovesAreFatal) {
+            addLog(
+              `Cannot read the board, and guessing at coordinates would end the game. ` +
+              `Stopping this game instead. The saved snapshot under logs/snapshots/ shows what was on screen.`,
+              "error");
+            await snapshot("gave-up", sr.reason ?? "board not readable");
+            gameOutcome = "stuck";
+            break;
+          }
           addLog("Falling back to the model for this turn.", "warn");
           solverFailRef.current = 0;
         }
@@ -3264,9 +3409,12 @@ REASONING STYLE (for analyse_game_state):
         { game: gameIdx + 1, score: thisScore, bestTile: thisBestTile,
           fromScreen: screenScoreRef.current != null, outcome: gameOutcome }];
       setGameScores([...gameScoresRef.current]);
+      // What a game is worth is not the same in every game: 2048 has a running
+      // score, Minesweeper has squares cleared and no score at all.
+      const scoreLabel = activePlugin?.scoreLabel ?? "score";
       addLog(
         `Game ${gameIdx + 1} finished — ${gameOutcome}` +
-        `${thisScore != null ? `, score ${thisScore}` : ""}` +
+        `${thisScore != null ? `, ${scoreLabel} ${thisScore}` : ""}` +
         `${thisBestTile ? `, highest tile ${thisBestTile}` : ""}.`,
         "success");
 
@@ -3284,11 +3432,15 @@ REASONING STYLE (for analyse_game_state):
         addLog("Could not start a new game — ending session.", "warn");
         break;
       }
-      // Fresh board: clear per-game state so nothing leaks across games
+      // Fresh board: clear per-game state so nothing leaks across games. The
+      // board read from the last game must go too — the new board is emptier
+      // than the old one, which the consistency check would otherwise read as
+      // squares un-opening themselves and reject every frame.
       currentScoreRef.current = null;
       setCurrentScore(null);
       lastTurnHashRef.current = null;
       forceStrategyRef.current = true;
+      activePlugin?.resetGrid?.();
     }
 
     // Per-game results, then the session roll-up. Each game is listed on its own
@@ -3443,7 +3595,9 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
 
   const phaseColor = { idle: C.dim, research: C.yellow, study: C.accentL, playing: C.green, restarting: C.yellow, ended: C.textDim }[phase] ?? C.dim;
   const logColors  = { info: C.text, assistant: C.accentL, tool: C.yellow, error: C.red, warn: C.yellow, success: C.green };
-  const outcomeColors = { won: C.green, lost: C.red, stuck: C.yellow, ended: C.textDim };
+  // The loop says "win", the model's signal_game_end says "won" — both mean the
+  // same thing, and colouring only one of them left real wins looking neutral.
+  const outcomeColors = { won: C.green, win: C.green, lost: C.red, stuck: C.yellow, ended: C.textDim };
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (

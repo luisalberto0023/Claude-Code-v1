@@ -182,19 +182,37 @@ function phaseOf(signal, p) {
  * raised square is lit from the top left, so that side is brighter than the
  * bottom right. The difference is what matters, so any skin that draws squares
  * as raised at all will read correctly.
+ *
+ * How far in to look cannot be fixed as a fraction of the square. A highlight
+ * is drawn a couple of pixels wide whatever the zoom, so a probe at a tenth of
+ * the way in sits inside it on a small square and past it on a large one — and
+ * past it there is nothing to see, because a square's two edges are then both
+ * plain interior and cancel. The symptom is not a wrong answer but silence:
+ * every square measures zero, the grid is judged to have no edges at all, and
+ * the correct spacing is thrown out in favour of a multiple of itself. That is
+ * what "edges too faint (0.0)" was, at exactly the sizes where a three-pixel
+ * bevel fell outside a tenth of the cell.
+ *
+ * So several depths are tried and the one that finds the most contrast wins.
+ * A square with no bevel reads near zero at every depth, which is the answer.
  */
 function bevel(data, w, h, x, y, pitch) {
-  const inset = Math.max(1, Math.round(pitch * 0.10));
   const from = Math.round(pitch * 0.25), to = Math.round(pitch * 0.75);
-  let tl = 0, br = 0, n = 0;
-  for (let k = from; k < to; k++) {
-    tl += lum(px(data, w, x + k, y + inset));
-    tl += lum(px(data, w, x + inset, y + k));
-    br += lum(px(data, w, x + k, y + pitch - 1 - inset));
-    br += lum(px(data, w, x + pitch - 1 - inset, y + k));
-    n += 2;
+  const deepest = Math.max(1, Math.min(4, Math.round(pitch * 0.12)));
+  let strongest = 0;
+  for (let inset = 1; inset <= deepest; inset++) {
+    let tl = 0, br = 0, n = 0;
+    for (let k = from; k < to; k++) {
+      tl += lum(px(data, w, x + k, y + inset));
+      tl += lum(px(data, w, x + inset, y + k));
+      br += lum(px(data, w, x + k, y + pitch - 1 - inset));
+      br += lum(px(data, w, x + pitch - 1 - inset, y + k));
+      n += 2;
+    }
+    const v = n ? (tl - br) / n : 0;
+    if (Math.abs(v) > Math.abs(strongest)) strongest = v;
   }
-  return n ? (tl - br) / n : 0;
+  return strongest;
 }
 
 /**
@@ -302,16 +320,41 @@ function classifyCell(data, w, h, x, y, pitch, thresholds) {
  * strength of a correlation, which can lock onto twice the pitch when covered
  * and opened rows alternate.
  */
+// What the last grid search looked at and why it turned each spacing down.
+// "No grid" on its own has cost several rounds of guessing at what the reader
+// disliked, so it now says.
+let gridTrace = null;
+export function lastGridSearch() { return gridTrace; }
+
 export function findGrid(canvasEl) {
   const img = imageData(canvasEl);
   if (!img) return null;
   const { data, w, h } = img;
   const area = boardRegion(data, w, h);
-  if (!area) return null;
+  if (!area) { gridTrace = { area: null, peaks: [], tried: [] }; return null; }
 
   const { cols: colSig, rows: rowSig } = edgeProfiles(data, w, h, area);
-  const candidates = [...new Set([...periodCandidates(colSig), ...periodCandidates(rowSig)])]
-    .filter(p => p >= 8).sort((a, b) => a - b);
+
+  // Every multiple of the true spacing correlates too, and on a board whose
+  // lines are faint the multiple can correlate better — so the peaks alone are
+  // not enough. Taking one lands on a grid of 6x10 squares where there are
+  // 16x30, and the board it produces is not partly wrong, it is wholly wrong:
+  // each "square" spans nine real ones, reads as whatever sits at its top left,
+  // and nothing downstream can tell. So every candidate's divisors are tried
+  // alongside it, and the scoring below — which rewards a spacing that yields
+  // more squares that read as squares — settles which is real.
+  const peaks = [...new Set([...periodCandidates(colSig), ...periodCandidates(rowSig)])];
+  const withDivisors = new Set();
+  for (const p of peaks) {
+    withDivisors.add(p);
+    for (let d = 2; d <= 6; d++) if (p % d === 0) withDivisors.add(p / d);
+  }
+  const candidates = [...withDivisors].filter(p => p >= 8).sort((a, b) => a - b);
+
+  // Why each spacing was rejected. Reported by diagnose(), because "no grid" on
+  // its own has cost several rounds of guessing at what the reader disliked.
+  gridTrace = { area, peaks: [...peaks].sort((a, b) => a - b), tried: [] };
+  const reject = (pitch, why) => gridTrace.tried.push({ pitch, why });
 
   let bestGrid = null;
   for (const pitch of candidates) {
@@ -334,10 +377,10 @@ export function findGrid(canvasEl) {
         samples.push(bevel(data, w, h, gx, gy, pitch));
       }
     }
-    if (samples.length < 25) continue;
+    if (samples.length < 25) { reject(pitch, `only ${samples.length} squares fit`); continue; }
     const magnitudes = samples.map(Math.abs).sort((a, b) => a - b);
     const scale = magnitudes[Math.floor(magnitudes.length * 0.9)];
-    if (scale < 12) continue;
+    if (scale < 12) { reject(pitch, `edges too faint (${scale.toFixed(1)})`); continue; }
     const threshold = scale * 0.35;
     const outlineSamples = [];
     for (let gy = y0; gy + pitch <= area.y + area.h; gy += pitch) {
@@ -397,7 +440,7 @@ export function findGrid(canvasEl) {
 
     const vRun = runOf(rowSig, y0, area.y + area.h - 1, area.y);
     const hRun = runOf(colSig, x0, area.x + area.w - 1, area.x);
-    if (!vRun || !hRun) continue;
+    if (!vRun || !hRun) { reject(pitch, !vRun && !hRun ? "no run of grid lines either way" : !vRun ? "no run of horizontal lines" : "no run of vertical lines"); continue; }
 
     const top = vRun.from, left = hRun.from;
 
@@ -437,7 +480,7 @@ export function findGrid(canvasEl) {
         }
       }
     }
-    if (bestFrac < 0.95) continue;
+    if (bestFrac < 0.95) { reject(pitch, `only ${Math.round(Math.max(0, bestFrac) * 100)}% of squares read as squares`); continue; }
     bestFrac = Math.min(bestFrac, 1);
 
     // Prefer the reading that classifies the most squares. A wrong spacing can
@@ -455,29 +498,83 @@ export function findGrid(canvasEl) {
  * Read the whole board.
  * Returns { board, rows, cols, grid } or null when it cannot be read.
  */
-export function readState(canvasEl, gridHint = null) {
-  const grid = gridHint || findGrid(canvasEl);
-  if (!grid) return null;
-  const img = imageData(canvasEl);
-  if (!img) return null;
-  const { data, w, h } = img;
+/**
+ * The grid, once found, is kept and reused.
+ *
+ * findGrid measures spacing from where brightness changes sharply, so what it
+ * sees depends on what is drawn on the board — and that changes with every
+ * move. Re-deriving the grid from each frame meant the geometry drifted as
+ * squares opened: a run would read cleanly at first and then start failing, or
+ * worse, lock onto an origin a couple of pixels out, at which point every
+ * square is sampled across its own border and a live board reads as untouched.
+ * That is what "best guess — 20.6% chance of a mine" was: 99/480, the density
+ * of a board with nothing on it, on a board with a hundred squares open.
+ *
+ * The board does not move while it is being played, so the grid is measured
+ * once, reused, and only re-measured when it stops reading.
+ */
+let lockedGrid = null;
+let lastUnreadable = [];
+let lockDrops = 0;
 
+/** Forget the locked grid — the board has moved, or a new one has started. */
+export function resetGrid() { lockedGrid = null; }
+
+/** The grid currently locked in, for the HUD and for diagnostics. */
+export function getGrid() { return lockedGrid; }
+
+const gridFits = (grid, w, h) =>
+  grid && grid.capture?.w === w && grid.capture?.h === h;
+
+/** Read every square on a known grid. Returns null if any square is unreadable. */
+function readOnGrid(data, w, h, grid) {
   const board = [];
-  let unread = 0;
+  const unreadable = [];
   for (let r = 0; r < grid.rows; r++) {
     const row = [];
     for (let c = 0; c < grid.cols; c++) {
       const v = classifyCell(data, w, h, grid.x + c * grid.pitch, grid.y + r * grid.pitch,
         grid.pitch, grid.thresholds ?? grid.threshold);
-      if (v === null) { unread++; row.push(UNKNOWN); } else row.push(v);
+      if (v === null) { unreadable.push(`r${r}c${c}`); row.push(UNKNOWN); } else row.push(v);
     }
     board.push(row);
   }
   // A square that cannot be read must not pass as covered: the solver would
   // treat it as somewhere still to explore and reason about a board that is not
   // there. An incomplete read is no read.
-  if (unread > 0) return null;
-  return { board, rows: grid.rows, cols: grid.cols, grid };
+  return unreadable.length ? { board: null, unreadable } : { board, unreadable };
+}
+
+export function readState(canvasEl, gridHint = null) {
+  const img = imageData(canvasEl);
+  if (!img) return null;
+  const { data, w, h } = img;
+
+  // Try the grid we already have before paying for detection again. Detection
+  // is both the expensive part of a read and the part that drifts.
+  const known = gridHint || (gridFits(lockedGrid, w, h) ? lockedGrid : null);
+  if (known) {
+    const { board, unreadable } = readOnGrid(data, w, h, known);
+    if (board) return { board, rows: known.rows, cols: known.cols, grid: known };
+    lastUnreadable = unreadable;
+    if (known === lockedGrid) { lockedGrid = null; lockDrops++; }
+  }
+
+  const grid = findGrid(canvasEl);
+  if (!grid) return null;
+  const { board, unreadable } = readOnGrid(data, w, h, grid);
+  if (!board) { lastUnreadable = unreadable; return null; }
+  lockedGrid = { ...grid, capture: { w, h } };
+  return { board, rows: grid.rows, cols: grid.cols, grid: lockedGrid };
+}
+
+/** Which squares defeated the last failed read — for the log. */
+export function lastReadFailure() {
+  if (!lastUnreadable.length) return null;
+  const shown = lastUnreadable.slice(0, 8).join(" ");
+  const tail = lastUnreadable.length > 8 ? ` … and ${lastUnreadable.length - 8} more` : "";
+  const drops = lockDrops ? ` (grid re-measured ${lockDrops}×)` : "";
+  return `${lastUnreadable.length} square${lastUnreadable.length > 1 ? "s" : ""}: ${shown}${tail}${drops}`;
 }
 
 /**
@@ -514,7 +611,14 @@ export function diagnose(canvasEl) {
   out.colPeriods = periodCandidates(colSig).join(", ") || "none";
   out.rowPeriods = periodCandidates(rowSig).join(", ") || "none";
 
+  resetGrid();                       // diagnose measures, never reuses
   const grid = findGrid(canvasEl);
+  // Say what each spacing was turned down for. "No grid" on its own has cost
+  // several rounds of guessing at what the reader disliked; the reasons name it.
+  const trace = lastGridSearch();
+  if (trace?.tried?.length) {
+    out.spacingsTried = trace.tried.map(t => `${t.pitch}px: ${t.why}`);
+  }
   if (!grid) {
     out.notes.push("no spacing produced a usable grid of cells");
     return out;
@@ -577,27 +681,113 @@ export function chooseMove(state) {
 }
 
 export function isTerminal(state) {
-  // A revealed mine ends it immediately, however much is left covered.
-  for (const row of state.board) for (const v of row) if (v === MINE) return true;
-  // Otherwise won when every square that is not a mine has been opened.
-  const level = levelOf(state.rows, state.cols);
-  if (!level) return false;
-  let covered = 0;
-  for (const row of state.board) for (const v of row) if (v === UNKNOWN || v === FLAG) covered++;
-  return covered <= level.mines;
+  return outcomeOf(state).result !== "playing";
 }
 
-export function describeState(state) {
-  let covered = 0, flags = 0, opened = 0;
-  for (const row of state.board) {
+/**
+ * How this game ended, in Minesweeper's own terms.
+ *
+ * "Board full — no legal moves, final score 0, highest tile 8" is 2048 talking,
+ * and it hid what actually happened every single game: whether the run ended on
+ * a mine or was cut short, and how much of the board it had cleared first.
+ */
+export function outcomeOf(state) {
+  const board = state.board ?? state;
+  const rows = state.rows ?? board.length;
+  const cols = state.cols ?? board[0]?.length ?? 0;
+  const { covered, opened, mines } = tally(board);
+  const level = levelOf(rows, cols);
+  const safeTotal = level ? rows * cols - level.mines : null;
+  const cleared = safeTotal ? Math.round((opened / safeTotal) * 100) : null;
+
+  // A revealed mine ends it immediately, however much is left covered.
+  if (mines) {
+    return {
+      result: "lost", opened, cleared,
+      detail: `opened a mine — ${opened} squares cleared${cleared != null ? ` (${cleared}% of the board)` : ""}`,
+    };
+  }
+  // Otherwise won when every square that is not a mine has been opened.
+  if (level && covered <= level.mines) {
+    return { result: "won", opened, cleared: 100, detail: `cleared the board — every one of the ${safeTotal} safe squares` };
+  }
+  return { result: "playing", opened, cleared, detail: `${opened} squares cleared, ${covered} to go` };
+}
+
+/** What a finished game is worth: squares cleared. There is no running score. */
+export function scoreOf(state) { return tally(state.board ?? state).opened; }
+
+/** Count what is on a board, in the terms this game is scored in. */
+export function tally(board) {
+  let covered = 0, flags = 0, opened = 0, blank = 0, mines = 0;
+  for (const row of board) {
     for (const v of row) {
       if (v === UNKNOWN) covered++;
       else if (v === FLAG) flags++;
-      else opened++;
+      else if (v === MINE) mines++;
+      else { opened++; if (v === 0) blank++; }
     }
   }
-  const level = levelOf(state.rows, state.cols);
-  return `${level?.label ?? `${state.rows}x${state.cols}`}: ${opened} opened, ${flags} flagged, ${covered} covered`;
+  return { covered, flags, opened, blank, mines };
+}
+
+export function describeState(state) {
+  const board = state.board ?? state;
+  const rows = state.rows ?? board.length;
+  const cols = state.cols ?? board[0]?.length ?? 0;
+  const { covered, flags, opened, mines } = tally(board);
+  const level = levelOf(rows, cols);
+  const hit = mines ? `, ${mines} mine${mines > 1 ? "s" : ""} showing` : "";
+  return `${level?.label ?? `${rows}×${cols}`}: ${opened} opened, ${flags} flagged, ${covered} covered${hit}`;
+}
+
+/**
+ * The board as text, for the log and for the saved record of a run.
+ *
+ * Every round of troubleshooting so far has been guesswork over a log that said
+ * what the solver decided but never what it was looking at. A board that reads
+ * as untouched and a board that is untouched produce the same line — "best
+ * guess, 20.6%" — and only the picture tells them apart.
+ */
+export function renderBoard(board) {
+  const sym = v =>
+    v === UNKNOWN ? "·" : v === FLAG ? "⚑" : v === MINE ? "✱" : v === 0 ? " " : String(v);
+  const width = String(board[0]?.length ?? 0).length;
+  const head = "    " + board[0]?.map((_, c) => String(c % 10)).join("") ?? "";
+  const lines = board.map((row, r) =>
+    `${String(r).padStart(width)} |${row.map(sym).join("")}|`);
+  return [head, ...lines].join("\n");
+}
+
+/**
+ * Whether a fresh read can be squared with the one before it.
+ *
+ * Minesweeper only ever moves one way: a square that has been opened stays
+ * open and keeps its number, and mines do not disappear. Anything else is the
+ * reader being wrong, not the game changing — which is worth catching, because
+ * a board misread as untouched still yields a legal-looking move, and the
+ * agent will happily play it and lose. Returns a description of the first
+ * contradiction, or null when the two are consistent.
+ */
+export function contradicts(prev, next) {
+  if (!prev || !next) return null;
+  const a = prev.board ?? prev, b = next.board ?? next;
+  if (a.length !== b.length || a[0]?.length !== b[0]?.length) {
+    return `board changed size (${a.length}×${a[0]?.length} → ${b.length}×${b[0]?.length})`;
+  }
+  const opened = v => v !== UNKNOWN && v !== FLAG;
+  let reverted = 0, changed = 0, first = null;
+  for (let r = 0; r < a.length; r++) {
+    for (let c = 0; c < a[r].length; c++) {
+      const was = a[r][c], now = b[r][c];
+      if (!opened(was) || was === now) continue;
+      if (!opened(now)) { reverted++; first ??= `r${r}c${c} was ${was}, now covered`; }
+      else { changed++; first ??= `r${r}c${c} was ${was}, now ${now}`; }
+    }
+  }
+  const total = reverted + changed;
+  if (!total) return null;
+  return `${total} opened square${total > 1 ? "s" : ""} disagree with the previous read (${first})`;
 }
 
 /**
@@ -640,6 +830,19 @@ export const plugin = {
   label: "Minesweeper (board reader + constraint solver)",
   match, readState, chooseMove, isTerminal, describeState,
   findGrid, levelOf, LEVELS, MINE, findRestartButton, diagnose,
+  // Reading and reporting: the agent uses these to check its own perception and
+  // to describe a run in Minesweeper's terms rather than 2048's.
+  resetGrid, getGrid, lastReadFailure, contradicts, renderBoard,
+  outcomeOf, scoreOf, tally,
+  // "Highest tile" means something in 2048 and nothing here, where the same
+  // numbers count neighbouring mines. There is no running score either — what a
+  // game is worth is how much of the board it cleared.
+  tracksTiles: false,
+  scoreLabel: "squares cleared",
+  // Every click here is irreversible and a wrong one ends the game, so a turn
+  // must never be handed to the model to click at coordinates it guessed. In
+  // 2048 a wrong arrow key does nothing and the same fallback is harmless.
+  blindMovesAreFatal: true,
 };
 
 export default plugin;

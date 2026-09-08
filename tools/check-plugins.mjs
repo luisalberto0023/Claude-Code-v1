@@ -34,6 +34,12 @@ if (!registered.length) {
 // catch.
 const RECEIVER = "(?:plug|plugin|activePlugin|learnPlugin)";
 const called = new Set(), guarded = new Set();
+// `plugin.x?.(…)` is an optional CALL, not an optional member access, and it is
+// the commonest guarded form in the agent. Match it before the plain-call
+// pattern, which would otherwise miss it and leave those members unchecked
+// altogether — neither required nor optional, which is the same blind spot this
+// file exists to close.
+for (const m of src.matchAll(new RegExp(`\\b${RECEIVER}\\.\\s*(\\w+)\\?\\.\\s*\\(`, "g"))) guarded.add(m[1]);
 for (const m of src.matchAll(new RegExp(`\\b${RECEIVER}\\.\\s*(\\w+)\\s*\\(`, "g"))) called.add(m[1]);
 for (const m of src.matchAll(new RegExp(`\\b${RECEIVER}\\?\\.\\s*(\\w+)`, "g"))) guarded.add(m[1]);
 // Anything tested before use is guarded too: `plugin.x &&`, `if (plugin.x)`,
