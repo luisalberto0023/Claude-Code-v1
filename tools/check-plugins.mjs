@@ -10,7 +10,7 @@
 
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath, pathToFileURL } from "url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const AGENT = path.join(HERE, "..", "src", "GameAgent.jsx");
@@ -51,7 +51,11 @@ for (const skip of ["current", "id", "label"]) required.delete(skip);
 
 let failed = false;
 for (const p of registered) {
-  const mod = await import(path.join(HERE, "..", "src", p.file.replace("./", "")));
+  // import() takes a URL, not a path. A POSIX path happens to work as one; a
+  // Windows path does not — "C:\..." parses as a URL with the scheme "c:" and
+  // the loader rejects it. pathToFileURL is the conversion, and skipping it is
+  // an error only Windows ever sees.
+  const mod = await import(pathToFileURL(path.join(HERE, "..", "src", p.file.replace("./", ""))).href);
   const obj = mod.default ?? mod.plugin;
   const missing = [...required].filter(n => typeof obj?.[n] === "undefined");
   // Also flag anything exported from the module but absent from the object,
