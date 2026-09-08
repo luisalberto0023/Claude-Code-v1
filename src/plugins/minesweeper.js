@@ -24,6 +24,7 @@
 import { solve, UNKNOWN, FLAG } from "./minesweeper-solver.js";
 
 export { UNKNOWN, FLAG };
+export const MINE = -3;
 
 const FACE = [192, 192, 192];       // cell fill and board background
 const HIGHLIGHT = [255, 255, 255];  // top/left bevel of an unopened square
@@ -142,15 +143,30 @@ export function findGrid(canvasEl) {
     return s;
   };
   const periodOf = (s) => {
-    let best = null, bestScore = 0;
-    for (let p = 8; p <= Math.min(64, Math.floor(s.length / 4)); p++) {
+    const hi = Math.min(64, Math.floor(s.length / 4));
+    const scores = new Map();
+    let bestScore = 0, best = null;
+    for (let p = 8; p <= hi; p++) {
       let acc = 0, n = 0;
       for (let i = 0; i + p < s.length; i++) { acc += s[i] * s[i + p]; n++; }
       // Normalised so long periods are not favoured simply by overlapping less.
       const score = n ? acc / n : 0;
+      scores.set(p, score);
       if (score > bestScore) { bestScore = score; best = p; }
     }
-    return bestScore > 0 ? best : null;
+    if (bestScore <= 0 || best == null) return null;
+    // A signal repeating every cell also repeats every two cells, and twice the
+    // pitch can score higher when rows alternate — covered rows carry more bevel
+    // than opened ones — which measured the grid at double its true size and put
+    // every cell in the wrong place. Only whole fractions of the best period can
+    // be the real one, so those are the only alternatives considered; anything
+    // else that happens to score well is a different signal, not this one.
+    for (let k = 8; k >= 2; k--) {
+      const candidate = best / k;
+      if (!Number.isInteger(candidate) || candidate < 8) continue;
+      if ((scores.get(candidate) ?? 0) >= bestScore * 0.8) return candidate;
+    }
+    return best;
   };
   const phaseOf = (s, p) => {
     let best = 0, bestSum = -Infinity;
@@ -165,66 +181,82 @@ export function findGrid(canvasEl) {
   const colSig = signalAlong(area.w, area.h, (i, j) => isEdge(area.x + i, area.y + j));
   const rowSig = signalAlong(area.h, area.w, (i, j) => isEdge(area.x + j, area.y + i));
   const pitchX = periodOf(colSig), pitchY = periodOf(rowSig);
-  if (!pitchX || !pitchY || Math.abs(pitchX - pitchY) > 2) return null;   // cells are square
-  const pitch = Math.round((pitchX + pitchY) / 2);
+  if (!pitchX && !pitchY) return null;
 
-  const x0 = area.x + phaseOf(colSig, pitch);
-  const y0 = area.y + phaseOf(rowSig, pitch);
+  // Try the pitches the two axes suggest, and their halves, and keep whichever
+  // actually produces a grid of cells.
+  //
+  // The signal is not always trustworthy on its own: a board whose covered and
+  // opened rows alternate repeats every two rows as well as every one, so an
+  // axis can lock onto twice the pitch, and a short axis can lock onto nothing
+  // meaningful at all. Rather than deciding from the signal and hoping, each
+  // candidate is laid over the picture and judged by whether the squares it
+  // implies actually look like cells. That check already exists, and it is a far
+  // better arbiter than the strength of a correlation.
+  const candidates = [...new Set([
+    pitchX, pitchY,
+    pitchX && pitchY ? Math.round((pitchX + pitchY) / 2) : null,
+    pitchX ? Math.round(pitchX / 2) : null,
+    pitchY ? Math.round(pitchY / 2) : null,
+  ].filter(p => p && p >= 8))].sort((a, b) => a - b);
 
-  // Trim to the squares that actually look like cells: the frame reaches above
-  // the grid to hold the counters and the face, and those rows are not cells.
-  const looksLikeCell = (cx, cy) => {
-    if (cx + pitch > w || cy + pitch > h) return false;
-    if (isRaised(data, w, h, cx, cy, pitch)) return true;
-    // An opened cell is flat through the middle AND carries a grid line along
-    // its top or left edge. Without that second half the frame qualifies too —
-    // it is the same flat grey, which is what put the top of the grid up in the
-    // rows holding the counters and the face.
-    let face = 0, n = 0;
-    for (let dy = Math.round(pitch * 0.3); dy < pitch * 0.7; dy += 2) {
-      for (let dx = Math.round(pitch * 0.3); dx < pitch * 0.7; dx += 2) {
-        n++; if (dist2(px(data, w, cx + dx, cy + dy), FACE) <= 900) face++;
+  let bestGrid = null;
+  for (const pitch of candidates) {
+    const x0 = area.x + phaseOf(colSig, pitch);
+    const y0 = area.y + phaseOf(rowSig, pitch);
+
+    const looksLikeCell = (cx, cy) => {
+      if (cx + pitch > w || cy + pitch > h) return false;
+      if (isRaised(data, w, h, cx, cy, pitch)) return true;
+      // An opened cell carries a grid line along its top or left edge. What is
+      // drawn inside says nothing — a large number covers most of the middle and
+      // a mine covers more still, so any requirement to be mostly-grey there
+      // rejects exactly the cells carrying the information. The frame has no
+      // grid lines, which is what it needs to be told apart from.
+      let line = 0, lineN = 0;
+      for (let k = Math.round(pitch * 0.3); k < pitch * 0.7; k += 2) {
+        lineN += 2;
+        if (dist2(px(data, w, cx + k, cy), SHADOW) <= 900) line++;
+        if (dist2(px(data, w, cx, cy + k), SHADOW) <= 900) line++;
       }
+      return lineN > 0 && line / lineN > 0.3;
+    };
+    const rowOk = (gy) => {
+      let ok = 0, n = 0;
+      for (let gx = x0; gx + pitch <= area.x + area.w; gx += pitch) { n++; if (looksLikeCell(gx, gy)) ok++; }
+      return n >= 5 && ok / n > 0.8;
+    };
+    const colOk = (gx, top, bottom) => {
+      let ok = 0, n = 0;
+      for (let gy = top; gy + pitch <= bottom; gy += pitch) { n++; if (looksLikeCell(gx, gy)) ok++; }
+      return n >= 5 && ok / n > 0.8;
+    };
+
+    let top = y0;
+    while (top + pitch <= area.y + area.h && !rowOk(top)) top += pitch;
+    let bottom = top;
+    while (bottom + pitch <= area.y + area.h && rowOk(bottom)) bottom += pitch;
+    if (bottom - top < pitch * 5) continue;
+
+    let left = x0;
+    while (left + pitch <= area.x + area.w && !colOk(left, top, bottom)) left += pitch;
+    let right = left;
+    while (right + pitch <= area.x + area.w && colOk(right, top, bottom)) right += pitch;
+    if (right - left < pitch * 5) continue;
+
+    const cols = Math.round((right - left) / pitch);
+    const rows = Math.round((bottom - top) / pitch);
+    if (cols < 5 || rows < 5 || cols > 40 || rows > 40) continue;
+
+    // Prefer the candidate covering the most of the board: a pitch that is too
+    // large still validates, over fewer, larger squares.
+    const covered = rows * cols * pitch * pitch;
+    if (!bestGrid || covered > bestGrid.covered) {
+      bestGrid = { x: left, y: top, pitch, rows, cols, covered };
     }
-    // A low bar on the fill: a large number covers most of the middle, so
-    // demanding mostly-grey there rejects exactly the cells that carry the
-    // information, and the grid shrank to the emptiest part of the board.
-    if (!n || face / n < 0.12) return false;
-    let line = 0, lineN = 0;
-    for (let k = Math.round(pitch * 0.3); k < pitch * 0.7; k += 2) {
-      lineN += 2;
-      if (dist2(px(data, w, cx + k, cy), SHADOW) <= 900) line++;
-      if (dist2(px(data, w, cx, cy + k), SHADOW) <= 900) line++;
-    }
-    return lineN > 0 && line / lineN > 0.3;
-  };
-  const rowOk = (gy) => {
-    let ok = 0, n = 0;
-    for (let gx = x0; gx + pitch <= area.x + area.w; gx += pitch) { n++; if (looksLikeCell(gx, gy)) ok++; }
-    return n >= 5 && ok / n > 0.8;
-  };
-  const colOk = (gx, top, bottom) => {
-    let ok = 0, n = 0;
-    for (let gy = top; gy + pitch <= bottom; gy += pitch) { n++; if (looksLikeCell(gx, gy)) ok++; }
-    return n >= 5 && ok / n > 0.8;
-  };
-
-  let top = y0;
-  while (top + pitch <= area.y + area.h && !rowOk(top)) top += pitch;
-  let bottom = top;
-  while (bottom + pitch <= area.y + area.h && rowOk(bottom)) bottom += pitch;
-  if (bottom - top < pitch * 5) return null;
-
-  let left = x0;
-  while (left + pitch <= area.x + area.w && !colOk(left, top, bottom)) left += pitch;
-  let right = left;
-  while (right + pitch <= area.x + area.w && colOk(right, top, bottom)) right += pitch;
-  if (right - left < pitch * 5) return null;
-
-  const cols = Math.round((right - left) / pitch);
-  const rows = Math.round((bottom - top) / pitch);
-  if (cols < 5 || rows < 5 || cols > 40 || rows > 40) return null;
-
+  }
+  if (!bestGrid) return null;
+  const { x: left, y: top, pitch, rows, cols } = bestGrid;
   return { x: left, y: top, pitch, rows, cols };
 }
 
@@ -273,6 +305,15 @@ function readCell(data, w, h, x, y, pitch) {
   const area = (hi - lo) * (hi - lo);
   if (marks.length < area * 0.04) return 0;
 
+  // A mine is a filled disc, so it covers far more of the cell than any digit
+  // does. Without this it reads as a 7 — both are black — and a lost game looks
+  // like a playable one.
+  // The disc covers roughly two thirds of the sampled middle; a digit's strokes
+  // cover a quarter at most. At 0.3 a bold 7 crossed the line and a playable
+  // board looked lost.
+  const dark = marks.filter(c => c[0] < 90 && c[1] < 90 && c[2] < 90).length;
+  if (dark > area * 0.45) return MINE;
+
   // Which number, by the colour of its strokes: a vote over the mark pixels,
   // which is steadier than reading the digit's shape at this size.
   const votes = new Map();
@@ -320,6 +361,14 @@ export function readState(canvasEl, gridHint = null) {
   return { board, rows: grid.rows, cols: grid.cols, grid };
 }
 
+// Exposed for tests: reading one square is where a skin difference shows up
+// first, and diagnosing that through a whole-board read hides which cell failed.
+export function __readCellAt(canvasEl, grid, r, c) {
+  const w = canvasEl.width, h = canvasEl.height;
+  const data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  return readCell(data, w, h, grid.x + c * grid.pitch, grid.y + r * grid.pitch, grid.pitch);
+}
+
 /** Which level is this board? Recognised by its shape. */
 export function levelOf(rows, cols) {
   for (const [key, l] of Object.entries(LEVELS)) {
@@ -331,14 +380,32 @@ export function levelOf(rows, cols) {
 export function chooseMove(state) {
   const level = levelOf(state.rows, state.cols);
   const mines = state.mines ?? level?.mines;
-  if (!mines) return null;
+  if (!mines || !state.grid) return null;
   const result = solve(state.board, mines);
   if (!result.actions.length) return null;
-  return result;
+
+  const { x, y, pitch } = state.grid;
+  const half = Math.floor(pitch / 2);
+  // Certain moves can be played together; a guess is played alone so the board
+  // is re-read before anything is built on it.
+  const chosen = result.certain ? result.actions : result.actions.slice(0, 1);
+  return {
+    actions: chosen.map(a => ({
+      type: "click",
+      button: a.type === "flag" ? "right" : "left",
+      x: x + a.c * pitch + half,
+      y: y + a.r * pitch + half,
+      label: `${a.type} r${a.r}c${a.c}`,
+    })),
+    reason: result.reason,
+    certain: result.certain,
+  };
 }
 
 export function isTerminal(state) {
-  // Won when every square that is not a mine has been opened.
+  // A revealed mine ends it immediately, however much is left covered.
+  for (const row of state.board) for (const v of row) if (v === MINE) return true;
+  // Otherwise won when every square that is not a mine has been opened.
   const level = levelOf(state.rows, state.cols);
   if (!level) return false;
   let covered = 0;
@@ -359,6 +426,37 @@ export function describeState(state) {
   return `${level?.label ?? `${state.rows}x${state.cols}`}: ${opened} opened, ${flags} flagged, ${covered} covered`;
 }
 
+/**
+ * The face above the board, which starts a fresh game.
+ *
+ * Located from the grid rather than by hunting the whole screen: it sits
+ * centred over the columns, in the panel above them. The generic button finder
+ * does not see it — it is a small square, and that finder looks for wide
+ * labelled controls.
+ */
+export function findRestartButton(canvasEl, gridHint = null) {
+  const grid = gridHint || findGrid(canvasEl);
+  if (!grid) return null;
+  const w = canvasEl.width, h = canvasEl.height;
+  let data;
+  try {
+    data = canvasEl.getContext("2d", { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+  } catch { return null; }
+
+  // The face is the only yellow thing on a board drawn entirely in greys.
+  const midX = grid.x + Math.round((grid.cols * grid.pitch) / 2);
+  const top = Math.max(0, grid.y - Math.round(grid.pitch * 4));
+  let sumX = 0, sumY = 0, n = 0;
+  for (let y = top; y < grid.y; y++) {
+    for (let x = Math.max(0, midX - grid.pitch * 6); x < Math.min(w, midX + grid.pitch * 6); x++) {
+      const c = px(data, w, x, y);
+      if (c[0] > 180 && c[1] > 150 && c[2] < 120) { sumX += x; sumY += y; n++; }
+    }
+  }
+  if (n < 20) return null;
+  return { x: Math.round(sumX / n), y: Math.round(sumY / n), kind: "new-game", restarts: true };
+}
+
 export function match(gameDesc) {
   return /mine\s*sweeper|minesweeper/i.test(String(gameDesc ?? ""));
 }
@@ -367,7 +465,7 @@ export const plugin = {
   id: "minesweeper",
   label: "Minesweeper (board reader + constraint solver)",
   match, readState, chooseMove, isTerminal, describeState,
-  findGrid, levelOf, LEVELS,
+  findGrid, levelOf, LEVELS, MINE, findRestartButton,
 };
 
 export default plugin;

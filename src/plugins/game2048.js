@@ -1148,6 +1148,7 @@ export function match(gameDesc) {
 export const plugin = {
   id: "2048",
   label: "2048 (board reader + expectimax solver)",
+  tracksTiles: true,   // "highest tile" is a real measure of progress here
   match, readState, chooseMove, isTerminal, describeState, applyMove, legalMoves,
   diagnose, findRestartButton, isGameOverScreen, looksLikeNewGame,
   readScores, lastReadFailure, readOverlay,

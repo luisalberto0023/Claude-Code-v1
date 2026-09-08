@@ -1,12 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import game2048 from "./plugins/game2048.js";
+import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
 // moves by search instead of asking the model — far more reliable than a small
 // vision model, and effectively free.
-const GAME_PLUGINS = [game2048];
+const GAME_PLUGINS = [game2048, minesweeper];
 function findPlugin(gameDesc) {
   return GAME_PLUGINS.find(p => p.match(gameDesc)) ?? null;
 }
@@ -2278,10 +2279,25 @@ Reply with ONLY a JSON object, no other text:
     }
 
     const timing = getTiming();
-    const res = await backend("/keyboard/press", { key: move.key });
-    if (!res.ok) {
-      addLog(`⚠ Backend key error: ${res.error}`, "error");
-      return { fallback: true, reason: "key failed" };
+
+    // A move is a list of things to do, not necessarily a keypress. 2048 is
+    // played with the arrow keys, Minesweeper by clicking squares — left to
+    // open, right to flag — so the plugin says what to do and this carries it
+    // out, rather than assuming every game is driven the same way.
+    const actions = move.actions ?? [{ type: "key", key: move.key }];
+    const scale = solverScaleRef.current.scale || 1;
+    for (const a of actions) {
+      const res = a.type === "click"
+        ? await backend("/mouse/click", {
+            x: Math.round(a.x * scale), y: Math.round(a.y * scale),
+            button: a.button || "left",
+          })
+        : await backend("/keyboard/press", { key: a.key });
+      if (!res.ok) {
+        addLog(`⚠ Backend ${a.type} error: ${res.error}`, "error");
+        return { fallback: true, reason: `${a.type} failed` };
+      }
+      if (actions.length > 1) await new Promise(r => setTimeout(r, 40));
     }
 
     // Let the tiles animate, then re-read and compare — a real state check
@@ -2318,7 +2334,9 @@ Reply with ONLY a JSON object, no other text:
 
       currentScoreRef.current = screenScoreRef.current ?? solverScoreRef.current;
       setCurrentScore(currentScoreRef.current);
-      noteBestTile(after.board);
+      // "Highest tile" means something in 2048 and nothing in Minesweeper, where
+      // the same numbers count neighbouring mines.
+      if (plugin.tracksTiles) noteBestTile(after.board);
       noOpStreakRef.current = 0;
       lastFailedMovesRef.current.clear();
       solverBlockedRef.current.clear();
