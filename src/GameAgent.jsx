@@ -1550,7 +1550,19 @@ export default function GameAgent() {
 
   const startCapture = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+      // Ask for a capture without the pointer drawn into it.
+      //
+      // The agent clicks a square and then reads the board, so the pointer is
+      // parked on the square it just played — and a cursor drawn over a square
+      // is ink the reader has to account for. On a real run it covered a red 3
+      // and made that square unreadable, six retries in a row, and the game was
+      // abandoned with the rest of the board perfectly legible.
+      //
+      // Not every browser honours this, so the pointer is also moved off the
+      // board after each move. Belt and braces, because either alone has failed.
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: "never" }, audio: false,
+      }).catch(() => navigator.mediaDevices.getDisplayMedia({ video: true, audio: false }));
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -2401,6 +2413,14 @@ Reply with ONLY a JSON object, no other text:
       if (actions.length > 1) await new Promise(r => setTimeout(r, 40));
     }
 
+    // Get the pointer off the board before looking at it again. Whatever the
+    // capture draws the cursor as, it is opaque, and it is sitting on the square
+    // that was just played — which is the one whose new value matters most.
+    const park = plugin.parkPoint?.(state);
+    if (park) {
+      await backend("/mouse/move", { x: Math.round(park.x * scale), y: Math.round(park.y * scale) });
+    }
+
     // Let the tiles animate, then re-read and compare — a real state check
     // rather than a pixel-difference guess.
     await new Promise(r => setTimeout(r, Math.max(180, timing.actionPace || 0) + 220));
@@ -3009,7 +3029,9 @@ Reply with ONLY a JSON object, no other text:
       research = await runResearch(apiKey);
       if (stopRef.current) { setRunning(false); setPhase("idle"); return; }
     } else if (activePlugin && !skipResearch) {
-      addLog("Skipping research — the solver picks the moves, so strategy notes are not used.", "info");
+      addLog(
+        `${activePlugin.label} is played by the solver, which reads the board and works out the moves itself — ` +
+        `so no strategy notes are fetched and the model is not asked what it sees.`, "info");
     }
 
     // Build system prompt
@@ -3103,8 +3125,39 @@ REASONING STYLE (for analyse_game_state):
       addLog(`⚠ System prompt is large (≈${promptTokEst} tok) for a local model — turns may stall. Enable "Skip research phase" and/or Clear Memory to shrink it.`, "warn");
     }
 
-    // Study phase — 3 observe-only turns to understand the game state
+    // Study phase — look at the board before playing.
     setPhase("study");
+
+    // When a plugin owns the game, it does the looking.
+    //
+    // Asking the model to describe a board the solver can read outright was
+    // worse than useless. On a fresh 30x16 Expert grid it reported "a 9x9 board,
+    // top-left cell shows 1, top-middle shows 2" — a board that was not there,
+    // three times over, ten seconds each, and then the run began with that
+    // sitting in its context. The measurement is exact, immediate and free.
+    if (activePlugin?.readState) {
+      addLog("Looking at the board…", "info");
+      const canvas = solverCanvasRef.current;
+      let state = null;
+      if (canvas) {
+        for (let i = 0; i < 3 && !state; i++) {
+          captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
+          state = activePlugin.readState(canvas);
+          if (!state) await new Promise(r => setTimeout(r, 400));
+        }
+      }
+      if (state) {
+        addLog(`Board: ${activePlugin.describeState(state)}.`, "success");
+        if (activePlugin.renderBoard) {
+          setBoardView({ text: activePlugin.renderBoard(state.board), summary: activePlugin.describeState(state) });
+        }
+        lastBoardRef.current = state;
+      } else {
+        const why = activePlugin.lastReadFailure?.();
+        addLog(`Cannot read the board yet${why ? ` — ${why}` : ""}. Run 🔍 Test Solver to see what is on screen.`, "warn");
+      }
+    } else {
+
     addLog("Study phase — observing for 3 turns before playing...", "info");
     const studyToolNames = new Set(["observe_screen", "read_screen_text", "analyse_game_state"]);
 
@@ -3150,6 +3203,7 @@ REASONING STYLE (for analyse_game_state):
       } catch (e) {
         addLog(`Study turn error: ${e.message}`, "warn");
       }
+    }
     }
 
     if (stopRef.current) { setRunning(false); setPhase("idle"); return; }

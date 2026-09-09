@@ -151,15 +151,49 @@ export function drawBoard(cells, { skin = "classic", pitch = 24, pad = 60, chrom
   return { canvas, grid: { x: gridX, y: gridY, pitch, rows, cols } };
 }
 
-/** A board with a plausible mix: a cleared region, numbers, flags, covered rest. */
-export function sampleBoard(rows, cols) {
+/**
+ * A board built from an actual mine layout, so the numbers on it are real.
+ *
+ * The first version scattered digits by a formula, which produced positions no
+ * game could reach — adjacent 8s, a 7 in a corner. That went unnoticed until
+ * the reader started checking whether a board could exist, and then every
+ * fixture failed at once. A fixture that is not a legal position cannot test a
+ * reader that expects one.
+ *
+ * `open` is how far across the board the cleared region reaches, as a fraction.
+ */
+export function sampleBoard(rows, cols, { mines = null, open = 0.3, seed = 7 } = {}) {
+  const total = mines ?? Math.round(rows * cols * 0.2);
+  let s = seed;
+  const rand = () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+
+  const isMine = Array.from({ length: rows }, () => new Array(cols).fill(false));
+  for (let placed = 0; placed < total;) {
+    const r = Math.floor(rand() * rows), c = Math.floor(rand() * cols);
+    if (!isMine[r][c]) { isMine[r][c] = true; placed++; }
+  }
+  const around = (r, c) => {
+    let n = 0;
+    for (let dr = -1; dr <= 1; dr++) for (let dc = -1; dc <= 1; dc++) {
+      if (!dr && !dc) continue;
+      const nr = r + dr, nc = c + dc;
+      if (nr >= 0 && nc >= 0 && nr < rows && nc < cols && isMine[nr][nc]) n++;
+    }
+    return n;
+  };
+
+  // Open a block on the left, leave the rest covered, flag two known mines.
   const cells = Array.from({ length: rows }, () => new Array(cols).fill(null));
-  for (let r = 0; r < Math.min(rows, 6); r++) {
-    for (let c = 0; c < Math.min(cols, 8); c++) {
-      cells[r][c] = (r + c) % 4 === 0 ? 0 : ((r * 3 + c) % 8) + 1;
+  const width = Math.max(1, Math.round(cols * open));
+  let flagged = 0;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < width; c++) {
+      if (isMine[r][c]) {
+        if (flagged < 2) { cells[r][c] = "F"; flagged++; }
+        continue;                               // an unflagged mine stays covered
+      }
+      cells[r][c] = around(r, c);
     }
   }
-  cells[Math.min(2, rows - 1)][Math.min(9, cols - 1)] = "F";
-  cells[Math.min(4, rows - 1)][Math.min(10, cols - 1)] = "F";
   return cells;
 }

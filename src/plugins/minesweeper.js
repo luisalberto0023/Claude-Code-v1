@@ -260,20 +260,33 @@ function classifyCell(data, w, h, x, y, pitch, thresholds) {
   const inside = cellInterior(data, w, h, x, y, pitch);
   if (!inside.length) return null;
 
-  // The square's own background, taken from its inner corners.
+  // The square's own background, taken from a ring just inside its border.
   //
-  // Not from the middle: whatever is drawn here is drawn centred, and a mine
-  // fills enough of the middle that the median there IS the mine — so the
-  // background came out black, almost nothing differed from it, and the square
-  // read as unclassifiable. The corners are clear of both digits and discs.
+  // Not from the middle, and not from inner corners either. Whatever a square
+  // contains is drawn centred, so the middle can be all glyph — but at the real
+  // site's 24-pixel squares a printed 2 also covers the points a fifth of the
+  // way in, and the "background" then came out as the digit's own green. Every
+  // relationship after that inverts: the true grey becomes ink, and the vote
+  // over it lands on grey, which is the colour of an 8. That is where a row
+  // reading 1 2 1 1 2 came back as 1 8 1 1 8, and how a corner square with
+  // three neighbours came to be read as a 7.
+  //
+  // A ring hugging the border is the one part of a square nothing is drawn in:
+  // digits and mines are centred and inset, so it holds background whatever is
+  // in the middle.
   const mid = arr => { const s = arr.slice().sort((a, b) => a - b); return s[s.length >> 1]; };
-  const corners = [];
-  for (const fx of [0.20, 0.28, 0.72, 0.80]) {
-    for (const fy of [0.20, 0.28, 0.72, 0.80]) {
-      corners.push(px(data, w, x + Math.round(pitch * fx), y + Math.round(pitch * fy)));
-    }
+  const median3 = list =>
+    [mid(list.map(c => c[0])), mid(list.map(c => c[1])), mid(list.map(c => c[2]))];
+  const k = Math.max(2, Math.round(pitch * 0.13));
+  const ringPixels = [];
+  for (let i = k; i < pitch - k; i++) {
+    ringPixels.push(px(data, w, x + i, y + k));
+    ringPixels.push(px(data, w, x + i, y + pitch - 1 - k));
+    ringPixels.push(px(data, w, x + k, y + i));
+    ringPixels.push(px(data, w, x + pitch - 1 - k, y + i));
   }
-  const bg = [mid(corners.map(c => c[0])), mid(corners.map(c => c[1])), mid(corners.map(c => c[2]))];
+  if (!ringPixels.length) return null;
+  const bg = median3(ringPixels);
   const ink = inside.filter(c => dist2(c, bg) > 2200);
   const inkFrac = ink.length / inside.length;
 
@@ -298,18 +311,26 @@ function classifyCell(data, w, h, x, y, pitch, thresholds) {
   const neutralDark = ink.filter(c => lum(c) < 70 && sat(c) < 40).length;
   if (neutralDark / inside.length > 0.45) return MINE;
 
-  const votes = new Map();
-  for (const c of ink) {
-    let best = null, bestD = Infinity;
-    for (const t of NUMBER_COLOURS) {
-      const d = dist2(c, t.rgb);
-      if (d < bestD) { bestD = d; best = t.n; }
-    }
-    if (bestD <= 9000) votes.set(best, (votes.get(best) ?? 0) + 1);
+  // Which number it is, decided by the glyph's core rather than by a vote over
+  // every pixel that differs from the background.
+  //
+  // Most of a small printed digit is edge: pixels part-way between the ink and
+  // the paper. Those blends sit near mid-grey, which is the colour of an 8, so
+  // counting them lets any digit outvote itself. The pixels furthest from the
+  // background are the ones actually painted in the digit's colour, and their
+  // median is that colour — a single measurement instead of a poll, and it does
+  // not care how much of the square the glyph covers or how soft its edges are.
+  const core = ink.slice().sort((a, b) => dist2(b, bg) - dist2(a, bg))
+    .slice(0, Math.max(1, Math.round(ink.length / 3)));
+  const paint = median3(core);
+  let picked = null, bestD = Infinity;
+  for (const t of NUMBER_COLOURS) {
+    const d = dist2(paint, t.rgb);
+    if (d < bestD) { bestD = d; picked = t.n; }
   }
-  let picked = null, most = 0;
-  for (const [n, count] of votes) if (count > most) { most = count; picked = n; }
-  return (picked != null && most >= ink.length * 0.3) ? picked : null;
+  // Far from every one of them is not a digit at all — something is covering the
+  // square, and reporting a number for it would be a guess.
+  return bestD <= 20000 ? picked : null;
 }
 
 /**
@@ -442,53 +463,108 @@ export function findGrid(canvasEl) {
     const hRun = runOf(colSig, x0, area.x + area.w - 1, area.x);
     if (!vRun || !hRun) { reject(pitch, !vRun && !hRun ? "no run of grid lines either way" : !vRun ? "no run of horizontal lines" : "no run of vertical lines"); continue; }
 
-    const top = vRun.from, left = hRun.from;
+    // Where the squares start, and how many there are.
+    //
+    // Two things are uncertain, not one. A run of n lines bounds n-1 squares if
+    // both outer edges drew a line and n if only one did — the same board gave
+    // ten lines down and nine across. And the run itself can begin a square
+    // late: where the frame meets the first column there is sometimes almost no
+    // edge to see, the run starts at the second line instead, and the board
+    // comes out shifted one column across. That reads a real 30-wide board as
+    // columns 1..30, dropping the first and taking a strip of frame as the
+    // last — a whole board of plausible-looking squares, every one of them in
+    // the wrong place.
+    //
+    // So the start is a candidate too, and the readings are judged by three
+    // things: whether the squares read as squares, whether the shape is one
+    // Minesweeper actually uses, and whether the board could exist at all. The
+    // last is what separates a one-square shift from the truth, because a
+    // misaligned board puts numbers where no number could be.
+    // The run can begin a square early as well as a square late — early when a
+    // frame edge is strong enough to pass for a grid line, late when the join
+    // between frame and first column is not. Both happened on the same site,
+    // one on each axis of the same picture.
+    //
+    // Which means the number of squares cannot be counted from the run either:
+    // a run of eighteen lines starting one square early bounds sixteen squares,
+    // not seventeen. So it is measured from the chosen start to the run's far
+    // end, which is a real grid line whatever happened at the near one.
+    const starts = axis => [axis.from, axis.from - pitch, axis.from + pitch];
+    const counts = (axis, anchor) => {
+      const fit = Math.round((axis.to - anchor) / pitch);
+      return [fit, fit + 1, fit - 1];
+    };
 
-    // How many squares a run of lines bounds depends on whether the board's far
-    // edge drew a line of its own, which is not something to rely on: the same
-    // board gave ten lines down and nine across, so counting them as n-1 either
-    // way lost a column. Both readings are tried and the one whose squares
-    // actually read as squares is kept.
-    const readable = (rowCount, colCount) => {
-      if (rowCount < 5 || colCount < 5 || rowCount > 40 || colCount > 40) return -1;
-      if (top + rowCount * pitch > area.y + area.h + pitch) return -1;
-      if (left + colCount * pitch > area.x + area.w + pitch) return -1;
+    const evaluate = (top, left, rowCount, colCount) => {
+      if (rowCount < 5 || colCount < 5 || rowCount > 40 || colCount > 40) return null;
+      if (top < 0 || left < 0) return null;
+      if (top + rowCount * pitch > area.y + area.h + pitch) return null;
+      if (left + colCount * pitch > area.x + area.w + pitch) return null;
+      const board = [];
       let known = 0, total = 0;
       for (let r = 0; r < rowCount; r++) {
+        const row = [];
         for (let c = 0; c < colCount; c++) {
+          const v = classifyCell(data, w, h, left + c * pitch, top + r * pitch, pitch, thresholds);
           total++;
-          if (classifyCell(data, w, h, left + c * pitch, top + r * pitch, pitch, thresholds) !== null) known++;
+          if (v !== null) known++;
+          row.push(v === null ? UNKNOWN : v);
         }
+        board.push(row);
       }
-      return total ? known / total : -1;
+      const frac = total ? known / total : 0;
+      const why = implausible(board);
+      const rank = frac + (levelOf(rowCount, colCount) ? 1 : 0) + (why ? 0 : 1);
+      return { rank, frac, rowCount, colCount, top, left, why, unread: total - known };
     };
-    let rows = 0, cols = 0, bestFrac = -1;
-    for (const rc of [vRun.n - 1, vRun.n]) {
-      for (const cc of [hRun.n - 1, hRun.n]) {
-        const frac = readable(rc, cc);
-        if (frac < 0) continue;
-        // A column of frame beside the board reads exactly like a column of
-        // empty squares — the boundary at its left really is the last square's
-        // right edge, so no measurement separates them. What does is that
-        // Minesweeper boards come in known shapes: 9x9, 16x16, 16x30. A reading
-        // that is one of those is preferred over one that is not, and a board of
-        // some other size is still accepted when nothing standard fits.
-        const known = levelOf(rc, cc) ? 1 : 0;
-        const rank = frac + known;
-        if (rank > bestFrac || (rank === bestFrac && rc * cc > rows * cols)) {
-          bestFrac = rank; rows = rc; cols = cc;
-        }
+
+    // Nine placements each way is eighty-one boards, and reading every square of
+    // each is far too much work to do per candidate spacing. Order them by how
+    // likely they are instead — the shapes Minesweeper actually uses first, then
+    // the alignments closest to the run as measured — and stop at the first that
+    // is fully readable, a known shape, and legal, which is the ordinary case.
+    const combos = [];
+    for (const top of starts(vRun)) for (const rc of counts(vRun, top)) {
+      for (const left of starts(hRun)) for (const cc of counts(hRun, left)) {
+        combos.push({
+          top, left, rc, cc,
+          known: levelOf(rc, cc) ? 0 : 1,
+          drift: Math.abs(top - vRun.from) + Math.abs(left - hRun.from),
+        });
       }
     }
-    if (bestFrac < 0.95) { reject(pitch, `only ${Math.round(Math.max(0, bestFrac) * 100)}% of squares read as squares`); continue; }
-    bestFrac = Math.min(bestFrac, 1);
+    combos.sort((a, b) => a.known - b.known || a.drift - b.drift);
+
+    let pick = null, looked = 0;
+    for (const k of combos) {
+      if (looked >= 16) break;
+      const got = evaluate(k.top, k.left, k.rc, k.cc);
+      if (!got) continue;
+      looked++;
+      if (!pick || got.rank > pick.rank ||
+          (got.rank === pick.rank && got.rowCount * got.colCount > pick.rowCount * pick.colCount)) {
+        pick = got;
+      }
+      if (pick.rank >= 3) break;             // readable, a known shape, and legal
+    }
+    if (!pick || pick.frac < 0.95) {
+      reject(pitch, pick
+        ? `best was ${pick.rowCount}x${pick.colCount} at ${pick.left},${pick.top}: ${pick.unread} squares unreadable` +
+          (pick.why ? `, and ${pick.why}` : "")
+        : "no arrangement of squares fitted");
+      continue;
+    }
 
     // Prefer the reading that classifies the most squares. A wrong spacing can
     // still line up with something; it cannot also produce squares that read as
     // Minesweeper squares.
-    const score = bestFrac * rows * cols;
+    const score = pick.rank * pick.rowCount * pick.colCount;
     if (!bestGrid || score > bestGrid.score) {
-      bestGrid = { x: left, y: top, pitch, rows, cols, threshold, thresholds, score };
+      bestGrid = {
+        x: pick.left, y: pick.top, pitch,
+        rows: pick.rowCount, cols: pick.colCount,
+        threshold, thresholds, score,
+      };
     }
   }
   return bestGrid;
@@ -515,6 +591,7 @@ export function findGrid(canvasEl) {
  */
 let lockedGrid = null;
 let lastUnreadable = [];
+let lastImpossible = null;
 let lockDrops = 0;
 
 /** Forget the locked grid — the board has moved, or a new one has started. */
@@ -526,7 +603,58 @@ export function getGrid() { return lockedGrid; }
 const gridFits = (grid, w, h) =>
   grid && grid.capture?.w === w && grid.capture?.h === h;
 
-/** Read every square on a known grid. Returns null if any square is unreadable. */
+/**
+ * Could this board exist?
+ *
+ * A number counts the mines around it, and mines are never on an opened square
+ * — so a number can never exceed the count of its own unopened neighbours. A
+ * corner square touches three others and can therefore never be more than a 3.
+ *
+ * This is worth checking because a misread board is not obviously broken. It
+ * comes back a legal-looking grid, the solver reasons over it perfectly well,
+ * and the agent plays the answer. The run that prompted this returned a corner
+ * 7 sitting beside a pair of adjacent 8s — arithmetically impossible, and
+ * nothing in the system objected. Board arithmetic is free and catches it.
+ *
+ * Returns a description of the first impossibility, or null.
+ */
+export function implausible(board) {
+  const rows = board.length, cols = board[0]?.length ?? 0;
+  const opened = v => v !== UNKNOWN && v !== FLAG && v !== MINE;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const v = board[r][c];
+      if (!Number.isInteger(v) || v <= 0) continue;
+      let room = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (!dr && !dc) continue;
+          const nr = r + dr, nc = c + dc;
+          if (nr < 0 || nc < 0 || nr >= rows || nc >= cols) continue;
+          if (!opened(board[nr][nc])) room++;
+        }
+      }
+      if (v > room) {
+        return `r${r}c${c} reads ${v} but has only ${room} unopened neighbour${room === 1 ? "" : "s"}`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * A read is allowed to lose a few squares, but not to pretend they are covered.
+ *
+ * Demanding all 480 threw away whole games over one square — twice in four,
+ * both times a square the pointer happened to be sitting on, and neither
+ * anywhere near the move being considered. But an unreadable square must never
+ * simply pass as covered either: the solver would treat it as somewhere still
+ * to explore and reason about a board that is not there. So they are reported,
+ * and chooseMove keeps its distance from them and refuses to gamble while any
+ * remain.
+ */
+const MOST_UNREADABLE = 3;
+
 function readOnGrid(data, w, h, grid) {
   const board = [];
   const unreadable = [];
@@ -535,14 +663,15 @@ function readOnGrid(data, w, h, grid) {
     for (let c = 0; c < grid.cols; c++) {
       const v = classifyCell(data, w, h, grid.x + c * grid.pitch, grid.y + r * grid.pitch,
         grid.pitch, grid.thresholds ?? grid.threshold);
-      if (v === null) { unreadable.push(`r${r}c${c}`); row.push(UNKNOWN); } else row.push(v);
+      if (v === null) { unreadable.push([r, c]); row.push(UNKNOWN); } else row.push(v);
     }
     board.push(row);
   }
-  // A square that cannot be read must not pass as covered: the solver would
-  // treat it as somewhere still to explore and reason about a board that is not
-  // there. An incomplete read is no read.
-  return unreadable.length ? { board: null, unreadable } : { board, unreadable };
+  if (unreadable.length > MOST_UNREADABLE) return { board: null, unreadable, why: null };
+  // A board that cannot exist was misread, however cleanly it came out.
+  const why = implausible(board);
+  if (why) return { board: null, unreadable, why };
+  return { board, unreadable, why: null };
 }
 
 export function readState(canvasEl, gridHint = null) {
@@ -554,24 +683,29 @@ export function readState(canvasEl, gridHint = null) {
   // is both the expensive part of a read and the part that drifts.
   const known = gridHint || (gridFits(lockedGrid, w, h) ? lockedGrid : null);
   if (known) {
-    const { board, unreadable } = readOnGrid(data, w, h, known);
-    if (board) return { board, rows: known.rows, cols: known.cols, grid: known };
-    lastUnreadable = unreadable;
+    const { board, unreadable, why } = readOnGrid(data, w, h, known);
+    if (board) {
+      lastUnreadable = unreadable; lastImpossible = null;
+      return { board, rows: known.rows, cols: known.cols, grid: known, unreadable };
+    }
+    lastUnreadable = unreadable; lastImpossible = why;
     if (known === lockedGrid) { lockedGrid = null; lockDrops++; }
   }
 
   const grid = findGrid(canvasEl);
   if (!grid) return null;
-  const { board, unreadable } = readOnGrid(data, w, h, grid);
-  if (!board) { lastUnreadable = unreadable; return null; }
+  const { board, unreadable, why } = readOnGrid(data, w, h, grid);
+  if (!board) { lastUnreadable = unreadable; lastImpossible = why; return null; }
+  lastUnreadable = unreadable; lastImpossible = null;
   lockedGrid = { ...grid, capture: { w, h } };
-  return { board, rows: grid.rows, cols: grid.cols, grid: lockedGrid };
+  return { board, rows: grid.rows, cols: grid.cols, grid: lockedGrid, unreadable };
 }
 
-/** Which squares defeated the last failed read — for the log. */
+/** Why the last read was rejected — for the log. */
 export function lastReadFailure() {
+  if (lastImpossible) return `the board could not exist — ${lastImpossible}`;
   if (!lastUnreadable.length) return null;
-  const shown = lastUnreadable.slice(0, 8).join(" ");
+  const shown = lastUnreadable.slice(0, 8).map(([r, c]) => `r${r}c${c}`).join(" ");
   const tail = lastUnreadable.length > 8 ? ` … and ${lastUnreadable.length - 8} more` : "";
   const drops = lockDrops ? ` (grid re-measured ${lockDrops}×)` : "";
   return `${lastUnreadable.length} square${lastUnreadable.length > 1 ? "s" : ""}: ${shown}${tail}${drops}`;
@@ -662,11 +796,28 @@ export function chooseMove(state) {
   const result = solve(state.board, mines);
   if (!result.actions.length) return null;
 
+  // Play around squares that could not be read.
+  //
+  // A deduction is local: it comes from a numbered square, and everything it
+  // concludes is next to that square. So a conclusion can only be wrong because
+  // of an unreadable square if the two are within two squares of each other,
+  // and keeping that distance is enough to make what is played sound. Counting
+  // arguments are not local in the same way, so while anything is unreadable
+  // the odds cannot be trusted and nothing is risked on them.
+  let actions = result.actions;
+  if (state.unreadable?.length) {
+    if (!result.certain) return null;
+    const near = (r, c) => state.unreadable.some(
+      ([ur, uc]) => Math.abs(ur - r) <= 2 && Math.abs(uc - c) <= 2);
+    actions = actions.filter(a => !near(a.r, a.c));
+    if (!actions.length) return null;
+  }
+
   const { x, y, pitch } = state.grid;
   const half = Math.floor(pitch / 2);
   // Certain moves can be played together; a guess is played alone so the board
   // is re-read before anything is built on it.
-  const chosen = result.certain ? result.actions : result.actions.slice(0, 1);
+  const chosen = result.certain ? actions : actions.slice(0, 1);
   return {
     actions: chosen.map(a => ({
       type: "click",
@@ -678,6 +829,37 @@ export function chooseMove(state) {
     reason: result.reason,
     certain: result.certain,
   };
+}
+
+/**
+ * Has a new game started?
+ *
+ * Restarts were confirmed by watching for the screen to change, which works
+ * when a finished board is covered in revealed mines and fails when it is not:
+ * a game abandoned after three moves looks almost identical to the fresh one
+ * that replaces it, the change went unnoticed, and the session ended believing
+ * it could not start another. A new board is not "different", it is empty, and
+ * that is something to check rather than infer.
+ */
+export function looksLikeNewGame(state) {
+  const { opened, flags, mines } = tally(state.board ?? state);
+  return opened === 0 && flags === 0 && mines === 0;
+}
+
+/**
+ * Somewhere to leave the pointer that is not on the board.
+ *
+ * The agent clicks a square and then looks at the board, which means the
+ * pointer is sitting on the square it just played. A cursor is opaque: it
+ * covered a red 3 on a real run and made that square unreadable six reads
+ * running, and the game was given up with everything else on the board
+ * perfectly legible. Below the last row is off the grid and still well inside
+ * the window, so nothing is dragged or hovered by going there.
+ */
+export function parkPoint(state) {
+  const g = state?.grid ?? lockedGrid;
+  if (!g) return null;
+  return { x: g.x + Math.round(g.cols * g.pitch / 2), y: g.y + g.rows * g.pitch + g.pitch };
 }
 
 export function isTerminal(state) {
@@ -833,7 +1015,7 @@ export const plugin = {
   // Reading and reporting: the agent uses these to check its own perception and
   // to describe a run in Minesweeper's terms rather than 2048's.
   resetGrid, getGrid, lastReadFailure, lastGridSearch, contradicts, renderBoard,
-  outcomeOf, scoreOf, tally,
+  outcomeOf, scoreOf, tally, implausible, parkPoint, looksLikeNewGame,
   // "Highest tile" means something in 2048 and nothing here, where the same
   // numbers count neighbouring mines. There is no running score either — what a
   // game is worth is how much of the board it cleared.

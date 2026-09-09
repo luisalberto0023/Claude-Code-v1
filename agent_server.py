@@ -243,15 +243,6 @@ class ScrollBody(BaseModel):
     amount: int
 
 
-@app.post("/mouse/move")
-def mouse_move(b: MoveBody):
-    try:
-        pyautogui.moveTo(b.x, b.y, duration=b.duration)
-        return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
 def _on_screen(x: int, y: int) -> tuple:
     """Keep the pointer inside the screen, and out of its corners.
 
@@ -265,6 +256,16 @@ def _on_screen(x: int, y: int) -> tuple:
         raise ValueError(
             f"({x},{y}) is outside the {SCREEN_W}x{SCREEN_H} screen")
     return max(1, min(SCREEN_W - 2, x)), max(1, min(SCREEN_H - 2, y))
+
+
+@app.post("/mouse/move")
+def mouse_move(b: MoveBody):
+    try:
+        x, y = _on_screen(b.x, b.y)
+        pyautogui.moveTo(x, y, duration=b.duration)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.post("/mouse/click")
