@@ -1,5 +1,12 @@
 # Notes for Claude sessions
 
+## North star
+
+The goal is an agent that plays ANY game autonomously, including games it
+has never seen and has no plugin for. Weigh every change against that: say
+how it moves the agent toward an unseen game, or why a game-specific piece is
+still worth it (a test bed, or a pattern that will generalise).
+
 ## Push every change
 
 The agent is tested on a separate computer that only gets code through
