@@ -1435,9 +1435,14 @@ export default function GameAgent() {
    */
   const snapshot = useCallback(async (tag, text) => {
     // A failing run can fail every turn; a handful of examples explains it just
-    // as well as two hundred and does not fill the disk.
-    if (snapshotsRef.current >= 6) return;
-    snapshotsRef.current++;
+    // as well as two hundred and does not fill the disk. How a game ended is
+    // exempt: there is one per game, it shows the most of the board, and on
+    // Expert the guesses before it would otherwise use up the allowance first.
+    const ending = tag === "game-over" || tag === "gave-up";
+    if (!ending) {
+      if (snapshotsRef.current >= 6) return;
+      snapshotsRef.current++;
+    }
     const canvas = solverCanvasRef.current;
     let png = null;
     if (canvas) {
