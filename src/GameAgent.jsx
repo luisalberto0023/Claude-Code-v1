@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import game2048 from "./plugins/game2048.js";
 import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
+import { MODEL_OUTCOMES, MODEL_OUTCOME_CHOICES, normalizeOutcome } from "./agent/outcomes.js";
+import { backendFailure, readReply } from "./agent/backend.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
@@ -10,6 +12,12 @@ import { findClickableCandidates } from "./vision/buttons.js";
 const GAME_PLUGINS = [game2048, minesweeper];
 function findPlugin(gameDesc) {
   return GAME_PLUGINS.find(p => p.match(gameDesc)) ?? null;
+}
+// What a plugin is called in the UI: its label without the description in
+// brackets, so "Minesweeper (board reader + constraint solver)" reads
+// "Minesweeper". The settings used to say "2048 ready" for every plugin.
+function pluginName(plugin) {
+  return plugin?.label?.replace(/\s*\(.*\)\s*$/, "").trim() || plugin?.id || "solver";
 }
 
 // ── Safe env access (works in Vite AND artifact sandbox) ──────────────────────
@@ -28,7 +36,10 @@ async function backend(path, body = null) {
       headers: body ? { "Content-Type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
     });
-    return await res.json();
+    // Read as text first: a reply that is not JSON is not from the backend
+    // (Vite's proxy answers with an empty HTTP 500 when the backend is down),
+    // and readReply says so instead of reporting a JSON parse error.
+    return readReply(res.status, await res.text());
   } catch (e) { return { ok: false, error: e.message }; }
 }
 
@@ -774,8 +785,19 @@ async function loadMemory(gameKey) {
   return backend(`/memory/${encodeURIComponent(gameKey)}`);
 }
 
-async function saveMemory(gameKey, patch) {
-  return backend(`/memory/${encodeURIComponent(gameKey)}`, patch);
+// `warn` is told when the backend did not save, in words an operator can act on.
+// A failed save used to be silent: backend() returns failures rather than
+// throwing them, and nothing looked at the reply, so a session's result could
+// be refused (an outcome name the backend does not accept, say) and the run
+// still looked as if it had been recorded.
+async function saveMemory(gameKey, patch, warn) {
+  const reply = await backend(`/memory/${encodeURIComponent(gameKey)}`, patch);
+  const failure = backendFailure(reply);
+  if (failure) {
+    warn?.(`Memory not saved — ${failure}. game-agent-memory.json was not updated.`);
+    return { ok: false, error: failure };
+  }
+  return reply;
 }
 
 async function clearMemory(gameKey) {
@@ -980,11 +1002,12 @@ const TOOLS = [
   },
   {
     name: "signal_game_end",
-    description: "Signal that the game has ended (win, loss, stuck, or natural end). Call this when game over is detected.",
+    description: `Signal that the game has ended, and how: outcome is ${MODEL_OUTCOME_CHOICES} ("stuck" when no move changes anything, "ended" when it is over without a clear win or loss). Call this when game over is detected.`,
     input_schema: {
       type: "object",
       properties: {
-        outcome: { type: "string", enum: ["won", "lost", "stuck", "ended"] },
+        // The names the loop and the backend count by (src/agent/outcomes.js).
+        outcome: { type: "string", enum: [...MODEL_OUTCOMES] },
         finalScore: { type: "number" },
         reason: { type: "string" },
       },
@@ -1091,14 +1114,27 @@ function controlSchemeDescription(scheme, pauseToThink, gridEnabled = false) {
 // with HTTP 400. In that case we send NO tools and instead ask the model to
 // reply with a JSON array of actions, which we parse and execute ourselves.
 
+// A field with a short list of allowed values has them spelled out, as in
+// `"outcome": "won"|"lost"|"stuck"|"ended"`. In this mode the schema's enum holds
+// the model to nothing and this line is all it sees of the tool, so without the
+// values it reports how a game ended in its own words ("loss", "game over"),
+// which count as nothing. Long lists (the gamepad's 19 button names) are left
+// out to keep a small model's prompt small; their tools' descriptions name them.
+const INLINE_ENUM_MAX = 6;
+
 function buildActionReference(tools) {
   return tools.map(t => {
     const props = t.input_schema?.properties ?? {};
     const req = t.input_schema?.required ?? [];
     const keys = Object.keys(props);
-    const args = keys.length
-      ? `{ ${keys.map(k => `"${k}"${req.includes(k) ? "" : "?"}`).join(", ")} }`
-      : "{ }";
+    const arg = k => {
+      const name = `"${k}"${req.includes(k) ? "" : "?"}`;
+      const values = props[k]?.enum;
+      return Array.isArray(values) && values.length && values.length <= INLINE_ENUM_MAX
+        ? `${name}: ${values.map(v => JSON.stringify(v)).join("|")}`
+        : name;
+    };
+    const args = keys.length ? `{ ${keys.map(arg).join(", ")} }` : "{ }";
     return `- ${t.name} ${args}`;
   }).join("\n");
 }
@@ -1317,6 +1353,7 @@ export default function GameAgent() {
   const solverFailRef = useRef(0);
   const solverBlockedRef = useRef(new Set()); // directions that produced no change
   const solverActiveRef = useRef(false);
+  const solverTracksTilesRef = useRef(false); // the playing solver's plugin has tracksTiles
   const scaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1 });
   const convRef = useRef([]);
   const checkpointRef = useRef(null);
@@ -2001,7 +2038,14 @@ export default function GameAgent() {
 
     if (toolName === "update_memory") {
       const gameKey = slugify(gameDesc);
-      await saveMemory(gameKey, { gameDesc, ...toolInput });
+      // A game's outcome is recorded once, when the session ends, from what the
+      // loop measured. The tool does not offer one, but a model replying in
+      // JSON-action mode can add any field it likes, and an outcome name the
+      // backend does not accept would get the whole save refused, discoveries
+      // and all.
+      const { outcome: _ignored, ...lessons } = toolInput ?? {};
+      const saved = await saveMemory(gameKey, { gameDesc, ...lessons }, msg => addLog(msg, "warn"));
+      if (!saved.ok) return toolResult(`Memory not saved: ${saved.error}`);
       const mem = await loadMemory(gameKey);
       setMemoryData(mem);
       addLog("Memory updated.", "success");
@@ -2027,6 +2071,15 @@ export default function GameAgent() {
       // overwrote the real result, identically, in every game of a session.
       // Facts the agent measured itself win over anything reported here.
       const end = { ...toolInput };
+      // Only the names signal_game_end offers are recorded. The schema's enum
+      // holds a tool-calling model to them, but a model replying in JSON-action
+      // mode is held to nothing, and a report that cannot be read says the game
+      // ended and no more. The legacy "win" still means a win.
+      const reported = normalizeOutcome(end.outcome);
+      if (!MODEL_OUTCOMES.includes(reported)) {
+        addLog(`Reported outcome ${JSON.stringify(end.outcome ?? null)} is not one of ${MODEL_OUTCOMES.join(", ")} — recording as ended.`, "warn");
+      }
+      end.outcome = MODEL_OUTCOMES.includes(reported) ? reported : "ended";
       if (solverActiveRef.current) {
         const measured = screenScoreRef.current ?? solverScoreRef.current;
         if (measured != null && end.finalScore !== measured) {
@@ -2035,15 +2088,21 @@ export default function GameAgent() {
           }
           end.finalScore = measured;
         }
-        // A win in 2048 means a 2048 tile was actually built.
-        if (end.outcome === "win" && gameBestTileRef.current < 2048) {
-          addLog(`Reported a win, but the highest tile built was ${gameBestTileRef.current || "none"} — recording as ended.`, "warn");
+        // A win in 2048 means a 2048 tile was actually built. This compared
+        // against "win", a name the model was never offered, so until the
+        // outcome names were shared it could not fire. It is a tile measure, so
+        // it applies only while a solver that tracks tiles is playing:
+        // Minesweeper has no tiles, its highest stays 0, and it would turn every
+        // win the model reports there into "ended".
+        const best = gameBestTileRef.current;
+        if (end.outcome === "won" && solverTracksTilesRef.current && best < 2048) {
+          addLog(`Reported a win the solver never measured${best > 0 ? ` (highest tile ${best})` : ""} — recording as ended.`, "warn");
           end.outcome = "ended";
         }
       }
       gameEndRef.current = end;
       setGameResult({ outcome: end.outcome, finalScore: end.finalScore, reason: end.reason });
-      addLog(`Game ended: ${end.outcome} — ${end.reason ?? ""}`, end.outcome === "win" ? "success" : "warn");
+      addLog(`Game ended: ${end.outcome} — ${end.reason ?? ""}`, end.outcome === "won" ? "success" : "warn");
       return toolResult(`Game end recorded: ${end.outcome}`);
     }
 
@@ -3077,7 +3136,7 @@ Each turn, do ONE of these:
 - If a button that starts or restarts a game is visible, click it.
 - Otherwise take a single ordinary move in this game, using the controls above.
   Do not invent a control the game does not use.
-- Call signal_game_end if the game is clearly over and no button is visible.
+- Call signal_game_end, with outcome ${MODEL_OUTCOME_CHOICES}, if the game is clearly over and no button is visible.
 
 Say in one short sentence what you see before you act.${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
 
@@ -3105,7 +3164,7 @@ CRITICAL WORKFLOW RULES (follow every turn):
 5. After taking an action, the response tells you whether the screen changed. If unchanged, try a different position/key/approach.
 6. TOKEN EFFICIENCY: prefer execute_sequence for repetitive moves (e.g. 3-5 arrow presses in 2048) — one tool call instead of many. If a turn message says "Screen unchanged — image omitted", trust prior observations and continue without requesting a new screen.
 7. Call report_progress whenever you achieve a milestone or read a new score.
-8. Call signal_game_end immediately when you detect win/loss/game-over.
+8. Call signal_game_end immediately when the game is over, with outcome ${MODEL_OUTCOME_CHOICES}.
 9. Call update_memory when you discover something repeatable worth remembering across sessions.
 
 COORDINATE SYSTEM:
@@ -3222,6 +3281,9 @@ REASONING STYLE (for analyse_game_state):
     const totalGames = Math.max(1, gamesPerSession || 1);
 
     solverActiveRef.current = !!activePlugin;
+    // Read when the model reports a win: the game name can be edited during a
+    // run, so the plugin is fixed here rather than looked up again then.
+    solverTracksTilesRef.current = !!activePlugin?.tracksTiles;
     if (activePlugin) {
       addLog(`⚙ Solver active: ${activePlugin.label} — reading the board from pixels and choosing moves by search.`, "success");
     } else if (useSolver) {
@@ -3291,7 +3353,7 @@ REASONING STYLE (for analyse_game_state):
         if (sr.stuck) {
           const decision = await analyseStuckScreen(activePlugin, apiKey);
           if (!decision) {
-            gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+            gameOutcome = gameBestTileRef.current >= 2048 ? "won" : "ended";
             addLog("The game stopped responding and nothing on screen can be clicked.", "warn");
             break;
           }
@@ -3303,11 +3365,11 @@ REASONING STYLE (for analyse_game_state):
           }
           const won = gameBestTileRef.current >= 2048;
           if (choice === "stop") {
-            gameOutcome = won ? "win" : "ended";
+            gameOutcome = won ? "won" : "ended";
             stopRef.current = true;
             break;
           }
-          gameOutcome = won ? "win" : "ended";
+          gameOutcome = won ? "won" : "ended";
           break;                            // finish this game; the loop restarts
         }
 
@@ -3325,8 +3387,8 @@ REASONING STYLE (for analyse_game_state):
                 noOpStreakRef.current = 0;
                 continue;
               }
-              if (choice === "stop") { gameOutcome = "win"; stopRef.current = true; break; }
-              gameOutcome = "win";
+              if (choice === "stop") { gameOutcome = "won"; stopRef.current = true; break; }
+              gameOutcome = "won";
               break;
             }
           }
@@ -3339,14 +3401,16 @@ REASONING STYLE (for analyse_game_state):
           // does; the rest keep the 2048 wording, which is where it came from.
           const ending = sr.state && activePlugin.outcomeOf?.(sr.state);
           if (ending) {
-            gameOutcome = ending.result === "won" ? "win" : ending.result === "lost" ? "lost" : "ended";
+            // A plugin names its ending with the shared outcome names; anything
+            // else it says (a board still "playing", say) counts as ended.
+            gameOutcome = normalizeOutcome(ending.result) ?? "ended";
             addLog(`Game over — ${ending.detail}.`, ending.result === "won" ? "success" : "warn");
             if (activePlugin.scoreOf) {
               currentScoreRef.current = activePlugin.scoreOf(sr.state);
               setCurrentScore(currentScoreRef.current);
             }
           } else {
-            gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+            gameOutcome = gameBestTileRef.current >= 2048 ? "won" : "ended";
             const full = sr.board && !sr.board.some(row => row.some(v => v === 0));
             addLog(
               full ? `Board full — no legal moves. Final score ${solverScoreRef.current}.`
@@ -3381,7 +3445,7 @@ REASONING STYLE (for analyse_game_state):
                 continue;
               }
               if (choice === "stop") { stopRef.current = true; break; }
-              gameOutcome = gameBestTileRef.current >= 2048 ? "win" : "ended";
+              gameOutcome = gameBestTileRef.current >= 2048 ? "won" : "ended";
               break;
             }
             addLog("Nothing clickable on screen — falling back to the model.", "warn");
@@ -3450,7 +3514,7 @@ REASONING STYLE (for analyse_game_state):
         if (noOps === 3 || noOps === 6) {
           convRef.current.push({
             role: "user",
-            content: `${noOps} actions in a row changed nothing (tried: ${[...lastFailedMovesRef.current].join(", ") || "n/a"}). Try a DIFFERENT direction you have not just tried. If every direction is blocked, the game is over — call signal_game_end.`,
+            content: `${noOps} actions in a row changed nothing (tried: ${[...lastFailedMovesRef.current].join(", ") || "n/a"}). Try a DIFFERENT direction you have not just tried. If every direction is blocked, the game is over — call signal_game_end with outcome ${MODEL_OUTCOME_CHOICES}.`,
           });
           addLog(`No progress for ${noOps} actions — asking model to change approach.`, "warn");
         }
@@ -3591,7 +3655,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     // Save session memory (one consolidated call including analysis output)
     const durationSeconds = Math.round((Date.now() - startTime) / 1000);
     try {
-      await saveMemory(gameKey, {
+      const saved = await saveMemory(gameKey, {
         gameDesc,
         outcome: finalOutcome,
         score: finalScore,
@@ -3605,9 +3669,11 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
         // starts from a known position instead of searching for it — and can
         // still locate the board once an overlay has washed it out.
         layout: activePlugin?.getLayout?.() ?? undefined,
-      });
-      const updatedMem = await loadMemory(gameKey);
-      setMemoryData(updatedMem);
+      }, msg => addLog(msg, "warn"));
+      if (saved.ok) {
+        const updatedMem = await loadMemory(gameKey);
+        setMemoryData(updatedMem);
+      }
     } catch (e) {
       addLog(`Memory save failed: ${e.message}`, "warn");
     }
@@ -3665,9 +3731,9 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
 
   const phaseColor = { idle: C.dim, research: C.yellow, study: C.accentL, playing: C.green, restarting: C.yellow, ended: C.textDim }[phase] ?? C.dim;
   const logColors  = { info: C.text, assistant: C.accentL, tool: C.yellow, error: C.red, warn: C.yellow, success: C.green };
-  // The loop says "win", the model's signal_game_end says "won" — both mean the
-  // same thing, and colouring only one of them left real wins looking neutral.
-  const outcomeColors = { won: C.green, win: C.green, lost: C.red, stuck: C.yellow, ended: C.textDim };
+  // One colour for each name in OUTCOMES (src/agent/outcomes.js).
+  const outcomeColors = { won: C.green, lost: C.red, stuck: C.yellow, ended: C.textDim, aborted: C.yellow };
+  const matchedPlugin = findPlugin(gameDesc);
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
@@ -3897,8 +3963,8 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer", color: C.text }}>
                 <input type="checkbox" checked={useSolver} onChange={e => setUseSolver(e.target.checked)} />
                 Use built-in solver when available
-                {findPlugin(gameDesc)
-                  ? <span style={{ color: C.green, fontSize: 10 }}>● 2048 ready</span>
+                {matchedPlugin
+                  ? <span style={{ color: C.green, fontSize: 10 }}>● {pluginName(matchedPlugin)} ready</span>
                   : <span style={{ color: C.dim, fontSize: 10 }}>○ none for this game</span>}
               </label>
               <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>

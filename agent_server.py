@@ -16,7 +16,7 @@ import json
 import re
 import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, get_args
 
 # Windows DPI-awareness — must be set BEFORE pyautogui imports
 if platform.system() == "Windows":
@@ -30,7 +30,7 @@ import pyautogui
 import pyperclip
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import uvicorn
 
 pyautogui.FAILSAFE = True
@@ -524,17 +524,59 @@ def log_list():
 
 MEMORY_FILE = Path(__file__).parent / "game-agent-memory.json"
 
+# How a game ended: the same names, in the same order, as OUTCOMES in
+# src/agent/outcomes.js, and tools/check-agent.mjs fails if they drift apart.
+# They were two sets once. The page recorded a solver's win as "win" while this
+# file counted "won", so wins were split across two keys and outcomes.won stayed
+# at 0. An outcome outside this list is now refused (HTTP 422) instead of quietly
+# becoming a new key.
+Outcome = Literal["won", "lost", "stuck", "ended", "aborted"]
+
+# Names from before the vocabulary was shared. A page loaded before the update
+# (a browser tab left open on the test PC) still sends "win", and memory files
+# written before it still hold it.
+LEGACY_OUTCOMES = {"win": "won"}
+
+
+def _count(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _fold_legacy_outcomes(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Rename legacy outcome names in a whole memory file, in place.
+
+    Each legacy count is added to its new name and the old key removed, so a
+    second pass finds nothing left to move: running this on every load and every
+    save cannot count a win twice. Returns `data` for convenience."""
+    if not isinstance(data, dict):
+        return data
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            continue
+        outcomes = entry.get("outcomes")
+        if isinstance(outcomes, dict):
+            for old, new in LEGACY_OUTCOMES.items():
+                if old in outcomes:
+                    outcomes[new] = _count(outcomes.get(new)) + _count(outcomes.pop(old))
+        history = entry.get("scoreHistory")
+        for item in history if isinstance(history, list) else []:
+            if isinstance(item, dict) and item.get("outcome") in LEGACY_OUTCOMES:
+                item["outcome"] = LEGACY_OUTCOMES[item["outcome"]]
+    return data
+
 
 def _load_all() -> Dict[str, Any]:
     if MEMORY_FILE.exists():
         try:
-            return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+            data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         except Exception:
             return {}
+        return _fold_legacy_outcomes(data)
     return {}
 
 
 def _save_all(data: Dict[str, Any]) -> None:
+    _fold_legacy_outcomes(data)
     MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
@@ -550,7 +592,7 @@ class MemoryPatch(BaseModel):
     # because only the current best is worth keeping.
     tuning: Optional[Dict[str, Any]] = None
     layout: Optional[Dict[str, Any]] = None
-    outcome: Optional[str] = None
+    outcome: Optional[Outcome] = None
     score: Optional[float] = None
     strategy: Optional[str] = None
     strategyReason: Optional[str] = None
@@ -558,6 +600,13 @@ class MemoryPatch(BaseModel):
     avoidPatterns: Optional[List[str]] = None
     durationSeconds: Optional[int] = None
     turnCount: Optional[int] = None
+
+    @field_validator("outcome", mode="before")
+    @classmethod
+    def _legacy_outcome(cls, value: Any) -> Any:
+        # Runs before the Literal check, so "win" arrives as "won" and anything
+        # else unknown still fails it.
+        return LEGACY_OUTCOMES.get(value, value) if isinstance(value, str) else value
 
 
 @app.get("/memory/{game_key}")
@@ -577,7 +626,7 @@ def memory_patch(game_key: str, patch: MemoryPatch):
         "scoreHistory": [],
         "totalTurns": 0,
         "totalSeconds": 0,
-        "outcomes": {"won": 0, "lost": 0, "stuck": 0, "ended": 0},
+        "outcomes": {name: 0 for name in get_args(Outcome)},
         "strategies": [],
         "strategyReasons": [],
         "discoveries": [],

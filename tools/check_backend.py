@@ -659,6 +659,80 @@ def _(h):
     expect(len(released) == 1, f"released: {released}")
 
 
+# ── Memory: outcome names ────────────────────────────────────────────────────
+# MEMORY_FILE lives in h.tmp. Each memory test starts from a file it writes
+# itself (or none), so the order the tests run in does not matter.
+
+def memory_file(h, data=None):
+    """Start the test from `data` in the memory file, or from no file."""
+    path = Path(h.server.MEMORY_FILE)
+    path.unlink(missing_ok=True)
+    if data is not None:
+        path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+@test("POST /memory records every outcome name, and the legacy 'win' as 'won'")
+def _(h):
+    path = memory_file(h)
+    names = ["won", "lost", "stuck", "ended", "aborted"]
+    for name in names + ["win"]:
+        status, body = h.api.post("/memory/outcomes-test", {"gameDesc": "Outcomes", "outcome": name, "score": 1})
+        expect(status == 200 and body.get("ok") is True, f"outcome {name!r}: status {status}: {body}")
+    saved = json.loads(path.read_text(encoding="utf-8"))["outcomes-test"]
+    expect(saved["outcomes"] == {"won": 2, "lost": 1, "stuck": 1, "ended": 1, "aborted": 1},
+           f"outcomes on disk: {saved['outcomes']}")
+    expect(saved["scoreHistory"][-1]["outcome"] == "won", f"history: {saved['scoreHistory']}")
+    expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
+@test("POST /memory refuses an unknown outcome with 422 and writes nothing")
+def _(h):
+    path = memory_file(h)
+    for bad in ("victory", "Won", "", 3):
+        status, body = h.api.post("/memory/outcomes-test", {"gameDesc": "Outcomes", "outcome": bad})
+        expect(status == 422, f"outcome {bad!r}: status {status}: {body}")
+        fields = [d.get("loc", [])[-1] for d in body.get("detail", []) if isinstance(d, dict)]
+        expect("outcome" in fields, f"outcome {bad!r}: the refusal does not name the field: {body}")
+    expect(not path.exists(), f"a refused patch was written: {path.read_text(encoding='utf-8') if path.exists() else ''}")
+
+
+@test("Memory folds an old 'win' count into 'won', once")
+def _(h):
+    path = memory_file(h, {
+        "old-game": {
+            "gameKey": "old-game", "gameDesc": "Old", "sessions": 6,
+            "outcomes": {"won": 2, "win": 3, "lost": 1},
+            "scoreHistory": [{"score": 10, "outcome": "win", "session": 5},
+                             {"score": 20, "outcome": "lost", "session": 6}],
+        },
+        "no-wins-yet": {"gameKey": "no-wins-yet", "outcomes": {"win": 4}},
+    })
+    # Loading shows the folded counts before anything is written back.
+    status, body = h.api.get("/memory/old-game")
+    expect(status == 200 and body.get("outcomes") == {"won": 5, "lost": 1}, f"GET: status {status}: {body}")
+    expect([x["outcome"] for x in body.get("scoreHistory", [])] == ["won", "lost"], f"GET history: {body}")
+    status, body = h.api.get("/memory/old-game")
+    expect(body.get("outcomes") == {"won": 5, "lost": 1}, f"second GET: {body}")
+
+    # Saving writes the folded counts, for every game in the file, and saving
+    # again does not add the old count a second time.
+    for _ in range(2):
+        status, body = h.api.post("/memory/old-game", {"gameDesc": "Old", "outcome": "lost"})
+        expect(status == 200 and body.get("ok") is True, f"POST: status {status}: {body}")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    expect(saved["old-game"]["outcomes"] == {"won": 5, "lost": 3}, f"on disk: {saved['old-game']['outcomes']}")
+    expect(saved["no-wins-yet"]["outcomes"] == {"won": 4}, f"other game on disk: {saved['no-wins-yet']}")
+    expect([x["outcome"] for x in saved["old-game"]["scoreHistory"]] == ["won", "lost"],
+           f"history on disk: {saved['old-game']['scoreHistory']}")
+
+    # The fold itself, applied to data it has already folded, changes nothing.
+    again = json.loads(json.dumps(saved))
+    h.server._fold_legacy_outcomes(again)
+    expect(again == saved, f"a second fold changed the data: {again} vs {saved}")
+    expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
 # ── Run ──────────────────────────────────────────────────────────────────────
 
 def print_raised(check):

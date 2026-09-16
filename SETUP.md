@@ -53,7 +53,8 @@ launching anything.
 ```cmd
 npm run check
 ```
-It renders the UI once in node (a blank-page bug fails here), runs the plugin and
+It renders the UI once in node (a blank-page bug fails here), checks that the page
+and the backend use the same outcome names, runs the plugin and
 Minesweeper checks, and starts the backend on a spare port with every mouse,
 keyboard, gamepad and capture call replaced by a recorder, so it never moves
 your mouse or presses a key and never uses port 8765. The backend step needs
@@ -171,6 +172,11 @@ Confirm nothing broke. This should behave exactly like before.
 | `Control scheme: ... · pause-to-think ON` | Scheme + pause active |
 | `Attached to <proc> (pid ...)` | Speed hack attached |
 | Backend banner `... : ready` | Capability/driver present |
+| `Game N finished — won` / `Session complete — outcome: won` | A win. Outcomes are always one of `won`, `lost`, `stuck`, `ended`, `aborted`; `win` no longer appears. The backend reads an old `win` count in the memory file as `won` straight away, and the file itself is rewritten without `win` the next time a session saves to it |
+| `● Minesweeper ready` (ADVANCED, next to "Use built-in solver") | The solver that matches the game name, by its own name (it said `2048 ready` for every game before) |
+| `Reported a win the solver never measured (highest tile ...) — recording as ended.` | While the 2048 solver was playing, the model claimed a win but no 2048 tile was built; the game is recorded as `ended`, not `won`. This check existed before but could never fire. It applies only to solvers that track tiles (2048), not to Minesweeper |
+| `Reported outcome "..." is not one of won, lost, stuck, ended — recording as ended.` | The model (usually in JSON-action mode) reported an outcome name that does not exist. The prompt and, in JSON-action mode, the tool list name the four it may use, so this should be rare |
+| `Memory not saved — ... game-agent-memory.json was not updated.` | The backend refused or never got the save. See Troubleshooting |
 
 ---
 
@@ -186,6 +192,9 @@ Confirm nothing broke. This should behave exactly like before.
 | Clicks land off-target | check the HUD `Scale` value; try DirectX capture or a crop to simplify the mapping |
 | 429 rate-limit pauses | Gemini free tier — keep **Skip research** on, lower **Vision every N turns** later |
 | Backend window closed | re-run `start.bat`; the watchdog auto-pauses the agent if the backend drops |
+| `Memory not saved — outcome: Input should be ...` | The page sent an outcome name the backend does not accept, which is a bug. Run `npm run check` (it compares the two lists) and report the log line |
+| `Memory not saved — no reply from the backend (HTTP 500, empty); check that the backend window is running. game-agent-memory.json was not updated.` | The backend was down when the session ended (the page and Vite were still up), so that session is not in memory. Re-run `start.bat`; later sessions save normally |
+| `Memory not saved — Failed to fetch` | Vite itself was gone (the `npm run dev` window closed) while the page stayed open. Re-run `start.bat` and reload the page |
 
 ---
 
