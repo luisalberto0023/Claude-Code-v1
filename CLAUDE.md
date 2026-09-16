@@ -15,8 +15,14 @@ The agent is tested on a separate computer that only gets code through
 
 - Commit and push every change to `claude/review-game-agent-DGtPg` as soon as
   it is verified. Never leave an edit uncommitted or local-only.
-- Before pushing: `npm run check` (plugin contracts, Minesweeper reader,
-  simulator), plus `npm run build` if `src/GameAgent.jsx` changed.
+- Before pushing: `npm run check` (UI first-render smoke test, plugin
+  contracts, Minesweeper reader, simulator, then the backend routes with all
+  input stubbed), plus `npm run build` if `src/GameAgent.jsx` changed. The
+  backend step needs a Python with fastapi, uvicorn and pydantic: the `.venv`
+  that start.bat creates on Windows, or `pip install fastapi uvicorn pydantic`
+  for the `python3` on PATH elsewhere (a cloud session, say). Backend tests
+  belong in `tools/check_backend.py`, never against a running backend: its
+  routes move the real mouse and keyboard.
 - Stage only the files you changed; never sweep in unrelated uncommitted edits
   already in the working tree. Never force-push.
 - After pushing, tell the user the short hash and subject so they can confirm

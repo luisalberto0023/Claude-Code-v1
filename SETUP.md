@@ -48,6 +48,22 @@ copy .env.example .env
 notepad .env          REM replace the placeholder with your Gemini key
 ```
 
+Optional, after a pull: confirm the new code works on this machine before
+launching anything.
+```cmd
+npm run check
+```
+It renders the UI once in node (a blank-page bug fails here), runs the plugin and
+Minesweeper checks, and starts the backend on a spare port with every mouse,
+keyboard, gamepad and capture call replaced by a recorder, so it never moves
+your mouse or presses a key and never uses port 8765. The backend step needs
+`.venv`, so run `start.bat` once first on a fresh clone.
+
+The run is good only if its last line is `ok    nothing got past the named stubs`.
+Anything else means the pulled code (or this machine's setup) is broken: a `FAIL`
+or `MISSING` line, an error message, or output that stops before that line (each
+step only runs if the one before it passed). Report it before starting a run.
+
 ---
 
 ## 3. Launch
