@@ -60,9 +60,22 @@
 //   - nothing else in GameAgent.jsx fetches /api, and nothing reads /health
 //   - logBatches and snapshotBytes keep the page's writes inside the caps
 //
+// Then which Ollama server model requests go to, because the relay used to send
+// each one wherever the page's request named, which made the backend a proxy
+// into the LAN. It now relays only to the server it started with
+// (tools/check_backend.py checks that side). Here:
+//   - the relay request carries no address, and the page has no base_url left;
+//     direct calls from the browser (relay off) still use the field
+//   - the page and the backend agree on the default server and the variable
+//     that overrides it, and git ignores agent-config.json
+//   - what the OLLAMA SERVER field says (a save waiting for a restart included),
+//     when Save does anything, and that a session does not start while the
+//     field and the relay's server differ, as the backend says at Start, or
+//     while the backend has not said; and no typed password reaches the log
+//
 // Values that live inside GameAgent.jsx (TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS,
-// pluginName, buildActionReference, callAI, setOllamaViaBackend, backend,
-// onBackendRefused) are
+// pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase,
+// backend, onBackendRefused) are
 // read by bundling it with a line that exports them added at the end, the same
 // way check-render.mjs bundles it, so the check sees what the page really
 // builds. Agent logic that can live in its own module under src/agent/ is
@@ -161,7 +174,7 @@ let agent = null;
 try {
   await build({
     stdin: {
-      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, backend as __backend, onBackendRefused as __onBackendRefused };\n`,
+      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, setOllamaBase as __setOllamaBase, backend as __backend, onBackendRefused as __onBackendRefused };\n`,
       resolveDir: path.join(ROOT, "src"),
       sourcefile: "GameAgent.jsx",
       loader: "jsx",
@@ -174,7 +187,7 @@ try {
   const detail = e?.errors?.length
     ? e.errors.map(x => `${x.location?.line ?? ""} ${x.text}`).join("; ")
     : (e?.stack ?? String(e));
-  check("GameAgent.jsx bundles and exposes TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS, pluginName, buildActionReference, callAI, setOllamaViaBackend, backend and onBackendRefused", false, detail);
+  check("GameAgent.jsx bundles and exposes TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS, pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase, backend and onBackendRefused", false, detail);
 } finally {
   fs.rmSync(bundlePath, { force: true });
 }
@@ -466,6 +479,128 @@ console.log("backend access");
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// ── Which Ollama server ───────────────────────────────────────────────────────
+console.log("ollama server");
+{
+  const ollama = await import(pathToFileURL(path.join(ROOT, "src", "agent", "ollamaServer.js")).href);
+  const pyString = name => py.match(new RegExp(`^${name}\\s*=\\s*["']([^"']*)["']`, "m"))?.[1];
+  check("the page and the backend agree on the default Ollama server and the variable that overrides the config",
+    pyString("OLLAMA_DEFAULT_BASE") === ollama.OLLAMA_DEFAULT_BASE && pyString("OLLAMA_BASE_ENV") === ollama.OLLAMA_BASE_ENV,
+    show({ py: [pyString("OLLAMA_DEFAULT_BASE"), pyString("OLLAMA_BASE_ENV")], page: [ollama.OLLAMA_DEFAULT_BASE, ollama.OLLAMA_BASE_ENV] }));
+  const ignored = fs.readFileSync(path.join(ROOT, ".gitignore"), "utf8");
+  check("agent-config.json, and the backend's half-written copy, stay out of git",
+    py.includes(`CONFIG_FILE = Path(__file__).parent / "agent-config.json"`) &&
+      /^agent-config\.json\r?$/m.test(ignored) && /^agent-config\.json\.\*\.tmp\r?$/m.test(ignored),
+    "expected CONFIG_FILE = Path(__file__).parent / \"agent-config.json\" in agent_server.py and both names in .gitignore");
+
+  const LAN = "http://192.168.1.50:11434";
+  const HOME = ollama.OLLAMA_DEFAULT_BASE;
+  const fromConfig = { base: LAN, source: "agent-config.json", error: null, saved: LAN };
+  const savedNotStarted = { base: HOME, source: "default", error: null, saved: LAN };
+  const fromEnv = { base: "http://10.0.0.9:11434", source: "OLLAMA_BASE_URL", error: null, saved: LAN };
+  const broken = { base: null, source: "agent-config.json", error: "ollamaBase in agent-config.json is not a usable Ollama address: 'x'", saved: null };
+  const brokenEnv = { base: null, source: "OLLAMA_BASE_URL", error: "OLLAMA_BASE_URL is not a usable Ollama address: 'x'", saved: LAN };
+  const notes = [
+    ["relay on, the field is the relay's server (spaces and a slash aside)", { field: ` ${LAN}/ `, relay: true, server: fromConfig },
+      n => n.tone === "ok" && !n.canSave && n.text.includes("agent-config.json")],
+    ["relay on, the field names another server", { field: HOME, relay: true, server: fromConfig },
+      n => n.tone === "warn" && n.canSave && n.text.includes(LAN) && n.text.includes("restart start.bat")],
+    ["relay on, the field is saved but the backend has not restarted", { field: LAN, relay: true, server: savedNotStarted },
+      n => n.tone === "warn" && !n.canSave && /Restart start\.bat/.test(n.text) && n.text.includes(HOME)],
+    // After a reload the field shows the server in use again: the save waiting
+    // for a restart is still named, or it looks lost. Saving the field takes it back.
+    ["relay on, the field is the server in use, and another is saved for the next start", { field: HOME, relay: true, server: savedNotStarted },
+      n => n.tone === "warn" && n.canSave && n.text.includes(LAN) && /restart start\.bat/.test(n.text)],
+    ["relay on, an empty field, and another server saved for the next start", { field: "", relay: true, server: savedNotStarted },
+      n => !n.canSave && n.text.includes(HOME) && n.text.includes(LAN) && /restart start\.bat/.test(n.text)],
+    ["relay on, OLLAMA_BASE_URL decides: a saved address is not waiting for a restart", { field: "http://10.0.0.9:11434", relay: true, server: fromEnv },
+      n => n.tone === "ok" && !n.canSave && !n.text.includes(LAN)],
+    ["relay on, saved but OLLAMA_BASE_URL wins", { field: LAN, relay: true, server: fromEnv },
+      n => n.tone === "warn" && !n.canSave && n.text.includes("OLLAMA_BASE_URL") && n.text.includes("10.0.0.9")],
+    ["relay on, an empty field", { field: "  ", relay: true, server: fromConfig }, n => !n.canSave && n.text.includes(LAN)],
+    ["relay on, the backend has not said", { field: LAN, relay: true, server: null }, n => n.tone === "warn" && !n.canSave],
+    ["relay on, the relay has no usable server", { field: LAN, relay: true, server: broken },
+      n => n.tone === "error" && n.canSave && n.text.includes(broken.error)],
+    ["relay on, OLLAMA_BASE_URL is not usable: saving does not help", { field: "http://10.0.0.7:11434", relay: true, server: brokenEnv },
+      n => n.tone === "error" && n.text.includes(brokenEnv.error) && /clear OLLAMA_BASE_URL/.test(n.text) && !/Save a working/.test(n.text)],
+    ["relay off, the field is what is saved", { field: LAN, relay: false, server: fromConfig },
+      n => n.tone === "info" && !n.canSave && n.text.includes("OLLAMA_ORIGINS")],
+    ["relay off, a new address", { field: "http://10.0.0.7:11434", relay: false, server: fromConfig }, n => n.canSave],
+  ];
+  const badNotes = notes.map(([label, input, ok]) => [label, ollama.ollamaServerNote(input), ok]).filter(([, n, ok]) => !ok(n));
+  check(`ollamaServerNote says where model requests go, and when Save does anything (${notes.length} cases)`, !badNotes.length,
+    badNotes.map(([label, n]) => `${label}: ${show(n)}`).join("; "));
+
+  const starts = [
+    ["the field is the relay's server", { field: `${LAN}/`, relay: true, server: fromConfig }, p => p === null],
+    ["the field names another server", { field: HOME, relay: true, server: fromConfig }, p => !!p && p.includes(HOME) && p.includes(LAN)],
+    ["saved but not restarted", { field: LAN, relay: true, server: savedNotStarted }, p => !!p && p.includes(HOME)],
+    ["the relay has no usable server", { field: LAN, relay: true, server: broken }, p => !!p && p.includes(broken.error)],
+    // Start needs the backend online, so this is a backend older than the page:
+    // its relay wants a base_url and would refuse the first turn.
+    ["the backend has not said", { field: LAN, relay: true, server: null },
+      p => !!p && /older than this page/.test(p) && /Restart start\.bat/.test(p)],
+    ["OLLAMA_BASE_URL decides and the field names another: saving would not help", { field: LAN, relay: true, server: fromEnv },
+      p => !!p && p.includes("10.0.0.9") && /change OLLAMA_BASE_URL and restart start\.bat/.test(p) && !/Save the address/.test(p)],
+    ["OLLAMA_BASE_URL is not usable", { field: LAN, relay: true, server: brokenEnv },
+      p => !!p && p.includes(brokenEnv.error) && /clear OLLAMA_BASE_URL/.test(p) && !/Save a working/.test(p)],
+    ["the field holds a password: the log does not", { field: "http://agent:S3cretTok@192.168.1.50:11434", relay: true, server: fromConfig },
+      p => !!p && !p.includes("S3cretTok") && !p.includes("agent:") && p.includes("http://***@192.168.1.50:11434")],
+    ["relay off: the browser calls the field", { field: "http://10.0.0.7:11434", relay: false, server: fromConfig }, p => p === null],
+    ["relay off: what the backend says does not matter", { field: "http://10.0.0.7:11434", relay: false, server: null }, p => p === null],
+  ];
+  const badStarts = starts.map(([label, input, ok]) => [label, ollama.ollamaStartProblem(input), ok]).filter(([, p, ok]) => !ok(p));
+  check(`ollamaStartProblem stops a session whose model requests would go elsewhere (${starts.length} cases)`, !badStarts.length,
+    badStarts.map(([label, p]) => `${label}: ${show(p)}`).join("; "));
+
+  const saves = [
+    ["saved, restart needed", { ok: true, saved: LAN, active: HOME, restartRequired: true, overriddenBy: null },
+      m => m.type === "success" && m.text.includes(LAN) && m.text.includes(HOME) && /Restart start\.bat/.test(m.text)],
+    ["saved, already in use", { ok: true, saved: LAN, active: LAN, restartRequired: false, overriddenBy: null },
+      m => m.type === "success" && /already relays/.test(m.text)],
+    ["saved, but OLLAMA_BASE_URL wins", { ok: true, saved: LAN, active: "http://10.0.0.9:11434", restartRequired: true, overriddenBy: "OLLAMA_BASE_URL" },
+      m => m.type === "warn" && m.text.includes("OLLAMA_BASE_URL")],
+    ["saved, but an unusable OLLAMA_BASE_URL wins", { ok: true, saved: LAN, active: null, restartRequired: true, overriddenBy: "OLLAMA_BASE_URL" },
+      m => m.type === "warn" && m.text.includes("no usable server") && !m.text.includes("null")],
+    ["saved, while the relay has no usable server", { ok: true, saved: LAN, active: null, restartRequired: true, overriddenBy: null },
+      m => m.type === "success" && m.text.includes("no usable server") && !m.text.includes("null")],
+    ["refused as not an address", { ok: false, error: "'x' does not start with http:// or https://" },
+      m => m.type === "warn" && m.text.includes("does not start with http://")],
+    ["a backend older than the route", { detail: "Not Found" }, m => m.type === "warn" && /restart start\.bat/.test(m.text)],
+    ["the page refused (already said)", { ok: false, refused: "token", error: "reload" }, m => m === null],
+  ];
+  const badShown = [
+    ["http://192.168.1.50:11434/", "http://192.168.1.50:11434"],
+    ["https://agent:S3cretTok@ollama.example", "https://***@ollama.example"],
+    ["http://agent:p@S3cretTok@192.168.1.50:11434", "http://***@192.168.1.50:11434"],
+    ["agent:S3cretTok//x@192.168.1.50:11434", "***@192.168.1.50:11434"],
+  ].filter(([typed, want]) => ollama.shownOllamaBase(typed) !== want);
+  check("shownOllamaBase hides a user name and password before the log keeps them", !badShown.length,
+    badShown.map(([typed]) => typed + " -> " + ollama.shownOllamaBase(typed)).join("; "));
+
+  const badSaves = saves.map(([label, reply, ok]) => [label, ollama.ollamaSavedMessage(reply), ok]).filter(([, m, ok]) => !ok(m));
+  check(`ollamaSavedMessage says what Save did and when it takes effect (${saves.length} cases)`, !badSaves.length,
+    badSaves.map(([label, m]) => `${label}: ${show(m)}`).join("; "));
+
+  const model = name => ({ name });
+  const lists = [
+    ["two models", { ok: true, base: LAN, models: [model("qwen2.5vl:3b"), model("gemma3:4b")] },
+      m => m.type === "success" && m.text.includes(LAN) && m.text.includes("2 models") && m.text.includes("gemma3:4b")],
+    ["many models", { ok: true, base: LAN, models: Array.from({ length: 10 }, (_, i) => model(`m${i}`)) },
+      m => m.type === "success" && m.text.includes("and 2 more") && !m.text.includes("m9")],
+    ["no models", { ok: true, base: LAN, models: [] }, m => m.type === "warn" && m.text.includes("ollama pull")],
+    ["no answer", { ok: false, base: LAN, status: 0, error: "URLError: <urlopen error [WinError 10061] refused>" },
+      m => m.type === "warn" && m.text.includes(LAN) && m.text.includes("10061")],
+    ["no usable server", { ok: false, detail: `${broken.error}. Fix it, then restart the backend (start.bat).` },
+      m => m.type === "error" && m.text.includes(broken.error)],
+    ["a backend older than the route", { detail: "Not Found" }, m => m.type === "warn" && /restart start\.bat/.test(m.text)],
+    ["the page refused (already said)", { ok: false, refused: "token" }, m => m === null],
+  ];
+  const badLists = lists.map(([label, reply, ok]) => [label, ollama.ollamaModelsMessage(reply), ok]).filter(([, m, ok]) => !ok(m));
+  check(`ollamaModelsMessage reports the relay's server and its models (${lists.length} cases)`, !badLists.length,
+    badLists.map(([label, m]) => `${label}: ${show(m)}`).join("; "));
 }
 
 // ── Failed model requests ─────────────────────────────────────────────────────
@@ -927,6 +1062,27 @@ if (agent) {
     const relayBody = missing.sent[0]?.init?.body ? JSON.parse(missing.sent[0].init.body) : null;
     check("the relay is asked to give Ollama OLLAMA_RELAY_TIMEOUT_S",
       relayBody?.timeout === llmErrors.OLLAMA_RELAY_TIMEOUT_S, show(relayBody && { timeout: relayBody.timeout }));
+
+    // Which server: the relay's own, whatever the field says; the field only
+    // for a call straight from the browser.
+    const LAN = "http://192.168.1.50:11434";
+    agent.__setOllamaBase(`${LAN}/`);
+    try {
+      respond = () => json(200, { ok: true, status: 200, elapsed: 0.1, body: { choices: [{ message: { content: "OK" }, finish_reason: "stop" }] } });
+      const relayed = await run("ollama", { retry: false }, { relay: true });
+      const sentBody = relayed.sent[0]?.init?.body ? JSON.parse(relayed.sent[0].init.body) : null;
+      check("ollama via the relay: the request names no Ollama server, only what to send",
+        !relayed.e && relayed.calls === 1 && relayed.sent[0].url === "/api/llm/ollama" &&
+          same(Object.keys(sentBody ?? {}).sort(), ["payload", "timeout"]) && !JSON.stringify(sentBody).includes("192.168.1.50"),
+        show({ error: relayed.e?.message, url: relayed.sent[0]?.url, keys: sentBody && Object.keys(sentBody) }));
+      respond = () => json(200, { choices: [{ message: { content: "OK" }, finish_reason: "stop" }] });
+      const direct = await run("ollama", { retry: false }, { relay: false });
+      check("ollama direct: the browser calls the OLLAMA SERVER field's address",
+        !direct.e && direct.calls === 1 && direct.sent[0].url === `${LAN}/v1/chat/completions`,
+        show({ error: direct.e?.message, urls: direct.sent.map(c => c.url) }));
+    } finally {
+      agent.__setOllamaBase(null);
+    }
     // The check made while waiting for the model has a shorter deadline, and so
     // must the relay, or the backend waits on Ollama long after the page gave up.
     const shortRun = await run("ollama", { timeoutMs: 120_000, retry: false }, { relay: true });
@@ -977,6 +1133,20 @@ if (agent) {
     check("ollama via the relay: a request the backend refuses fails at once",
       !refused.hung && refused.e?.verdict?.reason === "backend-refused" && refused.calls === 1,
       show({ verdict: refused.e?.verdict, calls: refused.calls }));
+    // The relay with no usable Ollama address (503), or a server that redirects
+    // elsewhere (502): asking again meets the same refusal, so the session ends
+    // with the backend's reason instead of waiting fifteen minutes.
+    for (const [status, detail] of [
+      [503, "ollamaBase in agent-config.json is not a usable Ollama address: 'x'. Fix it, then restart the backend (start.bat)."],
+      [502, "the Ollama server at http://192.168.1.50:11434 answered with a redirect (HTTP 307), which the relay does not follow."],
+    ]) {
+      respond = () => json(status, { ok: false, detail });
+      const r = await run("ollama", {}, { relay: true });
+      check(`ollama via the relay: an HTTP ${status} refusal from the relay ends the session at once, in the backend's words`,
+        !r.hung && r.e?.verdict?.kind === "fatal" && r.e.verdict.reason === "backend-refused" && r.calls === 1 &&
+          r.e.verdict.userText.includes(detail.slice(0, 40)),
+        show({ verdict: r.e?.verdict, calls: r.calls }));
+    }
 
     // A retry that works: one server error, then an answer.
     let n = 0;
@@ -1079,6 +1249,30 @@ if (agent) {
   check("the page reads nothing from /health", !fromHealth.length, fromHealth.join("  |  "));
   const infoReads = [...code.matchAll(/backend\("\/screen\/info"/g)].length;
   check("the page's backend check and watchdog ask /screen/info, which needs the token", infoReads === 2, `found ${infoReads}`);
+}
+
+// The relay's Ollama server is the backend's to choose, so nothing in the page
+// may name one to it, and a session whose field names another does not start.
+{
+  const named = [...code.matchAll(/\bbase_url\b/g)].map(m => context(m.index));
+  const saves = [...code.matchAll(/backend\("\/config\/ollama-base", \{ base_url: ollamaHost \}\)/g)].length;
+  check("the page sends base_url only to save the OLLAMA SERVER field, never with a model request",
+    named.length === 1 && saves === 1, named.join("  |  "));
+  check("the field starts as the relay's server, from /capabilities, on mount and when the backend comes back",
+    /if \(caps\.ollama\.base && !ollamaKnownRef\.current\) \{\s*ollamaKnownRef\.current = true;\s*setOllamaHost\(caps\.ollama\.base\);/.test(code) &&
+      [...code.matchAll(/await loadCapabilities\(\);/g)].length === 2,
+    "not found — has the backend check changed shape?");
+  // Asked again at Start: a backend restarted between two watchdog pings may
+  // relay somewhere else than the page last heard.
+  check("a session does not start while OLLAMA SERVER and the relay's server differ, as the backend says at Start",
+    /if \(!apiKey && providerKey !== "ollama"\) \{[^}]*\}\s*let ollamaRelay = capabilities\.ollama;\s*if \(providerKey === "ollama"\) \{\s*if \(ollamaViaBackend\) \{[^}]*startingRef\.current = true;[^}]*const caps = await fetchCapabilities\(\{ signal: ctrl\.signal \}\)\.catch\(\(\) => null\);[^}]*if \(caps\) ollamaRelay = caps\.ollama;\s*\}\s*const problem = ollamaStartProblem\(\{ field: ollamaHost, relay: ollamaViaBackend, server: ollamaRelay \}\);\s*if \(problem\) \{\s*startingRef\.current = false;\s*addLog\(problem, "error"\);\s*return;\s*\}\s*\}\s*stopRef\.current = false;/.test(code) &&
+      /Ollama: \$\{model\} on \$\{ollamaRelay\?\.base \?\? /.test(code),
+    "not found before the run's reset — has startAgent changed shape?");
+  // That ask waits, so the running flag alone no longer stops a second click.
+  check("a second click on Start while it asks the backend does not start a second run",
+    /const startAgent = useCallback\(async \(\) => \{\s*if \(running \|\| startingRef\.current\) return;/.test(code) &&
+      /useEffect\(\(\) => \{\s*if \(running\) startingRef\.current = false;\s*\}, \[running\]\);/.test(code),
+    "the startingRef guard or its reset is missing");
 }
 
 // ── Every model call can be stopped ───────────────────────────────────────────

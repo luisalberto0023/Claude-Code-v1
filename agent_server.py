@@ -16,11 +16,12 @@ import json
 import re
 import datetime
 import hmac
+import ipaddress
 import os
 import secrets
 import socket
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple, get_args
 
 # ── Who may use this server ─────────────────────────────────────────────────────
 # Every route here moves the real mouse, presses real keys, drives the gamepad,
@@ -78,15 +79,23 @@ def choose_token(environ) -> str:
 def write_token_file(token: str, path: Path) -> None:
     """Replace `path` with `token` in one step, so Vite never reads half a token
     or an empty file."""
+    replace_file(path, token, encoding="ascii")
+
+
+def replace_file(path: Path, text: str, encoding: str = "utf-8") -> None:
+    """Replace `path` with `text` in one step: a reader sees the old file or the
+    new one, never half of one. Callers writing the same file from two threads
+    at once hold a lock of their own, since both would use one temporary name."""
     tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(token, encoding="ascii")
+    tmp.write_text(text, encoding=encoding)
     for attempt in range(40):
         try:
             os.replace(tmp, path)
             return
         except PermissionError:
-            # Windows refuses to replace a file another process has open, and
-            # Vite opens this one on every page load, for a moment.
+            # Windows refuses to replace a file another process has open: Vite
+            # opens the token file on every page load, for a moment, and an
+            # editor or antivirus can hold any file the same way.
             if attempt == 39:
                 tmp.unlink(missing_ok=True)
                 raise
@@ -425,6 +434,9 @@ def _capabilities():
         "capture": CAPTURE_AVAILABLE,
         "windows_api": WINDOWS_API,
         "speedhack": SPEEDHACK_AVAILABLE,
+        # Where the Ollama relay sends requests, fixed at startup (see "Ollama
+        # relay" below), so the page can show it instead of guessing.
+        "ollama": _ollama_status(),
     }
 
 
@@ -963,49 +975,370 @@ def memory_patch(game_key: str, patch: MemoryPatch):
 # (observed: sockets dropped at a fixed ~19s while Ollama was still computing).
 # Relaying through this local backend keeps the browser's connection on
 # localhost and lets Python own the long-running call, with its own timeout.
+#
+# The relay sends requests to ONE Ollama server, chosen when the backend starts,
+# never to an address a request names. It used to take base_url from each
+# request and return whatever that address answered, error text included, which
+# made it a proxy into the LAN for anything that could reach this backend. The
+# server is, in order:
+#   1. OLLAMA_BASE_URL in the backend's environment,
+#   2. "ollamaBase" in agent-config.json next to this file (git ignores it; the
+#      page's OLLAMA SERVER field saves it through POST /config/ollama-base),
+#   3. http://localhost:11434, Ollama on this PC.
+# The first of those that is set decides. If its value is not a usable address
+# the relay refuses every request and says why, rather than quietly sending the
+# model's requests to another server. A saved change is used from the next start.
 
-import urllib.request
+import threading
 import urllib.error
+import urllib.parse
+import urllib.request
+
+OLLAMA_DEFAULT_BASE = "http://localhost:11434"
+OLLAMA_BASE_ENV = "OLLAMA_BASE_URL"
+CONFIG_FILE = Path(__file__).parent / "agent-config.json"
+CONFIG_OLLAMA_KEY = "ollamaBase"
+# How long to wait for Ollama's model list, and how much of it to read. A list
+# answers in well under a second; this only stops a host that never does.
+OLLAMA_TAGS_TIMEOUT_S = 15
+OLLAMA_TAGS_MAX_BYTES = 4 * 1024 * 1024
+
+_HOST_NAME = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9_.-]*[A-Za-z0-9_])?")
+
+
+class OllamaServer(NamedTuple):
+    base: Optional[str]    # e.g. "http://192.168.1.50:11434"; None when unusable
+    source: str            # OLLAMA_BASE_URL, agent-config.json or default
+    error: Optional[str]   # why `base` is None, in words for the operator
+
+
+def _shown(text: str) -> str:
+    """`text` quoted for a refusal, with everything before its last @ (after
+    any http://) hidden. A refusal is printed in the backend window, returned to
+    the page and kept in its logs, so a password in a refused address must not
+    appear in it, however the address around it is written."""
+    if "@" in text:
+        head, _, tail = text.rpartition("@")
+        scheme = re.match(r"[A-Za-z][A-Za-z0-9+.-]*://", head)
+        text = f"{scheme.group(0) if scheme else ''}***@{tail}"
+    return repr(text[:100])
+
+
+def ollama_base_from(value: Any) -> str:
+    """`value` as an Ollama server address the relay may use, tidied, or
+    ValueError saying why it may not be used.
+
+    Only http or https with a host name or IP address, optionally a port and a
+    path prefix (for a server behind a reverse proxy), in plain ASCII. Nothing
+    else: a file: or ftp: address, a user name and password, or a query would
+    each make the relay something other than a client of one Ollama server, and
+    a character urllib cannot put in a request line would pass here only to fail
+    every request later, looking like a server that does not answer."""
+    example = "for example http://192.168.1.50:11434"
+    if not isinstance(value, str):
+        raise ValueError(f"the address must be text, {example}")
+    text = value.strip()
+    if not text:
+        raise ValueError(f"the address is empty; give one, {example}")
+    if len(text) > 300:
+        raise ValueError("the address is over 300 characters long")
+    # Before anything that quotes the address in full.
+    if "@" in text:
+        raise ValueError(f"{_shown(text)} has a user name or password (an @) in it, which the relay does not send")
+    if any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in text):
+        raise ValueError(f"{_shown(text)} has a space or a control character in it")
+    if not text.isascii():
+        raise ValueError(f"{_shown(text)} has a character that is not plain ASCII; "
+                         f"write an international host name in its xn-- form")
+    try:
+        parts = urllib.parse.urlsplit(text)
+        _ = parts.port  # read for its check: an out-of-range or non-numeric port raises
+    except ValueError as e:
+        raise ValueError(f"{_shown(text)} is not a web address ({e})") from None
+    if parts.scheme.lower() not in ("http", "https"):
+        raise ValueError(f"{_shown(text)} does not start with http:// or https://; {example}")
+    host = parts.hostname or ""
+    if host.startswith("[") or ":" in host:
+        try:
+            ipaddress.IPv6Address(host.strip("[]"))
+        except ValueError:
+            raise ValueError(f"{_shown(text)} does not name a host; {example}") from None
+    elif not _HOST_NAME.fullmatch(host):
+        raise ValueError(f"{_shown(text)} does not name a host; {example}")
+    if parts.port == 0 or parts.netloc.endswith(":"):
+        raise ValueError(f"{_shown(text)} has an empty port or port 0; {example}")
+    if parts.query or parts.fragment or "?" in text or "#" in text:
+        raise ValueError(f"{_shown(text)} has a ? or # part, which a server address does not")
+    path = parts.path.rstrip("/")
+    # The relay adds /v1/chat/completions and /api/tags itself.
+    if re.search(r"/(?:v1|api)(?:/|$)", path):
+        raise ValueError(f"{_shown(text)} includes an Ollama API path; give only the server, {example}")
+    return f"{parts.scheme.lower()}://{parts.netloc}{path}"
+
+
+class ConfigUnreadable(Exception):
+    """agent-config.json exists but cannot be used, in words for the operator."""
+
+
+def read_config(path: Path) -> Dict[str, Any]:
+    """The settings in agent-config.json, or {} when there is no such file.
+
+    Whatever is wrong with the file, the error is ConfigUnreadable and nothing
+    else: the backend reads it while starting, and a file edited by hand must
+    cost the Ollama relay its server, never the mouse, keyboard and capture."""
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        raise ConfigUnreadable(f"{path.name} cannot be read ({e})") from None
+    try:
+        # UTF-16 with its byte-order mark is what Windows PowerShell 5.1 writes
+        # for `echo ... > agent-config.json`; utf-8-sig also reads the mark
+        # Notepad can put before UTF-8.
+        if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+            text = raw.decode("utf-16")
+        else:
+            text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError as e:
+        raise ConfigUnreadable(f"{path.name} is not UTF-8 text ({e}); save it as UTF-8 or delete it") from None
+    try:
+        data = json.loads(text)
+    except (ValueError, RecursionError) as e:
+        raise ConfigUnreadable(f"{path.name} is not valid JSON ({e}); fix it or delete it") from None
+    if not isinstance(data, dict):
+        raise ConfigUnreadable(f"{path.name} does not hold a JSON object ({{...}}); fix it or delete it")
+    return data
+
+
+def choose_ollama_base(environ, config_file: Path) -> OllamaServer:
+    """The Ollama server the relay uses for this run (see the top of this section)."""
+    given = (environ.get(OLLAMA_BASE_ENV) or "").strip()
+    if given:
+        try:
+            return OllamaServer(ollama_base_from(given), OLLAMA_BASE_ENV, None)
+        except ValueError as e:
+            return OllamaServer(None, OLLAMA_BASE_ENV, f"{OLLAMA_BASE_ENV} is not a usable Ollama address: {e}")
+    try:
+        saved = read_config(config_file).get(CONFIG_OLLAMA_KEY)
+    except ConfigUnreadable as e:
+        return OllamaServer(None, config_file.name, str(e))
+    if saved is None or (isinstance(saved, str) and not saved.strip()):
+        return OllamaServer(OLLAMA_DEFAULT_BASE, "default", None)
+    try:
+        return OllamaServer(ollama_base_from(saved), config_file.name, None)
+    except ValueError as e:
+        return OllamaServer(None, config_file.name,
+                            f"{CONFIG_OLLAMA_KEY} in {config_file.name} is not a usable Ollama address: {e}")
+
+
+def _startup_ollama_server() -> OllamaServer:
+    # choose_ollama_base turns every problem it knows of into an error for the
+    # relay. Anything it does not know of must still not stop the backend from
+    # starting: this runs on import, before any route exists.
+    try:
+        return choose_ollama_base(os.environ, CONFIG_FILE)
+    except Exception as e:
+        return OllamaServer(None, CONFIG_FILE.name,
+                            f"the Ollama server could not be chosen ({type(e).__name__}: {e})")
+
+
+# Chosen once, when the backend starts. Nothing a request sends changes it.
+OLLAMA_SERVER = _startup_ollama_server()
+_config_lock = threading.Lock()
+
+
+def _saved_ollama_base() -> Optional[str]:
+    """What agent-config.json holds now, which is what the next start will use
+    unless OLLAMA_BASE_URL is set. None when it holds nothing usable."""
+    try:
+        return ollama_base_from(read_config(CONFIG_FILE).get(CONFIG_OLLAMA_KEY))
+    except (ConfigUnreadable, ValueError):
+        return None
+
+
+def _ollama_status() -> Dict[str, Any]:
+    server = OLLAMA_SERVER
+    return {"base": server.base, "source": server.source, "error": server.error,
+            "saved": _saved_ollama_base()}
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow a redirect: it would send the request (the whole prompt,
+    screenshot included) to a server other than the one configured. The reply
+    then arrives as an HTTPError with the 3xx status."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_ollama_opener = urllib.request.build_opener(_NoRedirects)
+
+
+def _ollama_open(req: urllib.request.Request, timeout: float):
+    """Every request to Ollama goes through here (tools/check_backend.py stands
+    in for it, so the checks never reach a real server)."""
+    return _ollama_opener.open(req, timeout=timeout)
+
+
+def _ollama_unusable(server: OllamaServer) -> JSONResponse:
+    # {"detail": ...} like the backend's other refusals, so the page gives the
+    # session up at once with this message instead of waiting on a model that
+    # no request can reach.
+    return JSONResponse({"ok": False, "detail": f"{server.error}. Fix it, then restart the backend (start.bat)."},
+                        status_code=503)
+
+
+def _redirected(server: OllamaServer, e: urllib.error.HTTPError) -> str:
+    where = e.headers.get("Location") if e.headers is not None else None
+    return (f"the Ollama server at {server.base} answered with a redirect (HTTP {e.code}"
+            f"{f' to {where[:200]}' if where else ''}), which the relay does not follow. "
+            f"Set the Ollama server to the address Ollama itself answers on.")
+
+
+def _http_error_text(e: urllib.error.HTTPError) -> str:
+    try:
+        return e.read().decode("utf-8", errors="replace")[:500] or str(e)
+    except Exception:
+        return str(e)
+
+
+def _no_answer(e: Exception, started: float) -> Dict[str, Any]:
+    # timedOut tells the page this was the relay's timeout running out, not a
+    # connection that dropped. It treats the one as a deadline and the other as
+    # worth asking again at once (src/agent/llmErrors.js). urllib raises the
+    # timeout bare while reading the reply, and inside a URLError while
+    # connecting.
+    timed_out = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
+    return {"ok": False, "status": 0, "elapsed": round(time.time() - started, 1),
+            "timedOut": timed_out, "error": f"{type(e).__name__}: {e}"}
 
 
 class OllamaRelayBody(BaseModel):
-    base_url: str
+    # No base_url: the relay sends to OLLAMA_SERVER only. A page from before this
+    # change still sends one, and it is ignored (pydantic drops unknown fields).
     payload: Dict[str, Any]
     timeout: float = 600.0
 
 
 @app.post("/llm/ollama")
 def llm_ollama(b: OllamaRelayBody):
-    url = b.base_url.rstrip("/") + "/v1/chat/completions"
+    server = OLLAMA_SERVER
+    if server.base is None:
+        return _ollama_unusable(server)
     data = json.dumps(b.payload).encode("utf-8")
     req = urllib.request.Request(
-        url, data=data,
+        server.base + "/v1/chat/completions", data=data,
         headers={"Content-Type": "application/json"},
         method="POST",
     )
     started = time.time()
     try:
-        with urllib.request.urlopen(req, timeout=max(30.0, min(b.timeout, 1800.0))) as resp:
+        with _ollama_open(req, timeout=max(30.0, min(b.timeout, 1800.0))) as resp:
             body = resp.read().decode("utf-8", errors="replace")
         return {"ok": True, "status": 200, "elapsed": round(time.time() - started, 1),
                 "body": json.loads(body)}
     except urllib.error.HTTPError as e:
-        detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
+        if 300 <= e.code < 400:
+            # Asking again gets the same redirect, so this is a refusal the page
+            # gives the session up on, not an answer from Ollama.
+            return JSONResponse({"ok": False, "detail": _redirected(server, e)}, status_code=502)
         return {"ok": False, "status": e.code, "elapsed": round(time.time() - started, 1),
-                "error": detail or str(e)}
+                "error": _http_error_text(e)}
     except Exception as e:
-        # timedOut tells the page this was the timeout above running out, not a
-        # connection that dropped. It treats the one as a deadline and the other
-        # as worth asking again at once (src/agent/llmErrors.js). urlopen raises
-        # the timeout bare while reading the reply, and inside a URLError while
-        # connecting.
-        timed_out = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
-        return {"ok": False, "status": 0, "elapsed": round(time.time() - started, 1),
-                "timedOut": timed_out, "error": f"{type(e).__name__}: {e}"}
+        return _no_answer(e, started)
+
+
+def _model_entry(model: Dict[str, Any]) -> Dict[str, Any]:
+    def text(value):
+        return value if isinstance(value, str) else None
+
+    details = model.get("details") if isinstance(model.get("details"), dict) else {}
+    families = details.get("families")
+    return {
+        "name": model["name"],
+        "size": model.get("size") if isinstance(model.get("size"), int) else None,
+        "modifiedAt": text(model.get("modified_at")),
+        "family": text(details.get("family")),
+        "families": [f for f in families if isinstance(f, str)] if isinstance(families, list) else [],
+        "parameterSize": text(details.get("parameter_size")),
+        "quantization": text(details.get("quantization_level")),
+    }
+
+
+@app.get("/llm/ollama/tags")
+def llm_ollama_tags():
+    """The models pulled on the relay's Ollama server (Ollama's GET /api/tags),
+    so the page can check the server answers and offer what it has."""
+    server = OLLAMA_SERVER
+    if server.base is None:
+        return _ollama_unusable(server)
+    req = urllib.request.Request(server.base + "/api/tags", method="GET")
+    started = time.time()
+    try:
+        with _ollama_open(req, timeout=OLLAMA_TAGS_TIMEOUT_S) as resp:
+            raw = resp.read(OLLAMA_TAGS_MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        error = _redirected(server, e) if 300 <= e.code < 400 else _http_error_text(e)
+        return {"ok": False, "base": server.base, "status": e.code,
+                "elapsed": round(time.time() - started, 1), "error": error}
+    except Exception as e:
+        return {"base": server.base, **_no_answer(e, started)}
+    elapsed = round(time.time() - started, 1)
+    listed = None
+    if len(raw) <= OLLAMA_TAGS_MAX_BYTES:
+        try:
+            listed = json.loads(raw.decode("utf-8", errors="replace"))
+        except ValueError:
+            pass
+    models = listed.get("models") if isinstance(listed, dict) else None
+    if not isinstance(models, list):
+        return {"ok": False, "base": server.base, "status": 200, "elapsed": elapsed,
+                "error": f"the server at {server.base} did not answer with an Ollama model list "
+                         f"(is it Ollama?): {raw[:120].decode('utf-8', errors='replace')!r}"}
+    return {"ok": True, "base": server.base, "elapsed": elapsed,
+            "models": [_model_entry(m) for m in models[:500]
+                       if isinstance(m, dict) and isinstance(m.get("name"), str)]}
+
+
+class OllamaBaseBody(BaseModel):
+    base_url: str
+
+
+@app.post("/config/ollama-base")
+def config_ollama_base(b: OllamaBaseBody):
+    """Save the Ollama server for the NEXT start of the backend.
+
+    The relay keeps the server it started with until then: a request that could
+    move it at once would be the per-request address this section removed, one
+    step removed."""
+    try:
+        base = ollama_base_from(b.base_url)
+    except ValueError as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=422)
+    with _config_lock:
+        try:
+            config = read_config(CONFIG_FILE)
+        except ConfigUnreadable as e:
+            # Not overwritten: it may hold settings someone wrote by hand.
+            return JSONResponse({"ok": False, "error": str(e)}, status_code=409)
+        config[CONFIG_OLLAMA_KEY] = base
+        try:
+            replace_file(CONFIG_FILE, json.dumps(config, indent=2, ensure_ascii=False) + "\n")
+        except OSError as e:
+            return {"ok": False, "error": f"could not write {CONFIG_FILE.name} ({e})"}
+    running = OLLAMA_SERVER
+    return {
+        "ok": True,
+        "saved": base,
+        "path": str(CONFIG_FILE),
+        "active": running.base,
+        # Until the backend restarts, the relay keeps sending to `active`.
+        "restartRequired": base != running.base,
+        # Set when the environment chose this run's server: it will choose the
+        # next one too, whatever the file says.
+        "overriddenBy": OLLAMA_BASE_ENV if running.source == OLLAMA_BASE_ENV else None,
+    }
 
 
 @app.delete("/memory/{game_key}")
@@ -1297,6 +1630,13 @@ if __name__ == "__main__":
     print(f"Token    : {'from AGENT_TOKEN' if (os.environ.get('AGENT_TOKEN') or '').strip() else 'new for this start'}, "
           f"written to {TOKEN_FILE.name}")
     print("           A page opened before this start must be reloaded (F5).")
+    if OLLAMA_SERVER.base:
+        print(f"Ollama   : {OLLAMA_SERVER.base} "
+              f"({'the default' if OLLAMA_SERVER.source == 'default' else 'from ' + OLLAMA_SERVER.source}); "
+              f"the relay sends model requests only there")
+    else:
+        print(f"Ollama   : NOT USABLE - {OLLAMA_SERVER.error}.")
+        print("           The relay refuses model requests until that is fixed and the backend restarted.")
     print(f"DPI-aware: {'yes' if platform.system() == 'Windows' else 'n/a'}")
     print("Capabilities:")
     print(f"  gamepad  (vgamepad)  : {'ready' if GAMEPAD_AVAILABLE else 'missing — pip install vgamepad + ViGEmBus'}")

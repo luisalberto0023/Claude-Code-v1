@@ -61,8 +61,10 @@ Minesweeper checks, checks that the page sends the backend's token (see Launch),
 and starts the backend on a spare port with every mouse,
 keyboard, gamepad and capture call replaced by a recorder, so it never moves
 your mouse or presses a key and never uses port 8765. There it also checks that
-the backend refuses requests without the token or from other sites. The backend step needs
-`.venv`, so run `start.bat` once first on a fresh clone.
+the backend refuses requests without the token or from other sites, and that its
+Ollama relay sends only to its configured server (against a stand-in, so no
+Ollama is called). The backend step needs `.venv`, so run `start.bat` once first
+on a fresh clone.
 
 The run is good only if its last line is `ok    nothing got past the named stubs`.
 Anything else means the pulled code (or this machine's setup) is broken: a `FAIL`
@@ -114,6 +116,53 @@ loads. The backend window shows it as
 - Optional: to keep one token across restarts (so open tabs keep working), run
   `set AGENT_TOKEN=<32 to 256 letters, digits, - or _>` in a Command Prompt and
   start `start.bat` from that same prompt. The banner then says `from AGENT_TOKEN`.
+
+### Ollama on another PC (a LAN host)
+With **Relay through local backend** on (the default), the backend sends every
+Ollama request to **one** server, fixed when the backend starts. It no longer goes
+wherever the page says, so nothing that reaches the backend can use it to reach
+other machines on your network. The backend window shows which server it uses:
+```
+Ollama   : http://192.168.1.50:11434 (from agent-config.json); the relay sends model requests only there
+```
+It picks, in this order: the `OLLAMA_BASE_URL` environment variable, then
+`ollamaBase` in `agent-config.json` in the project folder (git ignores this file),
+then `http://localhost:11434` (Ollama on this PC).
+
+To point the agent at Ollama on another PC, once:
+1. On the Ollama PC, make Ollama listen on the network: set the environment
+   variable `OLLAMA_HOST=0.0.0.0`, restart Ollama, and let port 11434 through its
+   firewall. (`OLLAMA_ORIGINS=*` is only needed with the relay turned off.)
+2. In the agent page: Provider **Ollama** → **OLLAMA SERVER** → type the address,
+   e.g. `http://192.168.1.50:11434` → **💾 Save for the relay**. The log says
+   `💾 Saved http://192.168.1.50:11434 as the Ollama server (agent-config.json). Restart start.bat to use it ...`.
+3. Restart the agent: close the **Game Agent Backend** window and the `start.bat`
+   window, then double-click `start.bat` again (and reload any agent tab left open).
+4. The banner shows the new `Ollama   :` line, the field shows the address with a
+   green `The backend relays to this server (saved in agent-config.json).`, and
+   **↻ Check server** logs `✓ Ollama at http://192.168.1.50:11434 answers, with N models: ...`.
+
+Instead of the Save in step 2, you can write `agent-config.json` yourself,
+`{"ollamaBase": "http://192.168.1.50:11434"}`, or run
+`set OLLAMA_BASE_URL=http://192.168.1.50:11434` in a Command Prompt and start
+`start.bat` from it (that wins over the file). The file may be UTF-8 (Notepad's
+default) or what Windows PowerShell's `>` writes; a file saved in another encoding,
+or not valid JSON, costs only the relay its server (banner `Ollama   : NOT USABLE - ...`),
+never the rest of the backend. Only `http://` or `https://` addresses with a host
+are accepted, optionally with a port (1 to 65535) and a path prefix, in plain ASCII
+(an international host name in its `xn--` form) and with no user name or password;
+a refused address is quoted with anything before an `@` hidden. The relay does not
+follow a redirect to another address.
+
+Until the backend restarts, a changed address is **not** used, and **▶ Start** with
+Ollama refuses to begin while the field and the backend's server differ
+(`Not started: OLLAMA SERVER says ..., but the backend relays to ...`), so a run
+never quietly talks to a different model host than the one you typed. Start asks
+the backend which server it uses at that moment, so a backend restarted since the
+page last asked is judged by its new server. A tab reloaded after a save, before
+the restart, shows the server in use again, with a yellow
+`http://... is saved for the next start: restart start.bat to use it.` under it.
+With the relay turned off, the browser calls whatever the field says, as before.
 
 ---
 
@@ -267,6 +316,36 @@ alone, and carries on by itself once the model answers again.
   failed backend window with their **X** buttons, not Ctrl+C: Ctrl+C runs
   `start.bat`'s cleanup, which closes backend windows.
 
+### ✅ Test 10 — The Ollama relay talks only to its configured server
+- First start after the pull, with no `agent-config.json` yet. **Pass:** the backend
+  window shows `Ollama   : http://localhost:11434 (the default); ...`. With Provider
+  **Ollama**, the OLLAMA SERVER field shows `http://localhost:11434` and, under it,
+  `The backend relays to this server (the default).`
+- Type your Ollama PC's address (e.g. `http://192.168.1.50:11434`). **Pass:** the
+  line turns yellow, `Not in use: the backend relays to http://localhost:11434. Save
+  this address, then restart start.bat.` Click **▶ Start** (screen shared, a game
+  without a solver). **Pass:** nothing starts; the log says
+  `Not started: OLLAMA SERVER says http://192.168.1.50:11434, but the backend relays to http://localhost:11434. ...`.
+- Try to save a bad address: `ftp://192.168.1.50`, then `192.168.1.50:11434` (no
+  `http://`). **Pass:** each logs `Ollama server not saved — ...` with the reason,
+  and no `agent-config.json` appears in the project folder.
+- Type the real address and click **💾 Save for the relay**. **Pass:** the log
+  says `💾 Saved http://192.168.1.50:11434 as the Ollama server (agent-config.json). Restart start.bat to use it; until then the backend relays to http://localhost:11434.`,
+  and `agent-config.json` holds `"ollamaBase": "http://192.168.1.50:11434"`.
+- Reload the tab (F5) before restarting. **Pass:** the field shows
+  `http://localhost:11434` again, and the yellow line under it ends with
+  `http://192.168.1.50:11434 is saved for the next start: restart start.bat to use it.`
+- Restart (close the backend and `start.bat` windows, run `start.bat`). **Pass:** the
+  banner shows `Ollama   : http://192.168.1.50:11434 (from agent-config.json); ...`,
+  the field shows that address in green, and **↻ Check server** logs
+  `✓ Ollama at http://192.168.1.50:11434 answers, with N models: ...` (your pulled
+  models). **▶ Start** logs `Ollama: <model> on http://192.168.1.50:11434, through the backend relay.`
+  and plays as before.
+- Optional, a broken file: edit `agent-config.json` to `{"ollamaBase": "ftp://x"}`
+  and restart. **Pass:** the banner says `Ollama   : NOT USABLE - ollamaBase in agent-config.json is not a usable Ollama address: ...`,
+  the page logs the same, and **▶ Start** refuses with `Not started: the backend's relay refuses model requests ...`.
+  Put the right address back (or delete the file) and restart.
+
 ---
 
 ## 5. What to watch in the log
@@ -295,6 +374,10 @@ alone, and carries on by itself once the model answers again.
 | `Session given up: ... ` then `Session complete — outcome: aborted` | The model did not answer for 15 minutes, refused the request outright (the provider's message is quoted), or **■ Stop** was pressed while the model was not answering (during the wait, a retry, or the first turn after it answered again). The board was left alone and memory counts the session as `aborted`, with no post-session analysis |
 | `Study turn error: ... — skipping the rest of the study.` | The model did not answer during the study phase. The rest of it is skipped rather than failing the same way twice more; the first turn of play then pauses or gives the session up as above |
 | `Running post-session analysis... (press ■ Stop again to skip it)` | Stop was pressed during play. Stop now cuts a model request short, so the analysis gets its own chance to run, and a second Stop cancels it (`Post-session analysis skipped.`) |
+| Backend banner `Ollama   : http://... (from agent-config.json); the relay sends model requests only there` | The one Ollama server the relay uses for this run (`the default` is `http://localhost:11434`; `from OLLAMA_BASE_URL` when that variable is set) |
+| `Ollama: <model> on http://..., through the backend relay.` | At Start: where this session's model requests go. `called directly from the browser` when the relay is off |
+| `💾 Saved http://... as the Ollama server (agent-config.json). Restart start.bat to use it; ...` | The address is saved for the backend's next start; the running backend still relays to the old one |
+| `✓ Ollama at http://... answers, with N models: ...` | **↻ Check server**: the backend reached its Ollama server, and these models are pulled there |
 
 ---
 
@@ -313,7 +396,13 @@ alone, and carries on by itself once the model answers again.
 | `Session given up: ... does not know that model or address (HTTP 404)` / `does not have that model` | The model id is wrong or retired, or (Ollama) not pulled on that host: `ollama pull <model>` there, or pick another model |
 | `Session given up: Ollama cannot do what the request asks with this model (HTTP 400): ... does not support tools` | The model lacks something the page asks of it. `tools`: turn on **Small-model mode (JSON actions)**. `vision` or images: pick a model that can see images |
 | `Ollama rejected the request 3 times in a row (HTTP 400): ...` then `paused: model unreachable` | Usually the LAN link is cutting request bodies off (Ollama answers 400 after waiting for the rest). The run waits and carries on when requests get through; if it keeps happening, lower **Local screenshot width (px)** so each request is shorter |
-| `paused: model unreachable` does not clear | The model host is down or unreachable. Check Ollama is running on the host under **OLLAMA SERVER**, and (with **Relay through local backend** on) that the backend window is open. A request is abandoned after 90 s for cloud providers and 10 minutes for Ollama; a check while paused, after at most 2 minutes |
+| `paused: model unreachable` does not clear | The model host is down or unreachable. Check Ollama is running on the host the backend banner's `Ollama   :` line names (with the relay off, the host under **OLLAMA SERVER**), and (with **Relay through local backend** on) that the backend window is open. **↻ Check server** tells you at once whether the backend reaches it. A request is abandoned after 90 s for cloud providers and 10 minutes for Ollama; a check while paused, after at most 2 minutes |
+| `Not started: OLLAMA SERVER says ..., but the backend relays to ...` | The field names another Ollama server than the backend uses. Click **💾 Save for the relay** and restart `start.bat` (see **Ollama on another PC**), or set the field back to the address it names. If the line says `OLLAMA_BASE_URL is set for the backend and decides its server`, saving does not help: set the field back, or change `OLLAMA_BASE_URL` and restart |
+| `Session given up: the backend refused to relay the request to Ollama: ... is not a usable Ollama address ...` / banner `Ollama   : NOT USABLE - ...` / `Not started: the backend's relay refuses model requests ...` | `OLLAMA_BASE_URL` or `ollamaBase` in `agent-config.json` is not an `http://` or `https://` address with a host (or has a user name, password, port 0 or a non-ASCII character in it), or the file is not valid JSON or not UTF-8 text (saved in a Windows code page). Save a working address in the page (or fix or delete `agent-config.json`, or clear `OLLAMA_BASE_URL`), then restart `start.bat` |
+| `Session given up: the backend refused to relay the request to Ollama: the Ollama server at ... answered with a redirect ...` | Something at that address (a reverse proxy, a router page) redirects instead of answering as Ollama. Save the address Ollama itself answers on, usually `http://<ip>:11434`, and restart |
+| `✗ Ollama at http://... did not answer: ...` | **↻ Check server** could not reach the backend's Ollama server: Ollama not running there, `OLLAMA_HOST=0.0.0.0` not set on that PC, a firewall on port 11434, or a wrong address (then save the right one and restart) |
+| `Ollama server not saved — agent-config.json is not valid JSON ...` / `... is not UTF-8 text ...` | The file was edited by hand and broken, or saved in an encoding other than UTF-8 (or UTF-16, what PowerShell writes); the backend will not overwrite it. Fix it or delete it, then save again |
+| `The backend is older than this page (it does not say which Ollama server it relays to): restart start.bat.` / `Not started: the backend has not said which Ollama server its relay uses: it is older than this page, or not answering. ...` / `Session given up: the backend refused to relay the request to Ollama: base_url: Field required` | The backend window still runs code from before the pull. Close it and the `start.bat` window, run `start.bat`, reload the tab |
 | `Model request failed after ...: Ollama did not reply in time (the backend relay got no reply from Ollama ...)` | After about 600 s: Ollama took longer than 10 minutes over one turn. After about 20 s: the Ollama host did not answer the connection at all (switched off, wrong address). On a working host the first means the turn is too heavy for the GPU: lower **Local screenshot width (px)** or use a smaller model. The run pauses and checks again rather than retrying the same ten-minute request at once. A backend not yet restarted after a pull is read the same way, from its error text |
 | `Session given up: ... (HTTP 400): ...` naming a `tool_use_id`, a `tool` message or a function response, around turn 12 with Anthropic, OpenAI or Gemini | A known problem outside this change: once the conversation window fills, it can start with a tool result whose tool call was trimmed away, and the provider refuses the request. It used to end the game and restart instead. Until the window is trimmed at turn boundaries, **Small-model mode (JSON actions)** avoids it, since it sends no tool blocks |
 | Backend window closed | re-run `start.bat`; the watchdog auto-pauses the agent if the backend drops. Then reload any agent tab left open from before: the backend has a new token |
@@ -347,5 +436,8 @@ alone, and carries on by itself once the model answers again.
   this launch's token (see **Only the agent page can use the backend** under
   Launch), so a site open in another tab cannot drive the mouse or read the
   screen. Keep `.agent-token` private.
+- **Other machines on your network:** the Ollama relay sends requests only to the
+  Ollama server the backend started with (see **Ollama on another PC**), never to
+  an address a request names, and does not follow redirects.
 - The agent controls your real mouse/keyboard/gamepad — keep the game in focus and
   don't leave it unattended on anything that can take destructive actions.

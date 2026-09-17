@@ -13,6 +13,9 @@ import {
 import {
   settleModelCall, gameEnding, nextModelCheck, modelCheckTimeoutMs, turnFailure, MODEL_WAIT_CAP_MS,
 } from "./agent/turnResult.js";
+import {
+  OLLAMA_DEFAULT_BASE, tidyOllamaBase, shownOllamaBase, ollamaServerNote, ollamaStartProblem, ollamaSavedMessage, ollamaModelsMessage,
+} from "./agent/ollamaServer.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
@@ -117,7 +120,7 @@ const PROVIDERS = {
     label: "Ollama (local)", icon: "🖥️", free: true,
     notes: "100% free & unlimited, runs on your own GPU. Needs Ollama + a vision model pulled.",
     envKey: null,
-    baseURL: "http://localhost:11434/v1/chat/completions",
+    baseURL: `${OLLAMA_DEFAULT_BASE}/v1/chat/completions`,
     supportsSearch: false,
     defaultModel: "qwen2.5vl:3b",
     models: [
@@ -131,15 +134,16 @@ const PROVIDERS = {
   },
 };
 
-// Ollama server address — configurable so the model can live on a separate PC.
-let _ollamaBase = "http://localhost:11434";
+// Ollama server address for DIRECT calls from the browser (relay off), so the
+// model can live on a separate PC. The relay never uses it: the backend sends
+// to the one server it was started with (src/agent/ollamaServer.js says why).
+let _ollamaBase = OLLAMA_DEFAULT_BASE;
 // Route Ollama calls through the local backend rather than straight from the
 // browser (see /llm/ollama in agent_server.py).
 let _ollamaViaBackend = true;
 function setOllamaViaBackend(v) { _ollamaViaBackend = !!v; }
 function setOllamaBase(url) {
-  const u = (url || "").trim().replace(/\/+$/, "");
-  _ollamaBase = u || "http://localhost:11434";
+  _ollamaBase = tidyOllamaBase(url) || OLLAMA_DEFAULT_BASE;
 }
 
 // ── Format converters ─────────────────────────────────────────────────────────
@@ -392,10 +396,12 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
       if (_ollamaViaBackend) {
         // The relay waits a little less than the page does, so it is the relay
         // that times out and says so. A caller's shorter deadline shortens both.
+        // No address goes with the request: the backend relays only to the
+        // Ollama server it was started with.
         const relayTimeout = relayTimeoutS(timeoutMs);
         const relay = await backend(
           "/llm/ollama",
-          { base_url: _ollamaBase, payload: body, timeout: relayTimeout },
+          { payload: body, timeout: relayTimeout },
           { signal: reqSignal },
         );
         if (relay?.ok && relay.body) return fromOpenAI(relay.body);
@@ -1361,7 +1367,9 @@ export default function GameAgent() {
   const [providerKey, setProviderKey] = useState("gemini");
   const [model, setModel] = useState(PROVIDERS.gemini.defaultModel);
   const [apiKeyInput, setApiKeyInput] = useState("");
-  const [ollamaHost, setOllamaHost] = useState("http://localhost:11434");
+  // The OLLAMA SERVER field. With the relay on it starts as the backend's server
+  // (capabilities.ollama); with the relay off the browser calls it directly.
+  const [ollamaHost, setOllamaHost] = useState(OLLAMA_DEFAULT_BASE);
 
   // Game config
   const [gameDesc, setGameDesc] = useState("2048");
@@ -1394,7 +1402,10 @@ export default function GameAgent() {
   // finish before the connection times out.
   const [localImageWidth, setLocalImageWidth] = useState(512);
   const [ollamaViaBackend, setOllamaViaBackendState] = useState(true);
-  const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false });
+  // `ollama` is the backend's Ollama server, {base, source, error, saved}, or
+  // null until the backend says (see src/agent/ollamaServer.js).
+  const [capabilities, setCapabilities] = useState({ gamepad: false, capture: false, windows_api: false, speedhack: false, ollama: null });
+  const [ollamaBusy, setOllamaBusy] = useState(false); // a save or check in flight
   // Native-only options
   const [useNativeCapture, setUseNativeCapture] = useState(false);
   const [nativeWindows, setNativeWindows] = useState([]);
@@ -1473,6 +1484,9 @@ export default function GameAgent() {
   const convRef = useRef([]);
   const checkpointRef = useRef(null);
   const stopRef = useRef(false);
+  // Set while ▶ Start waits on the backend before the run begins, until the
+  // page shows the run: a second click in that gap would start a second run.
+  const startingRef = useRef(false);
   // Aborted by Stop, so a model request in flight ends now rather than when it
   // answers or times out. Replaced at the start of every run.
   const stopCtrlRef = useRef(new AbortController());
@@ -1653,6 +1667,37 @@ export default function GameAgent() {
     return () => onBackendRefused(null);
   }, [addLog]);
 
+  // What the backend can do, and which Ollama server its relay uses. Asked on
+  // mount, and again when a backend that was down comes up, since start.bat
+  // opens the page before the backend may be listening.
+  const ollamaKnownRef = useRef(false); // the field has been set from the backend's server
+  // The capabilities as the backend reports them now, also kept in state, with
+  // ollama null from a backend older than this page; null when it did not answer.
+  const fetchCapabilities = useCallback(async ({ signal } = {}) => {
+    const caps = await backend("/capabilities", null, { signal });
+    if (typeof caps?.gamepad !== "boolean") return null;
+    const known = { ...caps, ollama: caps.ollama ?? null };
+    setCapabilities(known);
+    return known;
+  }, []);
+  const loadCapabilities = useCallback(async () => {
+    const caps = await fetchCapabilities();
+    if (!caps) return;
+    if (caps.ollama === null) {
+      addLog("The backend is older than this page (it does not say which Ollama server it relays to): restart start.bat.", "warn");
+      return;
+    }
+    // The field shows where the relay really sends model requests, once: after
+    // that it is the operator's to edit.
+    if (caps.ollama.base && !ollamaKnownRef.current) {
+      ollamaKnownRef.current = true;
+      setOllamaHost(caps.ollama.base);
+    }
+    if (caps.ollama.error) {
+      addLog(`Ollama relay: ${caps.ollama.error}. It refuses model requests until that is fixed and the backend restarted.`, "warn");
+    }
+  }, [addLog, fetchCapabilities]);
+
   // Backend check on mount. The screen size and capabilities come from routes
   // that need the page's token: /health answers anyone, so it says only "ok".
   useEffect(() => {
@@ -1662,13 +1707,12 @@ export default function GameAgent() {
         setBackendOk(true);
         setScreenInfo({ width: info.width, height: info.height });
         addLog(`Backend online — ${info.platform} ${info.width}×${info.height}`, "success");
-        const caps = await backend("/capabilities");
-        if (typeof caps?.gamepad === "boolean") setCapabilities(caps);
+        await loadCapabilities();
       } else if (!info?.refused) {
         addLog("Backend offline — start agent_server.py first", "error");
       }
     })();
-  }, [addLog]);
+  }, [addLog, loadCapabilities]);
 
   // Keep refs in sync with control-scheme / native-capture / pause-to-think state
   useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled); }, [controlScheme, gridEnabled]);
@@ -1696,6 +1740,8 @@ export default function GameAgent() {
   }, [controlScheme]);
   useEffect(() => { captureSourceRef.current = useNativeCapture ? "native" : "browser"; }, [useNativeCapture]);
   useEffect(() => { pauseToThinkRef.current = pauseToThink; }, [pauseToThink]);
+  // The run shows as running: Start is guarded by `running` again (see startingRef).
+  useEffect(() => { if (running) startingRef.current = false; }, [running]);
   useEffect(() => { attachedRef.current = attached; }, [attached]);
 
   // B4: Continuous backend watchdog — pings every 10s, auto-pauses on 2 consecutive failures.
@@ -1723,6 +1769,7 @@ export default function GameAgent() {
           setBackendOk(true);
           setScreenInfo({ width: reply.width, height: reply.height });
           addLog("Backend healthy again.", "success");
+          await loadCapabilities();
         }
       } else {
         backendHealthRef.current++;
@@ -1739,7 +1786,7 @@ export default function GameAgent() {
       }
     }, 10000);
     return () => clearInterval(interval);
-  }, [backendOk, running, addLog]);
+  }, [backendOk, running, addLog, loadCapabilities]);
 
   // Auto-scroll log
   useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [log]);
@@ -3271,7 +3318,7 @@ Reply with ONLY a JSON object, no other text:
 
   // ── startAgent ───────────────────────────────────────────────────────────────
   const startAgent = useCallback(async () => {
-    if (running) return;
+    if (running || startingRef.current) return;
 
     const nativeMode = useNativeCapture;
     const captureReady = nativeMode ? nativeRegionSet : capturing;
@@ -3294,6 +3341,23 @@ Reply with ONLY a JSON object, no other text:
     const prov = PROVIDERS[providerKey];
     const apiKey = apiKeyInput || getEnv(prov.envKey ?? "");
     if (!apiKey && providerKey !== "ollama") { addLog("No API key configured.", "error"); return; }
+    let ollamaRelay = capabilities.ollama;
+    if (providerKey === "ollama") {
+      if (ollamaViaBackend) {
+        // Which server the relay uses now, not when the page last asked: a
+        // backend restarted between two watchdog pings (AGENT_TOKEN keeps a tab
+        // working across that) may use another. If it does not answer within
+        // the watchdog's 3 s, what the page last heard stands.
+        startingRef.current = true;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 3000);
+        const caps = await fetchCapabilities({ signal: ctrl.signal }).catch(() => null);
+        clearTimeout(timer);
+        if (caps) ollamaRelay = caps.ollama;
+      }
+      const problem = ollamaStartProblem({ field: ollamaHost, relay: ollamaViaBackend, server: ollamaRelay });
+      if (problem) { startingRef.current = false; addLog(problem, "error"); return; }
+    }
 
     // Reset everything
     stopRef.current = false;
@@ -3333,6 +3397,11 @@ Reply with ONLY a JSON object, no other text:
     setTurnCount(0);
     setTokenCount({ input: 0, output: 0 });
     setPhase("research");
+    if (providerKey === "ollama") {
+      addLog(ollamaViaBackend
+        ? `Ollama: ${model} on ${ollamaRelay?.base ?? "the backend's configured server"}, through the backend relay.`
+        : `Ollama: ${model} on ${shownOllamaBase(ollamaHost) || OLLAMA_DEFAULT_BASE}, called directly from the browser.`, "info");
+    }
 
     const gameKey = slugify(gameDesc);
     const startTime = Date.now();
@@ -4056,7 +4125,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
-      waitForModel]);
+      waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -4093,6 +4162,34 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     const prov = PROVIDERS[providerKey];
     if (prov.envKey) setRuntimeKey(prov.envKey, val);
   }, [providerKey]);
+
+  // Save the OLLAMA SERVER field for the backend's next start. The running
+  // relay keeps its server until then (src/agent/ollamaServer.js says why).
+  const saveOllamaHost = useCallback(async () => {
+    setOllamaBusy(true);
+    try {
+      const reply = await backend("/config/ollama-base", { base_url: ollamaHost });
+      if (reply?.ok) {
+        setOllamaHost(reply.saved);
+        setCapabilities(c => ({ ...c, ollama: c.ollama ? { ...c.ollama, saved: reply.saved } : c.ollama }));
+      }
+      const said = ollamaSavedMessage(reply);
+      if (said) addLog(said.text, said.type);
+    } finally {
+      setOllamaBusy(false);
+    }
+  }, [ollamaHost, addLog]);
+
+  // Ask the relay's server which models it has: proof that the backend reaches it.
+  const checkOllamaHost = useCallback(async () => {
+    setOllamaBusy(true);
+    try {
+      const said = ollamaModelsMessage(await backend("/llm/ollama/tags"));
+      if (said) addLog(said.text, said.type);
+    } finally {
+      setOllamaBusy(false);
+    }
+  }, [addLog]);
 
   // ── Checklist ────────────────────────────────────────────────────────────────
   const checklist = [
@@ -4206,15 +4303,34 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 onChange={e => setOllamaHost(e.target.value)}
                 style={{ ...inputStyle(), border: `1px solid ${C.accent}` }}
               />
+              {(() => {
+                const note = ollamaServerNote({ field: ollamaHost, relay: ollamaViaBackend, server: capabilities.ollama });
+                const tone = { ok: C.green, info: C.dim, warn: C.yellow, error: C.red }[note.tone] ?? C.dim;
+                return (
+                  <>
+                    <div style={{ fontSize: 9, color: tone, marginTop: 3 }}>{note.text}</div>
+                    <div style={{ display: "flex", gap: 5, marginTop: 4 }}>
+                      <button onClick={saveOllamaHost} disabled={!note.canSave || ollamaBusy}
+                        title="Saves the address in agent-config.json; the backend relays to it from its next start"
+                        style={{ ...btnStyle(C.border, !note.canSave || ollamaBusy), fontSize: 10 }}>💾 Save for the relay</button>
+                      {ollamaViaBackend && (
+                        <button onClick={checkOllamaHost} disabled={!capabilities.ollama?.base || ollamaBusy}
+                          title="Asks the relay's Ollama server which models it has"
+                          style={{ ...btnStyle(C.border, !capabilities.ollama?.base || ollamaBusy), fontSize: 10 }}>↻ Check server</button>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
               <div style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>
-                localhost = model on this PC. For a separate GPU box, use its IP — and start Ollama there with OLLAMA_HOST=0.0.0.0 and OLLAMA_ORIGINS=* so the browser can reach it.
+                localhost = model on this PC. For a separate GPU box, use its IP, and start Ollama there with OLLAMA_HOST=0.0.0.0 so other PCs can reach it.
               </div>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", color: C.text, marginTop: 5 }}>
                 <input type="checkbox" checked={ollamaViaBackend} onChange={e => setOllamaViaBackendState(e.target.checked)} />
                 Relay through local backend
               </label>
               <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
-                Recommended. The browser then only holds a localhost connection, so antivirus/firewall on the LAN path can't cut off long requests mid-think.
+                Recommended. The browser then only holds a localhost connection, so antivirus/firewall on the LAN path can't cut off long requests mid-think. The relay sends only to the server the backend started with.
               </div>
             </>
           )}

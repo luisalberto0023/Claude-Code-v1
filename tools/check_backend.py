@@ -41,10 +41,14 @@ How it stays safe, in the order it happens:
      could not start there. Only elsewhere (a headless Linux session) does a
      stand-in module take the place of one that will not import.
   5. agent_server is imported, its SendInput scan-code sender is swapped, and
-     its log directory, memory file and token file are pointed at a temp
-     directory so the real game-agent-memory.json, logs/ and .agent-token are
-     never written. It is given a test token (TEST_TOKEN), which every request
-     sends unless a test leaves it off.
+     its log directory, memory file, token file and config file are pointed at
+     a temp directory so the real game-agent-memory.json, logs/, .agent-token
+     and agent-config.json are never written. It is given a test token
+     (TEST_TOKEN), which every request sends unless a test leaves it off. Its
+     Ollama relay is pinned to TEST_OLLAMA_BASE, an address that is never
+     routed, and the one function it reaches Ollama through (_ollama_open) is
+     swapped for a recorder that refuses, so no check talks to a real Ollama
+     server unless it stands one up itself.
   6. Before the server starts, every input path is checked to be a recorder,
      both guards included. If one is not, nothing is served and the run fails.
 The server itself runs under uvicorn on a free port on 127.0.0.1 (never 8765),
@@ -75,8 +79,11 @@ one argument, a Harness, with:
                from the guards, "user32.SendInput" or "import.keyboard".
                h.inputs.named("pyautogui.click") filters.
     h.server   the imported agent_server module, for reading or patching state.
-    h.tmp      a temp directory, deleted at the end; LOG_DIR and MEMORY_FILE
-               already live inside it.
+    h.tmp      a temp directory, deleted at the end; LOG_DIR, MEMORY_FILE and
+               CONFIG_FILE already live inside it.
+
+A route that talks to Ollama goes through the backend's _ollama_open. Answer it
+with with_ollama(h, respond, call) (see the Ollama relay checks).
 
 Fail with expect(condition, "what went wrong"). An exception fails the test
 too. For example:
@@ -97,6 +104,7 @@ so a test can see what it sent without tripping the user32 guard.
 """
 
 import collections
+import contextlib
 import enum
 import functools
 import inspect
@@ -470,7 +478,30 @@ def import_server(inputs, tmp):
         server.TOKEN_FILE = Path(tmp) / ".agent-token"
         server.AGENT_TOKEN = TEST_TOKEN
         DEFAULT_HEADERS[server.TOKEN_HEADER] = TEST_TOKEN
+    # The Ollama relay chose its server from this machine's environment and
+    # agent-config.json on import. The checks give it a fixed one instead, write
+    # any config into the temp folder, and reach no server by accident.
+    if hasattr(server, "OLLAMA_SERVER"):
+        server.CONFIG_FILE = Path(tmp) / "agent-config.json"
+        server.OLLAMA_SERVER = server.OllamaServer(TEST_OLLAMA_BASE, "default", None)
+        OLLAMA_OPEN["real"] = server._ollama_open
+        server._ollama_open = no_ollama_in_checks(inputs)
     return server
+
+
+# The Ollama server the backend under test relays to: TEST-NET-1, an address
+# reserved for documentation that is never routed.
+TEST_OLLAMA_BASE = "http://192.0.2.10:11434"
+OLLAMA_OPEN = {}  # the backend's real _ollama_open, for the one check that serves its own Ollama
+
+
+def no_ollama_in_checks(inputs):
+    """The backend's _ollama_open while no check has put its own in place: it
+    records the attempt (so a check that expects no calls fails) and refuses."""
+    def refuse(req, timeout=None):
+        inputs.record("ollama.open", req.full_url, timeout=timeout)
+        raise ConnectionRefusedError("the backend checks reach no Ollama server")
+    return refuse
 
 
 def resolves_to_stub(resolve, name):
@@ -765,9 +796,13 @@ def _(h):
     status, body = h.api.get("/screen/info")
     expect(status == 200 and body.get("width") == SCREEN[0] and body.get("height") == SCREEN[1]
            and isinstance(body.get("platform"), str), f"/screen/info: status {status}: {body}")
+    Path(h.server.CONFIG_FILE).unlink(missing_ok=True)  # nothing saved for the next start
     status, body = h.api.get("/capabilities")
-    expect(status == 200 and set(body) == {"gamepad", "capture", "windows_api", "speedhack"}
-           and all(isinstance(v, bool) for v in body.values()), f"/capabilities: status {status}: {body}")
+    flags = {"gamepad", "capture", "windows_api", "speedhack"}
+    expect(status == 200 and set(body) == flags | {"ollama"}
+           and all(isinstance(body[k], bool) for k in flags), f"/capabilities: status {status}: {body}")
+    expect(body["ollama"] == {"base": TEST_OLLAMA_BASE, "source": "default", "error": None, "saved": None},
+           f"/capabilities ollama: {body['ollama']}")
 
 
 @test("launch claims the port before it writes the token, and a failed launch leaves the token alone")
@@ -996,27 +1031,367 @@ def _(h):
 
 
 # ── Ollama relay ─────────────────────────────────────────────────────────────
-# urlopen is replaced for these, so no request leaves the process: no Ollama is
-# needed, and none is called.
+# The backend's _ollama_open, through which every request to Ollama goes, is
+# replaced for these, so no request leaves the process: no Ollama is needed, and
+# none is called. The one exception serves its own stand-in on a free local port.
+#
+# The relay used to send each request to whatever base_url the request named and
+# hand back the reply, which let anything that reached the backend use it as a
+# proxy into the LAN. It now sends only to the server chosen at startup.
 
-def relay_through(h, failure):
-    """POST /llm/ollama while urlopen raises `failure`. Returns the reply and
-    what urlopen was asked for."""
+def with_ollama(h, respond, call):
+    """Run `call()` (a request to the backend) while the backend's requests to
+    Ollama are answered by `respond(req)`: bytes for a reply body, or an
+    exception to raise. Returns call's (status, body) and what was asked."""
     asked = []
 
-    def fake_urlopen(req, timeout=None, **_):
-        asked.append({"url": req.full_url, "timeout": timeout})
-        raise failure
+    def fake_open(req, timeout=None):
+        asked.append({"url": req.full_url, "method": req.get_method(), "timeout": timeout, "data": req.data})
+        answer = respond(req)
+        if isinstance(answer, BaseException):
+            raise answer
+        return io.BytesIO(answer)
 
-    real = h.server.urllib.request.urlopen
-    h.server.urllib.request.urlopen = fake_urlopen
+    before = h.server._ollama_open
+    h.server._ollama_open = fake_open
     try:
-        status, body = h.api.post("/llm/ollama", {
-            "base_url": "http://127.0.0.1:9", "payload": {"model": "test-model"}, "timeout": 600,
-        })
+        status, body = call()
     finally:
-        h.server.urllib.request.urlopen = real
+        h.server._ollama_open = before
     return status, body, asked
+
+
+def relay_through(h, failure):
+    """POST /llm/ollama while every request to Ollama raises `failure`."""
+    return with_ollama(h, lambda req: failure, lambda: h.api.post("/llm/ollama", {
+        "payload": {"model": "test-model"}, "timeout": 600,
+    }))
+
+
+@contextlib.contextmanager
+def ollama_server(h, base, source="agent-config.json", error=None):
+    """The backend relaying to `base` (None with `error`: an unusable address)
+    for the length of a with block, as if it had started that way."""
+    before = h.server.OLLAMA_SERVER
+    h.server.OLLAMA_SERVER = h.server.OllamaServer(base, source, error)
+    try:
+        yield
+    finally:
+        h.server.OLLAMA_SERVER = before
+
+
+ANSWER = json.dumps({"choices": [{"message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}]}).encode()
+
+
+@test("POST /llm/ollama sends only to the configured Ollama server, whatever base_url a request names")
+def _(h):
+    chat = TEST_OLLAMA_BASE + "/v1/chat/completions"
+    for label, extra in (("no base_url", {}),
+                         ("a LAN address", {"base_url": "http://192.168.1.1:80"}),
+                         ("the cloud metadata address", {"base_url": "http://169.254.169.254/latest/meta-data"}),
+                         ("a file", {"base_url": "file:///C:/Windows/win.ini"}),
+                         ("not even text", {"base_url": 5})):
+        status, body, asked = with_ollama(h, lambda req: ANSWER, lambda: h.api.post("/llm/ollama", {
+            "payload": {"model": "test-model", "messages": []}, "timeout": 600, **extra}))
+        expect(status == 200 and body.get("ok") is True and body["body"]["choices"][0]["message"]["content"] == "OK",
+               f"{label}: status {status}: {body}")
+        expect([(a["url"], a["method"]) for a in asked] == [(chat, "POST")], f"{label}: asked {asked}")
+        expect(json.loads(asked[0]["data"]) == {"model": "test-model", "messages": []},
+               f"{label}: sent something other than the payload: {asked[0]['data']!r}")
+    # The timeout the page asks for, held between 30 s and 30 minutes.
+    for given, used in ((600, 600), (5, 30), (99999, 1800)):
+        status, body, asked = with_ollama(h, lambda req: ANSWER, lambda: h.api.post("/llm/ollama", {
+            "payload": {"model": "test-model"}, "timeout": given}))
+        expect(len(asked) == 1 and asked[0]["timeout"] == used, f"timeout {given}: urlopen got {asked}")
+    # A server with a path prefix (behind a reverse proxy) keeps it.
+    with ollama_server(h, "https://ollama.example:8443/prefix"):
+        status, body, asked = with_ollama(h, lambda req: ANSWER, lambda: h.api.post("/llm/ollama", {
+            "payload": {}, "base_url": TEST_OLLAMA_BASE}))
+    expect([a["url"] for a in asked] == ["https://ollama.example:8443/prefix/v1/chat/completions"], f"asked {asked}")
+    expect(not h.inputs.calls, f"the relay touched input: {h.inputs.names()}")
+
+
+@test("The relay refuses every request, reaching no server, while its configured address is unusable")
+def _(h):
+    why = "ollamaBase in agent-config.json is not a usable Ollama address: 'ftp://x' does not start with http:// or https://"
+    with ollama_server(h, None, error=why):
+        relay = with_ollama(h, lambda req: ANSWER, lambda: h.api.post("/llm/ollama", {"payload": {}}))
+        tags = with_ollama(h, lambda req: ANSWER, lambda: h.api.get("/llm/ollama/tags"))
+        status, caps = h.api.get("/capabilities")
+    for label, (status, body, asked) in (("POST /llm/ollama", relay), ("GET /llm/ollama/tags", tags)):
+        # A {"detail"} refusal, which the page ends the session on at once with
+        # this message, rather than waiting fifteen minutes for a model it
+        # cannot reach.
+        expect(status == 503 and body.get("ok") is False and why in str(body.get("detail"))
+               and "restart" in str(body.get("detail")), f"{label}: status {status}: {body}")
+        expect(not asked, f"{label}: a request went out anyway: {asked}")
+    expect(caps["ollama"]["base"] is None and caps["ollama"]["error"] == why, f"/capabilities: {caps}")
+
+
+@test("The relay does not follow a redirect away from the configured Ollama server")
+def _(h):
+    import http.server
+
+    hits = {"ollama": [], "elsewhere": []}
+
+    def serve(name, answer):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def handle_one(self):
+                hits[name].append((self.command, self.path))
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                status, headers, body = answer(self)
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            do_GET = do_POST = handle_one
+
+            def log_message(self, *args):
+                pass
+
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        return httpd, f"http://127.0.0.1:{httpd.server_address[1]}"
+
+    elsewhere, elsewhere_url = serve("elsewhere", lambda r: (200, {"Content-Type": "application/json"},
+                                                            json.dumps({"models": [], "choices": []}).encode()))
+    moved = {"POST": 307, "GET": 302}
+    ollama, ollama_url = serve("ollama", lambda r: (moved[r.command], {"Location": elsewhere_url + r.path}, b""))
+    no_proxy = urllib.request.ProxyHandler({})  # these two servers are local, whatever this PC's proxy is
+    before = h.server._ollama_opener
+    try:
+        # The stand-in redirect is one that urllib follows unless told not to.
+        with urllib.request.build_opener(no_proxy).open(ollama_url + "/api/tags", timeout=10) as resp:
+            expect(resp.status == 200 and len(hits["elsewhere"]) == 1, f"the test's redirect was not followed: {hits}")
+        hits["ollama"].clear()
+        hits["elsewhere"].clear()
+
+        expect(any(isinstance(x, h.server._NoRedirects) for x in before.handlers),
+               "the backend's opener for Ollama does not refuse redirects")
+        h.server._ollama_opener = urllib.request.build_opener(no_proxy, h.server._NoRedirects)
+        h.server._ollama_open = OLLAMA_OPEN["real"]
+        with ollama_server(h, ollama_url):
+            relay_status, relay = h.api.post("/llm/ollama", {"payload": {"model": "test-model"}, "timeout": 30})
+            tags_status, tags = h.api.get("/llm/ollama/tags")
+    finally:
+        h.server._ollama_opener = before
+        h.server._ollama_open = no_ollama_in_checks(h.inputs)
+        for httpd in (ollama, elsewhere):
+            httpd.shutdown()
+            httpd.server_close()
+    expect(hits["ollama"] == [("POST", "/v1/chat/completions"), ("GET", "/api/tags")], f"the configured server saw {hits['ollama']}")
+    expect(not hits["elsewhere"], f"a request followed the redirect: {hits['elsewhere']}")
+    expect(relay_status == 502 and "redirect" in str(relay.get("detail")) and elsewhere_url in str(relay.get("detail")),
+           f"relay: status {relay_status}: {relay}")
+    expect(tags_status == 200 and tags.get("ok") is False and tags.get("status") == 302 and "redirect" in tags.get("error", ""),
+           f"tags: status {tags_status}: {tags}")
+
+
+@test("GET /llm/ollama/tags lists the models on the configured server, and asks nowhere else")
+def _(h):
+    listing = {"models": [
+        {"name": "qwen2.5vl:3b", "model": "qwen2.5vl:3b", "size": 3200000000, "digest": "abc",
+         "modified_at": "2026-09-01T10:00:00Z",
+         "details": {"family": "qwen25vl", "families": ["qwen25vl"], "parameter_size": "3.8B", "quantization_level": "Q4_K_M"}},
+        {"name": "gemma3:4b"},
+        {"not": "a model"},
+    ]}
+    status, body, asked = with_ollama(h, lambda req: json.dumps(listing).encode(),
+                                      lambda: h.api.get("/llm/ollama/tags?base_url=http://169.254.169.254"))
+    expect([(a["url"], a["method"], a["timeout"]) for a in asked]
+           == [(TEST_OLLAMA_BASE + "/api/tags", "GET", h.server.OLLAMA_TAGS_TIMEOUT_S)], f"asked {asked}")
+    expect(status == 200 and body.get("ok") is True and body.get("base") == TEST_OLLAMA_BASE, f"status {status}: {body}")
+    models = body.get("models") or []
+    expect([m["name"] for m in models] == ["qwen2.5vl:3b", "gemma3:4b"], f"models: {models}")
+    expect(models and models[0] == {"name": "qwen2.5vl:3b", "size": 3200000000, "modifiedAt": "2026-09-01T10:00:00Z",
+                                    "family": "qwen25vl", "families": ["qwen25vl"], "parameterSize": "3.8B",
+                                    "quantization": "Q4_K_M"}, f"first model: {models[:1]}")
+
+    for label, answer, check in (
+        ("Ollama not running", urllib.error.URLError(ConnectionRefusedError(10061, "refused")),
+         lambda b: b.get("status") == 0 and b.get("timedOut") is False),
+        ("no answer in time", TimeoutError("timed out"), lambda b: b.get("status") == 0 and b.get("timedOut") is True),
+        ("a server error", urllib.error.HTTPError(TEST_OLLAMA_BASE + "/api/tags", 500, "Server Error", None,
+                                                  io.BytesIO(b"boom")), lambda b: b.get("status") == 500 and "boom" in b.get("error", "")),
+        ("something that is not Ollama", b"<html>router login</html>", lambda b: "Ollama model list" in b.get("error", "")),
+    ):
+        status, body, asked = with_ollama(h, lambda req: answer, lambda: h.api.get("/llm/ollama/tags"))
+        expect(status == 200 and body.get("ok") is False and body.get("base") == TEST_OLLAMA_BASE and check(body),
+               f"{label}: status {status}: {body}")
+    expect(not h.inputs.calls, f"listing models touched input: {h.inputs.names()}")
+
+
+@test("POST /config/ollama-base refuses file:, ftp:, a missing host and non-URL input, and writes nothing")
+def _(h):
+    config = Path(h.server.CONFIG_FILE)
+    config.unlink(missing_ok=True)
+    bad = ["file:///C:/Windows/win.ini", "file://server/share", "ftp://192.168.1.50/", "javascript:alert(1)",
+           "http://", "https://", "http:///v1", "http://:11434", "not a url", "192.168.1.50:11434", "localhost:11434",
+           "", "   ", "http://user:pass@192.168.1.50:11434", "http://192.168.1.50:99999", "http://192.168.1.50:port",
+           "http://192.168.1.50:11434/?next=http://evil.example", "http://192.168.1.50:11434#x", "http://ho st:11434",
+           "http://[::1", "http://evil!.example", "http://192.168.1.50:11434/v1/chat/completions",
+           "http://192.168.1.50:11434/api", "http://192.168.1.50\n.evil.example:11434", "http://" + "a" * 300,
+           # Accepted before, then failing every request: port 0, an empty port,
+           # and characters urllib cannot put in a request line.
+           "http://192.168.1.50:0", "http://192.168.1.50:", "http://[::1]:", "http://ollama-box:11434/modèles",
+           "http://bücher.example:11434", "http://192.168.1.50:11434/pre@fix"]
+    for value in bad:
+        status, body = h.api.post("/config/ollama-base", {"base_url": value})
+        expect(status == 422 and body.get("ok") is False and body.get("error"), f"{value!r}: status {status}: {body}")
+
+    # A refusal is printed, returned to the page and logged: it never repeats a
+    # password, however the address around it is written.
+    secret = "S3cretTok"
+    for value in (f"https://agent:{secret}@ollama.example", f"http://agent:{secret}@192.168.1.50:11434/",
+                  f"http://agent:p@{secret}@192.168.1.50:11434", f"http://agent:{secret}/x@192.168.1.50:11434",
+                  f"http://agent:{secret} x@192.168.1.50:11434", f"agent:{secret}@192.168.1.50:11434",
+                  f"agent:{secret}//x@192.168.1.50:11434"):
+        status, body = h.api.post("/config/ollama-base", {"base_url": value})
+        chosen = h.server.choose_ollama_base({h.server.OLLAMA_BASE_ENV: value}, config)
+        expect(status == 422 and secret not in json.dumps(body) and chosen.base is None and secret not in chosen.error,
+               f"{value!r}: status {status}: {body}; at start: {chosen.error}")
+    for value in (5, None, ["http://192.168.1.50:11434"]):
+        status, body = h.api.post("/config/ollama-base", {"base_url": value})
+        expect(status == 422, f"{value!r}: status {status}: {body}")
+    status, body = h.api.post("/config/ollama-base", {})
+    expect(status == 422, f"no base_url: status {status}: {body}")
+    expect(not config.exists(), f"a refused address was written: {config.read_text(encoding='utf-8') if config.exists() else ''}")
+    expect(h.server.OLLAMA_SERVER.base == TEST_OLLAMA_BASE, f"the running relay moved: {h.server.OLLAMA_SERVER}")
+
+    # What is accepted, as it is saved.
+    good = [("http://192.168.1.50:11434", "http://192.168.1.50:11434"),
+            ("  HTTP://Ollama-Box:11434/  ", "http://Ollama-Box:11434"),
+            ("https://ollama.example/prefix/", "https://ollama.example/prefix"),
+            ("http://[::1]:11434", "http://[::1]:11434"),
+            ("http://localhost", "http://localhost"),
+            ("http://gpu_pc.lan:11434", "http://gpu_pc.lan:11434")]
+    wrong = [(given, h.server.ollama_base_from(given), want) for given, want in good
+             if h.server.ollama_base_from(given) != want]
+    expect(not wrong, f"accepted addresses saved as: {wrong}")
+    expect(not h.inputs.calls, f"saving touched input: {h.inputs.names()}")
+
+
+@test("POST /config/ollama-base saves the address for the next start, and the running relay keeps its own")
+def _(h):
+    config = Path(h.server.CONFIG_FILE)
+    config.write_text(json.dumps({"note": "kept", "ollamaBase": "http://10.0.0.1:11434"}), encoding="utf-8")
+    lan = "http://192.168.1.50:11434"
+    status, body = h.api.post("/config/ollama-base", {"base_url": f" HTTP://192.168.1.50:11434/ "})
+    expect(status == 200 and body.get("ok") is True and body.get("saved") == lan and body.get("active") == TEST_OLLAMA_BASE
+           and body.get("restartRequired") is True and body.get("overriddenBy") is None, f"status {status}: {body}")
+    expect(json.loads(config.read_text(encoding="utf-8")) == {"note": "kept", "ollamaBase": lan},
+           f"on disk: {config.read_text(encoding='utf-8')}")
+    expect(sorted(p.name for p in config.parent.glob("agent-config.json*")) == ["agent-config.json"],
+           f"left behind: {list(config.parent.glob('agent-config.json*'))}")
+
+    # The relay keeps sending where it started until the backend restarts...
+    expect(h.server.OLLAMA_SERVER.base == TEST_OLLAMA_BASE, f"the running relay moved: {h.server.OLLAMA_SERVER}")
+    _, _, asked = with_ollama(h, lambda req: ANSWER, lambda: h.api.post("/llm/ollama", {"payload": {}}))
+    expect([a["url"] for a in asked] == [TEST_OLLAMA_BASE + "/v1/chat/completions"], f"asked {asked}")
+    status, caps = h.api.get("/capabilities")
+    expect(caps.get("ollama") == {"base": TEST_OLLAMA_BASE, "source": "default", "error": None, "saved": lan},
+           f"/capabilities: {caps.get('ollama')}")
+    # ...and a restart picks the saved one up.
+    expect(h.server.choose_ollama_base({}, config) == (lan, "agent-config.json", None),
+           f"the next start would use {h.server.choose_ollama_base({}, config)}")
+
+    status, body = h.api.post("/config/ollama-base", {"base_url": TEST_OLLAMA_BASE})
+    expect(body.get("ok") is True and body.get("restartRequired") is False, f"saving the running address: {body}")
+    with ollama_server(h, "http://10.0.0.9:11434", source="OLLAMA_BASE_URL"):
+        status, body = h.api.post("/config/ollama-base", {"base_url": lan})
+    expect(body.get("ok") is True and body.get("overriddenBy") == "OLLAMA_BASE_URL", f"with OLLAMA_BASE_URL set: {body}")
+
+    # A file someone broke by hand is left for them to fix, not overwritten:
+    # one that is not JSON, and one saved in a Windows code page, not UTF-8.
+    for broken, says in ((b"{\"ollamaBase\": ", "not valid JSON"),
+                         ("{\"note\": \"café\", \"ollamaBase\": \"http://10.0.0.1:11434\"}".encode("cp1252"), "not UTF-8")):
+        config.write_bytes(broken)
+        status, body = h.api.post("/config/ollama-base", {"base_url": lan})
+        expect(status == 409 and body.get("ok") is False and "agent-config.json" in body.get("error", "")
+               and says in body.get("error", ""), f"{broken!r}: status {status}: {body}")
+        expect(config.read_bytes() == broken, f"a broken config file was overwritten: {config.read_bytes()!r}")
+        status, caps = h.api.get("/capabilities")
+        expect(status == 200 and caps.get("ollama", {}).get("saved") is None, f"{broken!r}: /capabilities: {status} {caps}")
+    config.write_bytes(json.dumps({"note": "kept"}).encode("utf-16"))
+    status, body = h.api.post("/config/ollama-base", {"base_url": lan})
+    expect(status == 200 and json.loads(config.read_text(encoding="utf-8")) == {"note": "kept", "ollamaBase": lan},
+           f"a UTF-16 file (PowerShell 5.1's >): status {status}: {body}; on disk: {config.read_bytes()[:80]!r}")
+    config.unlink()
+
+
+@test("The relay's server is OLLAMA_BASE_URL, else agent-config.json, else localhost, and never a fallback past a bad one")
+def _(h):
+    folder = Path(h.tmp) / "choose"
+    folder.mkdir(exist_ok=True)
+    config = folder / "agent-config.json"
+    env = h.server.OLLAMA_BASE_ENV
+    default = h.server.OLLAMA_DEFAULT_BASE
+    expect(env == "OLLAMA_BASE_URL" and default == "http://localhost:11434", f"{env}, {default}")
+
+    def write(content):
+        config.unlink(missing_ok=True)
+        if isinstance(content, bytes):
+            config.write_bytes(content)
+        elif content is not None:
+            config.write_text(content if isinstance(content, str) else json.dumps(content), encoding="utf-8")
+
+    lan = {"ollamaBase": "http://10.0.0.5:11434"}
+    cases = [
+        ("nothing set", {}, None, (default, "default", None)),
+        ("an empty config", {}, {}, (default, "default", None)),
+        ("a blank ollamaBase", {}, {"ollamaBase": "  "}, (default, "default", None)),
+        ("the config", {}, lan, ("http://10.0.0.5:11434", "agent-config.json", None)),
+        ("the config, with a byte-order mark", {}, b"\xef\xbb\xbf" + json.dumps(lan).encode(), ("http://10.0.0.5:11434", "agent-config.json", None)),
+        # What `echo ... > agent-config.json` writes in Windows PowerShell 5.1.
+        ("the config in UTF-16 (little-endian, with its mark)", {}, json.dumps(lan).encode("utf-16"), ("http://10.0.0.5:11434", "agent-config.json", None)),
+        ("the config in UTF-16 (big-endian, with its mark)", {}, b"\xfe\xff" + json.dumps(lan).encode("utf-16-be"), ("http://10.0.0.5:11434", "agent-config.json", None)),
+        ("the environment over the config", {env: " http://10.0.0.9:11434/ "}, lan, ("http://10.0.0.9:11434", env, None)),
+        ("a blank environment variable is not set", {env: "  "}, lan, ("http://10.0.0.5:11434", "agent-config.json", None)),
+    ]
+    unusable = [
+        ("an environment value that is not an address", {env: "10.0.0.9:11434"}, lan, env, env),
+        ("a file: address in the config", {}, {"ollamaBase": "file:///etc/passwd"}, "agent-config.json", "ollamaBase in agent-config.json"),
+        ("a config that is not JSON", {}, "{broken", "agent-config.json", "not valid JSON"),
+        ("a config that is not an object", {}, "[1, 2]", "agent-config.json", "JSON object"),
+        ("an ollamaBase that is not text", {}, {"ollamaBase": 11434}, "agent-config.json", "must be text"),
+        # Each of these used to raise out of the import and stop the whole backend.
+        ("a config saved in a Windows code page", {}, "{\"note\": \"café\", \"ollamaBase\": \"http://10.0.0.5:11434\"}".encode("cp1252"),
+         "agent-config.json", "not UTF-8"),
+        ("a config that is not text at all", {}, b"\x80\x81\x82\xfe", "agent-config.json", "not UTF-8"),
+        ("a config nested too deep to read", {}, "[" * 200_000, "agent-config.json", "not valid JSON"),
+        ("UTF-16 without its mark", {}, json.dumps(lan).encode("utf-16-le"), "agent-config.json", "not valid JSON"),
+    ]
+    wrong = []
+    for label, environ, content, want in cases:
+        write(content)
+        got = h.server.choose_ollama_base(environ, config)
+        if tuple(got) != want:
+            wrong.append(f"{label}: {tuple(got)}, wanted {want}")
+    for label, environ, content, source, says in unusable:
+        write(content)
+        got = h.server.choose_ollama_base(environ, config)
+        # No quiet fall back to localhost: the model's requests would go to a
+        # server the operator did not choose, and fail there less clearly.
+        if got.base is not None or got.source != source or says not in (got.error or ""):
+            wrong.append(f"{label}: {tuple(got)}")
+    expect(not wrong, "; ".join(wrong))
+
+    # And a problem nobody foresaw costs the relay its server, not the backend
+    # its start: the choice runs on import, before any route exists.
+    real_choose = h.server.choose_ollama_base
+
+    def unforeseen(environ, config_file):
+        raise RuntimeError("something nobody foresaw")
+
+    h.server.choose_ollama_base = unforeseen
+    try:
+        got = h.server._startup_ollama_server()
+    finally:
+        h.server.choose_ollama_base = real_choose
+    expect(got.base is None and "something nobody foresaw" in (got.error or ""), f"at start: {tuple(got)}")
 
 
 @test("POST /llm/ollama says when Ollama ran out of time, apart from other failures")
@@ -1029,13 +1404,14 @@ def _(h):
         ("connection refused", urllib.error.URLError(ConnectionRefusedError(10061, "refused")), 0, False),
         ("connection dropped", ConnectionResetError(10054, "reset"), 0, False),
         ("Ollama refused the request", urllib.error.HTTPError(
-            "http://127.0.0.1:9/v1/chat/completions", 400, "Bad Request", None,
+            TEST_OLLAMA_BASE + "/v1/chat/completions", 400, "Bad Request", None,
             io.BytesIO(b'{"error":"model does not support tools"}')), 400, False),
     ]
     for label, failure, want_status, want_timed_out in cases:
         status, body, asked = relay_through(h, failure)
         expect(len(asked) == 1, f"{label}: urlopen was asked {len(asked)} times: {asked}")
-        expect(asked[0]["timeout"] == 600, f"{label}: the relay did not pass the page's timeout on: {asked}")
+        expect(asked[0]["timeout"] == 600 and asked[0]["url"] == TEST_OLLAMA_BASE + "/v1/chat/completions",
+               f"{label}: the relay did not pass the page's timeout on, to the configured server: {asked}")
         expect(status == 200 and body.get("ok") is False and body.get("status") == want_status,
                f"{label}: status {status}: {body}")
         expect(bool(body.get("timedOut")) is want_timed_out, f"{label}: timedOut should be {want_timed_out}: {body}")

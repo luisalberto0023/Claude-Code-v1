@@ -17,3 +17,8 @@ logs/
 # page drive the mouse and keyboard, so it never leaves this machine.
 .agent-token
 .agent-token.*.tmp
+
+# Settings the page saves for the backend (the Ollama server the relay uses),
+# and the backend's half-written copy. Local to this PC.
+agent-config.json
+agent-config.json.*.tmp
