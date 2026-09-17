@@ -56,7 +56,8 @@ npm run check
 It renders the UI once in node (a blank-page bug fails here), checks that the page
 and the backend use the same outcome names, checks that a failed model request
 pauses the run instead of ending the game (against a stand-in, so no provider is
-called and no key is needed), runs the plugin and
+called and no key is needed), checks what each model request looks like, the
+model list and the model check at Start (stand-ins too), runs the plugin and
 Minesweeper checks, checks that the page sends the backend's token (see Launch),
 and starts the backend on a spare port with every mouse,
 keyboard, gamepad and capture call replaced by a recorder, so it never moves
@@ -164,6 +165,64 @@ the restart, shows the server in use again, with a yellow
 `http://... is saved for the next start: restart start.bat to use it.` under it.
 With the relay turned off, the browser calls whatever the field says, as before.
 
+### Choosing a model
+Under **PROVIDER**, the model picker starts with a few models checked against each
+provider's documentation (September 2026), and fills in the rest from the provider
+itself once it can ask:
+- **Gemini** starts on **Gemini 3.8 Flash** (also Gemini 3.5 Flash-Lite), both on
+  the free tier. On the free tier Google may use your prompts and screenshots to
+  improve its products.
+- **Anthropic** starts on **Claude Sonnet 5** (also Claude Opus 5 and Claude
+  Haiku 4.5); **OpenAI** on **GPT-5.6 Luna** (also GPT-5.6 Terra, and GPT-4o as
+  legacy).
+- **Ollama** keeps `qwen2.5vl:3b` and adds `qwen3-vl:4b` (3.3 GB),
+  `qwen3.5:4b` (3.4 GB) and `gemma4:e2b-it-qat` (4.3 GB; plain `gemma4:e2b` is
+  7.2 GB and does not fit the 6 GB GPU). Pull one with `ollama pull <name>` on
+  the Ollama PC before choosing it.
+
+About a second after an API key is entered (typed, or from `.env`), the list adds
+every model that provider offers the key, and a default the key cannot use says
+`— not offered to this key`. For Ollama it adds the models pulled on the server
+(through the backend's relay, or straight from the browser with the relay off),
+and a default that is not pulled says `— not pulled on that server`. The line
+under the picker says what came back; **↻ List** asks again and logs it.
+
+The OpenAI list leaves out `gpt-3.5-turbo`, `gpt-4` and `gpt-4-turbo` (and their
+dated versions): they are still served until 23 October 2026, but read text
+only or stop at 4,096 output tokens, so a turn of play would be refused.
+
+The text field under the list takes **any model id**, so a model released after
+this page was written can be used without a code change: type its id exactly as
+the provider's documentation writes it.
+
+A reply may use up to 16,384 output tokens with Anthropic, OpenAI and Gemini.
+Their default models all think before they answer, and the thinking counts toward
+that cap. The **Token budget cap** in ADVANCED still limits the whole session. A
+reply that runs out before the model acts logs
+`⚠ The reply was cut off at the output cap (16,384 tokens) before the model acted, ...`
+and that turn does nothing.
+
+While **▶ Start** checks the model and while a session runs, the provider
+buttons, the model list and id field, the key field, **OLLAMA SERVER** and
+**Relay through local backend** are locked. Press **■ Stop** to change them.
+
+**▶ Start checks the model first**, and starts nothing if the check fails (the
+button reads `Checking the model…` meanwhile). For a cloud provider the check is
+one request for a one-token reply, with no retry; for Ollama it is only a look at
+the server's pulled models, which costs nothing. A passed check is the first log
+line of the run, e.g. `✓ Gemini accepted the key and answered with gemini-3.8-flash.`
+A failed one quotes the provider, e.g.
+`Not started: the check of gemini-2.0-flash failed — Gemini does not know that model or address (HTTP 404): ...`.
+The check proves the key and the model id. It sends no tools, no screenshot and
+asks for one token, so a typed model that cannot use tools or see images still
+passes, and is refused on its first turn.
+
+**Cloud keys live in the page.** The browser sends the key to the provider itself,
+so anything that can read the agent tab (a browser extension, say) can read the
+key. The key field says so. Use a key made only for this agent. For Anthropic, make
+it in a Console workspace of its own and set a monthly spend limit there
+(Settings → Workspaces → Spend limits; the Default Workspace cannot have one).
+
 ---
 
 ## 4. Validation order (do these in sequence)
@@ -171,7 +230,7 @@ With the relay turned off, the browser calls whatever the field says, as before.
 ### ✅ Test 0 — Baseline (regression check)
 Confirm nothing broke. This should behave exactly like before.
 - Open `https://play2048.co` in a tab.
-- UI: Provider **Gemini 2.5 Flash**, Control scheme **🌐 Browser · KB/Mouse**,
+- UI: Provider **Google Gemini**, model **Gemini 3.8 Flash**, Control scheme **🌐 Browser · KB/Mouse**,
   Timing **Puzzle**.
 - ADVANCED: check **Skip research phase**, set **Token budget cap** = `50000`.
 - Click **Share Screen** → pick the 2048 tab → **▶ Start**.
@@ -380,6 +439,64 @@ way to stop it.
   and play carries on. Most models keep to 5 s once the tool says so, so this
   line may not appear at all.
 
+### ✅ Test 12 — Models: the list, a typed id, and the check at Start
+The page used to start on a Gemini model shut down in November 2025 (and the
+Anthropic default was retired in June 2026), with no way to pick a model the fixed
+list lacked, and a bad model or key showed only once play had begun. See
+**Choosing a model** under Launch. This change is in the page only: reload the tab
+after the pull (restarting `start.bat` does no harm). Each cloud Start below costs
+one one-token request.
+- Provider **Google Gemini**, with your key in `.env` (or typed in the key field).
+  **Pass:** about a second later the line under the picker says
+  `Gemini offers this key N models, listed below the defaults.`, the list is longer,
+  and **Gemini 3.8 Flash** has no `— not offered to this key` after it.
+- Type `gemini-2.0-flash` into the model id field under the list, share the 2048
+  tab, click **▶ Start**. **Pass:** the button briefly reads `Checking the model…`,
+  nothing starts, and the log says
+  `Not started: the check of gemini-2.0-flash failed — Gemini ... (HTTP 404): ...`
+  (Google's own words; if it answers with another status, that is quoted instead,
+  and still nothing starts).
+- Type `wrong` into the key field. **Pass:** the line under the picker turns yellow,
+  `Could not list Gemini's models: Gemini ... (HTTP 4xx): ...` in Google's words
+  (e.g. `API key not valid`), and **▶ Start** refuses with the same words after
+  `Not started: the check of gemini-3.8-flash failed — `. Clear the key field again
+  (the `.env` key is used when the field is empty).
+- Pick **Gemini 3.8 Flash** and run Test 0's 2048 settings with **Small-model mode
+  (JSON actions)** off, and in ADVANCED turn **Use built-in solver** off. With the
+  solver on, the 2048 solver plays every move and the model is never asked, so this
+  step would pass without testing anything. **Pass:** the log starts with
+  `✓ Gemini accepted the key and answered with gemini-3.8-flash.`, the model's own
+  moves show as `→ <tool>(...)` lines (e.g. `→ press_key(...)`,
+  `→ execute_sequence(...)`) on at least 3 turns, and no `HTTP 400` names
+  `thought_signature` (Gemini refuses a conversation that drops its signatures,
+  which this page used to do).
+- If you have the keys, one short run each with the defaults, with the same
+  settings (**Use built-in solver** off, Small-model mode off). **Pass** for each:
+  `→ <tool>(...)` lines from the model on at least 3 turns, and no `HTTP 400`.
+  **OpenAI:** `✓ OpenAI accepted the key and answered with gpt-5.6-luna.`, and no
+  `Unsupported parameter: 'max_tokens'`. **Anthropic:** the yellow note under the
+  key field says the key lives in the page; `✓ Anthropic accepted the key and
+  answered with claude-sonnet-5.`, no `no answer from Anthropic (Failed to
+  fetch)`, and no `HTTP 400` naming a `thinking` block. A
+  `... would not give a one-token reply ...; starting.` line instead of the ✓ is
+  fine (the provider accepted the key and model but not so short a reply): note
+  which provider said it. Note too any
+  `⚠ The reply was cut off at the output cap ...` line, and which provider gave it.
+- While the button reads `Checking the model…`, and once the run has started,
+  **Pass:** the provider buttons, model list, model id field and key field are
+  greyed out and do not respond, and the line under the provider buttons says
+  why. After **■ Stop** they work again.
+- Clear the key field with no key in `.env` (or pick a provider you have no key
+  for). **Pass:** the list goes back to the defaults and the line under the
+  picker says `Enter the API key to list this provider's models. ...`, not that
+  the provider offers the key any models.
+- Provider **Ollama** (relay on). **Pass:** `N models pulled on the Ollama server,
+  listed below the defaults.`, and defaults you have not pulled end in
+  `— not pulled on that server`. Pick one of those (e.g. `qwen3-vl:4b`) and click
+  **▶ Start**: `Not started: Ollama at http://... does not have qwen3-vl:4b. Run
+  ollama pull qwen3-vl:4b there, or pick one it has: ...`. Pick a pulled one:
+  `✓ Ollama at http://... has qwen2.5vl:3b pulled.`, and play as before.
+
 ---
 
 ## 5. What to watch in the log
@@ -414,6 +531,14 @@ way to stop it.
 | `✓ Ollama at http://... answers, with N models: ...` | **↻ Check server**: the backend reached its Ollama server, and these models are pulled there |
 | `⚠ hold_key: Asked for 8s, but a hold lasts at most 5s per call and is let go when the call ends, so a longer hold is several calls with a gap between them, not one unbroken hold.` (also `gamepad_button`, `gamepad_stick`, `gamepad_trigger`, and `seq.` steps) | The model asked for a longer hold than the backend allows. It held for 5 s and then let go, and the model's tool result says so. `... lasts at least 0.02s` is a gamepad press too short for a game to see, made that long |
 | `⚠ type_text: Only the first 300 of N characters were typed: ...` | The model sent more than 300 characters in one call. The first 300 were typed, and the model is told to send the rest in another call |
+| `✓ Gemini accepted the key and answered with gemini-3.8-flash.` (first line of a run; also Anthropic, OpenAI) | **▶ Start** checked the key and model with one one-token request before the run began |
+| `✓ Ollama at http://... has qwen2.5vl:3b pulled.` | **▶ Start** found the model among the Ollama server's pulled models (no model request is spent on this) |
+| `Not started: the check of <model> failed — ...` | The provider refused the key or the model at Start, in its own words; nothing ran. `This may clear up: press ▶ Start again in a moment.` is added for a rate limit, a server error or no answer |
+| `Not started: Ollama at http://... does not have <model>. Run ollama pull <model> there, or pick one it has: ...` | The model is not pulled on the server the relay uses (or, relay off, the OLLAMA SERVER field's) |
+| `... accepted the key and <model> but would not give a one-token reply (...); starting.` | The provider accepted both but refused so short a reply. The run starts; worth reporting which provider said it |
+| `Gemini offers this key N models, listed below the defaults.` (under the model picker) / `N models pulled on the Ollama server, ...` | The model list came from the provider (or the Ollama server); **↻ List** asks again and logs it |
+| `Could not list <provider>'s models: ...` (under the model picker) | The provider refused the key or did not answer. The defaults and a typed id still work, and **▶ Start** checks them |
+| `⚠ The reply was cut off at the output cap (16,384 tokens) before the model acted, most likely spent thinking: this turn may do nothing.` | The model used the whole output cap (thinking counts toward it) before it called a tool, so the turn did nothing. Now and then is harmless. On most turns, report it with the provider and model. With Ollama it reads `... at the model's length limit ...` |
 
 ---
 
@@ -429,7 +554,12 @@ way to stop it.
 | Clicks land off-target | check the HUD `Scale` value; try DirectX capture or a crop to simplify the mapping |
 | 429 rate-limit pauses | Gemini free tier — keep **Skip research** on, lower **Vision every N turns** later |
 | `Session given up: ... did not accept the API key (HTTP 401)` | Wrong or expired key for that provider. Fix the key and start again |
-| `Session given up: ... does not know that model or address (HTTP 404)` / `does not have that model` | The model id is wrong or retired, or (Ollama) not pulled on that host: `ollama pull <model>` there, or pick another model |
+| `Session given up: ... does not know that model or address (HTTP 404)` / `does not have that model` | The model id is wrong or retired, or (Ollama) not pulled on that host: `ollama pull <model>` there, or pick another model. **▶ Start** now checks this first, so it shows as `Not started: ...` instead |
+| `Not started: the check of <model> failed — ... does not know that model or address (HTTP 404)` | The id is mistyped, retired, or not offered to this key. Pick one from the list (it shows what the key may use) or type the id exactly as the provider's documentation writes it |
+| `Not started: the check of <model> failed — ... did not accept the API key (HTTP 401)` / `... (HTTP 400): API key not valid ...` (Gemini) / `... refused access (HTTP 403)` | Wrong, expired or restricted key. Fix it in the key field or `.env` (then restart `start.bat`, since Vite reads `.env` when it starts) |
+| `Could not list <provider>'s models: no answer from ... (Failed to fetch)` | The browser could not reach the provider: no internet, or a firewall or extension blocking it. With Ollama and the relay off, Ollama must allow the page's origin (`OLLAMA_ORIGINS=*` on the Ollama PC). Typed ids still work once the connection does |
+| `... (HTTP 400): ... thought_signature ...` with Gemini | Should no longer happen: the page now sends Gemini's thought signatures back. Report it with the log |
+| `... (HTTP 400): Unsupported parameter: 'max_tokens' ...` with OpenAI | Should no longer happen: the page now sends `max_completion_tokens`. If it does, the tab is running old code: reload it |
 | `Session given up: Ollama cannot do what the request asks with this model (HTTP 400): ... does not support tools` | The model lacks something the page asks of it. `tools`: turn on **Small-model mode (JSON actions)**. `vision` or images: pick a model that can see images |
 | `Ollama rejected the request 3 times in a row (HTTP 400): ...` then `paused: model unreachable` | Usually the LAN link is cutting request bodies off (Ollama answers 400 after waiting for the rest). The run waits and carries on when requests get through; if it keeps happening, lower **Local screenshot width (px)** so each request is shorter |
 | `paused: model unreachable` does not clear | The model host is down or unreachable. Check Ollama is running on the host the backend banner's `Ollama   :` line names (with the relay off, the host under **OLLAMA SERVER**), and (with **Relay through local backend** on) that the backend window is open. **↻ Check server** tells you at once whether the backend reaches it. A request is abandoned after 90 s for cloud providers and 10 minutes for Ollama; a check while paused, after at most 2 minutes |
@@ -441,6 +571,7 @@ way to stop it.
 | `The backend is older than this page (it does not say which Ollama server it relays to): restart start.bat.` / `Not started: the backend has not said which Ollama server its relay uses: it is older than this page, or not answering. ...` / `Session given up: the backend refused to relay the request to Ollama: base_url: Field required` | The backend window still runs code from before the pull. Close it and the `start.bat` window, run `start.bat`, reload the tab |
 | `Model request failed after ...: Ollama did not reply in time (the backend relay got no reply from Ollama ...)` | After about 600 s: Ollama took longer than 10 minutes over one turn. After about 20 s: the Ollama host did not answer the connection at all (switched off, wrong address). On a working host the first means the turn is too heavy for the GPU: lower **Local screenshot width (px)** or use a smaller model. The run pauses and checks again rather than retrying the same ten-minute request at once. A backend not yet restarted after a pull is read the same way, from its error text |
 | `Session given up: ... (HTTP 400): ...` naming a `tool_use_id`, a `tool` message or a function response, around turn 12 with Anthropic, OpenAI or Gemini | A known problem outside this change: once the conversation window fills, it can start with a tool result whose tool call was trimmed away, and the provider refuses the request. It used to end the game and restart instead. Until the window is trimmed at turn boundaries, **Small-model mode (JSON actions)** avoids it, since it sends no tool blocks |
+| `Session given up: ... (HTTP 400): ...` naming an invalid signature in a thinking block that `is bound to a different conversation`, after a few turns, with a model typed or picked from Anthropic's list (Claude Fable 5.1, say) | A known limit of the page, not of the key. From Claude Fable 5.1 on, Anthropic refuses a replayed `thinking` block once an earlier message has changed. It enforces this for accounts created on or after 31 August 2026, and later models will for every account. The page edits older messages: it drops old screenshots and trims the window. Use the defaults (Claude Sonnet 5, Opus 5, Haiku 4.5) until the page keeps its history unchanged |
 | Backend window closed | re-run `start.bat`; the watchdog auto-pauses the agent if the backend drops. Then reload any agent tab left open from before: the backend has a new token |
 | `⛔ The backend refused this page's token ...` / `⚠ The backend refuses this page (see above: reload it) — auto-paused.` | The backend restarted since the tab loaded. Click **Reload page** (or F5) and start the session again |
 | `⛔ This page has no backend token ...` | The tab loaded before the backend had ever started in this folder (no `.agent-token` yet), or the page was not served by `npm run dev`. Run `start.bat`, then reload `http://localhost:5173` |
@@ -480,6 +611,11 @@ way to stop it.
   call fails part-way, or while the mouse sits in a screen corner (FAILSAFE). A
   model's mistake cannot hold a key down for minutes. (■ Stop still does not cut
   a hold already under way short; it ends within those 5 seconds.)
+- **API keys:** a cloud key typed into the page (or read from `.env`) lives in the
+  page, and the browser sends it to the provider itself; anything that can read the
+  agent tab can read it. Use a key made only for this agent, with a spend limit
+  (for Anthropic, a Console workspace of its own with a monthly spend limit). Each
+  **▶ Start** with a cloud provider spends one one-token request to check the model.
 - **Other machines on your network:** the Ollama relay sends requests only to the
   Ollama server the backend started with (see **Ollama on another PC**), never to
   an address a request names, and does not follow redirects.

@@ -17,7 +17,8 @@ The agent is tested on a separate computer that only gets code through
   it is verified. Never leave an edit uncommitted or local-only.
 - Before pushing: `npm run check` (UI first-render smoke test, agent checks
   in `tools/check-agent.mjs` such as the outcome names page and backend share
-  and the backend token the page sends, plugin contracts, Minesweeper reader,
+  and the backend token the page sends, model request shapes, model lists and
+  the model check at Start in `tools/check-llm.mjs`, plugin contracts, Minesweeper reader,
   simulator, then the backend routes with all input stubbed, including their
   token, Origin and Host refusals), plus `npm run build` if `src/GameAgent.jsx`
   changed. The backend step needs a Python with fastapi, uvicorn and pydantic: the `.venv`
@@ -25,6 +26,12 @@ The agent is tested on a separate computer that only gets code through
   for the `python3` on PATH elsewhere (a cloud session, say). Backend tests
   belong in `tools/check_backend.py`, never against a running backend: its
   routes move the real mouse and keyboard.
+- Model provider requests are built only in `src/llm/` (chat requests in
+  `requests.js`, model-list requests in `models.js`), never in
+  `src/GameAgent.jsx`, and the model ids in `src/llm/providers.js` are only
+  the picker's defaults: check an
+  id against the provider's own docs before adding it. Checks never call a
+  provider or use a real key; they run against a stand-in fetch.
 - Every backend route except `GET /health` needs the launch token
   (`X-Agent-Token`), and every page request goes through `backend()` in
   `src/GameAgent.jsx`, which adds it. Never fetch `/api` any other way, never

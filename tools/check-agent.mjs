@@ -83,6 +83,17 @@
 //   - the tool result says what the backend really held or typed, and every hold
 //     or type in GameAgent.jsx, execute_sequence's steps included, reports it
 //
+// Then how model requests are sent, because the cloud requests had gone stale
+// (max_tokens to OpenAI, the Gemini key in the URL, Gemini's thought signatures
+// dropped, no browser header for Anthropic) and a retired model id showed only
+// once a session was under way. tools/check-llm.mjs checks src/llm/ on its own;
+// here:
+//   - callAI puts on the wire what src/llm/requests.js builds, for every cloud
+//     provider, a Gemini function call's thought signature included
+//   - ▶ Start checks the chosen model (src/llm/models.js) before the run's reset,
+//     and a failed check starts nothing; the picker has a free-text model field
+//     and lists models through backend() for the Ollama relay
+//
 // Values that live inside GameAgent.jsx (TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS,
 // pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase,
 // backend, onBackendRefused) are
@@ -1171,6 +1182,59 @@ if (agent) {
         show({ verdict: r.e?.verdict, calls: r.calls, retries: r.retries }));
     }
 
+    // What callAI puts on the wire for each cloud provider (src/llm/requests.js
+    // builds it; tools/check-llm.mjs checks the builders on their own).
+    const headerIn = (sent, name) => Object.entries(sent?.init?.headers ?? {}).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
+    const answers = {
+      anthropic: { type: "message", role: "assistant", content: [{ type: "text", text: "OK" }], stop_reason: "end_turn" },
+      openai: { choices: [{ message: { content: "OK" }, finish_reason: "stop" }] },
+      gemini: { candidates: [{ content: { role: "model", parts: [{ text: "OK" }] }, finishReason: "STOP" }] },
+    };
+    const wire = {};
+    for (const provider of ["anthropic", "openai", "gemini"]) {
+      respond = () => json(200, answers[provider]);
+      const r = await run(provider, { retry: false, maxTokens: 1 });
+      const sent = r.sent[0];
+      wire[provider] = { r, sent, body: sent?.init?.body ? JSON.parse(sent.init.body) : null };
+    }
+    check("callAI sends Anthropic the browser header, the key, and the caller's token cap",
+      !wire.anthropic.r.e && headerIn(wire.anthropic.sent, "anthropic-dangerous-direct-browser-access") === "true" &&
+        headerIn(wire.anthropic.sent, "x-api-key") === "test-key" && wire.anthropic.body?.max_tokens === 1,
+      show({ error: wire.anthropic.r.e?.message, headers: wire.anthropic.sent?.init?.headers, max_tokens: wire.anthropic.body?.max_tokens }));
+    check("callAI sends OpenAI max_completion_tokens, not max_tokens",
+      !wire.openai.r.e && wire.openai.body?.max_completion_tokens === 1 && !("max_tokens" in (wire.openai.body ?? {})),
+      show({ error: wire.openai.r.e?.message, body: wire.openai.body }));
+    check("callAI sends Gemini the key in x-goog-api-key, with no key in the URL",
+      !wire.gemini.r.e && headerIn(wire.gemini.sent, "x-goog-api-key") === "test-key" && !/key=|test-key/.test(wire.gemini.sent?.url ?? "key=") &&
+        wire.gemini.sent.url.endsWith("/models/test-model:generateContent") && wire.gemini.body?.generationConfig?.maxOutputTokens === 1,
+      show({ error: wire.gemini.r.e?.message, url: wire.gemini.sent?.url, headers: wire.gemini.sent?.init?.headers }));
+
+    // Gemini's thought signature, through callAI both ways: the reply is kept
+    // in the conversation as the loop keeps it, and the next request sends the
+    // call's part back exactly as it came.
+    {
+      const signed = [
+        { text: "Up.", thoughtSignature: "sig-text" },
+        { functionCall: { id: "fc-1", name: "press_key", args: { key: "up" } }, thoughtSignature: "sig-call" },
+      ];
+      respond = () => json(200, { candidates: [{ content: { role: "model", parts: signed }, finishReason: "STOP" }] });
+      const stop = new AbortController();
+      const turn = [{ role: "user", content: "Turn 1." }];
+      const first = await agent.__callAI("gemini", "test-model", "system", turn, [], "test-key", null, { signal: stop.signal, retry: false });
+      const use = first.content.find(c => c.type === "tool_use");
+      calls.length = 0;
+      respond = () => json(200, answers.gemini);
+      await agent.__callAI("gemini", "test-model", "system", [
+        ...turn,
+        { role: "assistant", content: first.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: use.id, content: "pressed up" }] },
+      ], [], "test-key", null, { signal: stop.signal, retry: false });
+      const contents = calls[0]?.init?.body ? JSON.parse(calls[0].init.body).contents : [];
+      check("callAI sends a Gemini function call back with its thought signature, as received, and answers it by its id",
+        same(contents[1]?.parts, signed) && contents[2]?.parts?.[0]?.functionResponse?.id === "fc-1",
+        show(contents));
+    }
+
     // The relay: Ollama's refusal comes back inside a 200 from the backend.
     respond = (url) => url === "/api/llm/ollama"
       ? json(200, { ok: false, status: 404, elapsed: 0.1, error: "{\"error\":{\"message\":\"model \\\"test-model\\\" not found, try pulling it first\"}}" })
@@ -1385,14 +1449,55 @@ if (agent) {
   // Asked again at Start: a backend restarted between two watchdog pings may
   // relay somewhere else than the page last heard.
   check("a session does not start while OLLAMA SERVER and the relay's server differ, as the backend says at Start",
-    /if \(!apiKey && providerKey !== "ollama"\) \{[^}]*\}\s*let ollamaRelay = capabilities\.ollama;\s*if \(providerKey === "ollama"\) \{\s*if \(ollamaViaBackend\) \{[^}]*startingRef\.current = true;[^}]*const caps = await fetchCapabilities\(\{ signal: ctrl\.signal \}\)\.catch\(\(\) => null\);[^}]*if \(caps\) ollamaRelay = caps\.ollama;\s*\}\s*const problem = ollamaStartProblem\(\{ field: ollamaHost, relay: ollamaViaBackend, server: ollamaRelay \}\);\s*if \(problem\) \{\s*startingRef\.current = false;\s*addLog\(problem, "error"\);\s*return;\s*\}\s*\}\s*stopRef\.current = false;/.test(code) &&
+    /if \(!apiKey && providerKey !== "ollama"\) \{[^}]*\}\s*let ollamaRelay = capabilities\.ollama;\s*if \(providerKey === "ollama"\) \{\s*if \(ollamaViaBackend\) \{[^}]*startingRef\.current = true;[^}]*const caps = await fetchCapabilities\(\{ signal: ctrl\.signal \}\)\.catch\(\(\) => null\);[^}]*if \(caps\) ollamaRelay = caps\.ollama;\s*\}\s*const problem = ollamaStartProblem\(\{ field: ollamaHost, relay: ollamaViaBackend, server: ollamaRelay \}\);\s*if \(problem\) \{\s*startingRef\.current = false;\s*addLog\(problem, "error"\);\s*return;\s*\}\s*\}\s*startingRef\.current = true;\s*setCheckingModel\(true\);/.test(code) &&
       /Ollama: \$\{model\} on \$\{ollamaRelay\?\.base \?\? /.test(code),
-    "not found before the run's reset — has startAgent changed shape?");
+    "not found before the model check — has startAgent changed shape?");
   // That ask waits, so the running flag alone no longer stops a second click.
   check("a second click on Start while it asks the backend does not start a second run",
     /const startAgent = useCallback\(async \(\) => \{\s*if \(running \|\| startingRef\.current\) return;/.test(code) &&
       /useEffect\(\(\) => \{\s*if \(running\) startingRef\.current = false;\s*\}, \[running\]\);/.test(code),
     "the startingRef guard or its reset is missing");
+}
+
+// The chosen model is checked at Start (src/llm/models.js, checked on its own in
+// tools/check-llm.mjs), before anything of the run is reset, and a failed check
+// starts nothing: the log keeps the provider's reason, and Start works again.
+{
+  console.log("model picker and the check at Start");
+  check("▶ Start checks the chosen model, with the page's backend() and callAI, and starts nothing when the check fails",
+    /startingRef\.current = true;\s*setCheckingModel\(true\);\s*let (\w+);\s*try \{\s*\1 = await checkModel\(providerKey, model, \{\s*apiKey,\s*relay: ollamaViaBackend,\s*base: [^,]+,\s*backend,\s*callAI\s*\}\);\s*\} finally \{\s*setCheckingModel\(false\);\s*\}\s*if \(!\1\.ok\) \{\s*startingRef\.current = false;\s*addLog\(\1\.text, \1\.type\);\s*return;\s*\}\s*stopRef\.current = false;/.test(code),
+    "not found right before the run's reset — has startAgent changed shape?");
+  check("a check that passed is logged once the run's log is cleared",
+    /setLog\(\[\]\);[\s\S]{0,1200}?addLog\(modelCheck\.text, modelCheck\.type\);/.test(code), "not found after setLog([])");
+  check("Start cannot be clicked again while the model is being checked",
+    /onClick: startAgent,\s*disabled: !readyToPlay \|\| checkingModel,/.test(code), "the Start button is not disabled by checkingModel");
+  check("the picker has a free-text model id field, alongside the listed models",
+    /"aria-label": "Model id",[\s\S]{0,200}?value: model,[\s\S]{0,120}?onChange: \(e\) => setModel\(e\.target\.value\.trim\(\)\)/.test(code) &&
+      /modelChoices\(providerKey, /.test(code),
+    "no text input bound to model — has the picker changed shape?");
+  check("the picker lists models with the page's backend() (the Ollama relay needs its token)",
+    /await listModels\(provider, \{[^}]*\bsignal,\s*backend\s*\}\)/.test(code), "listModels is not given backend");
+  check("the key field shows the provider's note that the key lives in the page",
+    /PROVIDERS\[providerKey\]\.keyNote &&/.test(code), "keyNote is not rendered");
+  // The session is started with the values from the click, but frame size, image
+  // count, history window and the relay setting follow the controls.
+  const locked = [
+    ["provider buttons", /onClick: \(\) => handleProviderChange\(key\),\s*disabled: settingsLocked,/],
+    ["model list", /if \(e\.target\.value\) setModel\(e\.target\.value\);\s*\},\s*disabled: settingsLocked,/],
+    ["model id field", /onChange: \(e\) => setModel\(e\.target\.value\.trim\(\)\),\s*disabled: settingsLocked,/],
+    ["key field", /onChange: \(e\) => handleApiKeyChange\(e\.target\.value\),\s*disabled: settingsLocked,/],
+    ["OLLAMA SERVER field", /onChange: \(e\) => setOllamaHost\(e\.target\.value\),\s*disabled: settingsLocked,/],
+    ["relay checkbox", /onChange: \(e\) => setOllamaViaBackendState\(e\.target\.checked\),\s*disabled: settingsLocked/],
+  ].filter(([, re]) => !re.test(code)).map(([name]) => name);
+  check("provider, model, key, Ollama server and relay are locked while the model is checked and while a session runs",
+    /const settingsLocked = checkingModel \|\| running;/.test(code) && !locked.length, locked.join(", ") || "settingsLocked is not checkingModel || running");
+  check("a model list goes when the key or server it was asked with changes or is cleared",
+    /useEffect\(\(\) => \{\s*setModelList\(null\);\s*if \(!canListModels\) return void 0;/.test(code) ||
+      /useEffect\(\(\) => \{\s*setModelList\(null\);\s*if \(!canListModels\) return undefined;/.test(code),
+    "the listing effect does not clear the old list first");
+  check("a play turn and a study turn say so when the reply was cut off at the output cap before the model acted",
+    [...code.matchAll(/const cutOff = cutOffNote\(providerKey, resp\);\s*if \(cutOff\) addLog\(cutOff, "warn"\);/g)].length === 2,
+    "cutOffNote is not logged after both the play and the study request");
 }
 
 // ── Every model call can be stopped ───────────────────────────────────────────

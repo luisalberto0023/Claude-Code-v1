@@ -20,6 +20,9 @@ import {
   KEY_HOLD_MAX_S, GAMEPAD_HOLD_MAX_S, GAMEPAD_BUTTON_MIN_S, TYPE_TEXT_MAX_CHARS,
   limitNote, replyNote, withLimitNotes, holdKeyResult, typeTextResult,
 } from "./agent/inputLimits.js";
+import { PROVIDERS } from "./llm/providers.js";
+import { anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote } from "./llm/requests.js";
+import { MODEL_LIST_PAUSE_MS, modelChoices, modelListMessage, listModels, checkModel } from "./llm/models.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
@@ -81,62 +84,9 @@ async function backend(path, body = null, { signal, method } = {}) {
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────────
-const PROVIDERS = {
-  anthropic: {
-    label: "Anthropic", icon: "🟠", free: false,
-    notes: "Best reasoning & vision. Requires API key.",
-    envKey: "VITE_ANTHROPIC_API_KEY",
-    baseURL: "https://api.anthropic.com/v1/messages",
-    supportsSearch: true,
-    defaultModel: "claude-sonnet-4-20250514",
-    models: [
-      { id: "claude-sonnet-4-20250514", label: "Claude Sonnet 4 (recommended)" },
-      { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5 (fastest)" },
-    ],
-  },
-  openai: {
-    label: "OpenAI", icon: "🟢", free: false,
-    notes: "$5 free credit on signup. Good vision.",
-    envKey: "VITE_OPENAI_API_KEY",
-    baseURL: "https://api.openai.com/v1/chat/completions",
-    supportsSearch: false,
-    defaultModel: "gpt-4o",
-    models: [
-      { id: "gpt-4o", label: "GPT-4o (best vision)" },
-      { id: "gpt-4o-mini", label: "GPT-4o mini (cheaper)" },
-    ],
-  },
-  gemini: {
-    label: "Google Gemini", icon: "🔵", free: true,
-    notes: "Free tier: 1500 req/day. Best free option.",
-    envKey: "VITE_GEMINI_API_KEY",
-    baseURL: "https://generativelanguage.googleapis.com/v1beta/models",
-    supportsSearch: true,
-    defaultModel: "gemini-2.5-flash-preview-05-20",
-    models: [
-      { id: "gemini-2.5-flash-preview-05-20", label: "Gemini 2.5 Flash (free ✓)" },
-      { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash (free ✓)" },
-      { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash (free ✓)" },
-      { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
-    ],
-  },
-  ollama: {
-    label: "Ollama (local)", icon: "🖥️", free: true,
-    notes: "100% free & unlimited, runs on your own GPU. Needs Ollama + a vision model pulled.",
-    envKey: null,
-    baseURL: `${OLLAMA_DEFAULT_BASE}/v1/chat/completions`,
-    supportsSearch: false,
-    defaultModel: "qwen2.5vl:3b",
-    models: [
-      { id: "qwen2.5vl:3b", label: "Qwen2.5-VL 3B · qwen2.5vl:3b (light, grounding)" },
-      { id: "gemma3:4b", label: "Gemma 3 4B · gemma3:4b (screen/OCR)" },
-      { id: "moondream", label: "Moondream 2 · moondream (tiny, ~2GB)" },
-      { id: "llava:7b", label: "LLaVA 7B · llava:7b (tight on 6GB)" },
-      { id: "minicpm-v", label: "MiniCPM-V · minicpm-v (OCR, tight)" },
-      { id: "qwen2.5vl:7b", label: "Qwen2.5-VL 7B · qwen2.5vl:7b (needs ~8GB+)" },
-    ],
-  },
-};
+// PROVIDERS (src/llm/providers.js) holds where the model picker starts for each
+// provider; the request shapes are in src/llm/requests.js, and the model list
+// and the check at Start in src/llm/models.js.
 
 // Ollama server address for DIRECT calls from the browser (relay off), so the
 // model can live on a separate PC. The relay never uses it: the backend sends
@@ -148,147 +98,6 @@ let _ollamaViaBackend = true;
 function setOllamaViaBackend(v) { _ollamaViaBackend = !!v; }
 function setOllamaBase(url) {
   _ollamaBase = tidyOllamaBase(url) || OLLAMA_DEFAULT_BASE;
-}
-
-// ── Format converters ─────────────────────────────────────────────────────────
-
-function toOpenAITools(tools) {
-  return tools.map(t => ({
-    type: "function",
-    function: { name: t.name, description: t.description, parameters: t.input_schema },
-  }));
-}
-
-function toGeminiTools(tools) {
-  return [{
-    functionDeclarations: tools.map(t => ({
-      name: t.name,
-      description: t.description,
-      parameters: t.input_schema,
-    })),
-  }];
-}
-
-function toOpenAIMessages(messages) {
-  return messages.flatMap(m => {
-    if (typeof m.content === "string") {
-      return [{ role: m.role === "assistant" ? "assistant" : "user", content: m.content }];
-    }
-    const toolUses = m.content.filter(c => c.type === "tool_use");
-    const toolResults = m.content.filter(c => c.type === "tool_result");
-
-    if (toolResults.length > 0) {
-      return toolResults.map(tr => ({
-        role: "tool",
-        tool_call_id: tr.tool_use_id,
-        content: Array.isArray(tr.content)
-          ? tr.content.map(c => c.text ?? "").join("")
-          : (tr.content ?? ""),
-      }));
-    }
-
-    if (toolUses.length > 0) {
-      const textParts = m.content.filter(c => c.type === "text").map(c => c.text).join("");
-      return [{
-        role: "assistant",
-        content: textParts || null,
-        tool_calls: toolUses.map(tu => ({
-          id: tu.id,
-          type: "function",
-          function: { name: tu.name, arguments: JSON.stringify(tu.input) },
-        })),
-      }];
-    }
-
-    const parts = m.content.map(c => {
-      if (c.type === "text") return { type: "text", text: c.text };
-      if (c.type === "image") return { type: "image_url", image_url: { url: `data:${c.source.media_type};base64,${c.source.data}` } };
-      return null;
-    }).filter(Boolean);
-
-    const role = m.role === "assistant" ? "assistant" : "user";
-    if (parts.length === 1 && parts[0].type === "text") return [{ role, content: parts[0].text }];
-    return [{ role, content: parts }];
-  });
-}
-
-function toGeminiMessages(messages) {
-  return messages.map(m => {
-    const role = m.role === "assistant" ? "model" : "user";
-    if (typeof m.content === "string") {
-      return { role, parts: [{ text: m.content }] };
-    }
-    const parts = [];
-    for (const c of m.content) {
-      if (c.type === "text") {
-        parts.push({ text: c.text });
-      } else if (c.type === "image") {
-        parts.push({ inlineData: { mimeType: c.source.media_type, data: c.source.data } });
-      } else if (c.type === "tool_use") {
-        parts.push({ functionCall: { name: c.name, args: c.input } });
-      } else if (c.type === "tool_result") {
-        const content = Array.isArray(c.content)
-          ? c.content.map(x => x.text ?? "").join("")
-          : (c.content ?? "");
-        // id encodes the function name as "name__rand"
-        const fcName = c.tool_use_id.includes("__") ? c.tool_use_id.split("__")[0] : c.tool_use_id;
-        parts.push({ functionResponse: { name: fcName, response: { result: content } } });
-      }
-    }
-    return { role, parts };
-  });
-}
-
-function fromOpenAI(resp) {
-  const msg = resp.choices?.[0]?.message;
-  if (!msg) return { type: "message", content: [], stop_reason: "end_turn" };
-  const content = [];
-  if (msg.content) content.push({ type: "text", text: msg.content });
-  if (msg.tool_calls) {
-    for (const tc of msg.tool_calls) {
-      content.push({
-        type: "tool_use",
-        id: tc.id,
-        name: tc.function.name,
-        input: JSON.parse(tc.function.arguments || "{}"),
-      });
-    }
-  }
-  return {
-    type: "message",
-    content,
-    stop_reason: resp.choices?.[0]?.finish_reason === "tool_calls" ? "tool_use" : "end_turn",
-    usage: {
-      input_tokens: resp.usage?.prompt_tokens ?? 0,
-      output_tokens: resp.usage?.completion_tokens ?? 0,
-    },
-  };
-}
-
-function fromGemini(resp) {
-  const candidate = resp.candidates?.[0];
-  if (!candidate) return { type: "message", content: [], stop_reason: "end_turn" };
-  const content = [];
-  for (const part of candidate.content?.parts ?? []) {
-    if (part.text) content.push({ type: "text", text: part.text });
-    if (part.functionCall) {
-      content.push({
-        type: "tool_use",
-        id: `${part.functionCall.name}__${Math.random().toString(36).slice(2, 8)}`,
-        name: part.functionCall.name,
-        input: part.functionCall.args ?? {},
-      });
-    }
-  }
-  return {
-    type: "message",
-    content,
-    stop_reason: content.some(c => c.type === "tool_use") ? "tool_use" : "end_turn",
-    usage: {
-      input_tokens: resp.usageMetadata?.promptTokenCount ?? 0,
-      output_tokens: resp.usageMetadata?.candidatesTokenCount ?? 0,
-    },
-  };
 }
 
 // ── callAI — unified caller ───────────────────────────────────────────────────
@@ -311,12 +120,12 @@ const RETRY_ERR = [2000, 4000, 8000];
  * its wording. Failures worth retrying are retried here first, unless
  * `retry: false`; a fatal one, a deadline that ran out, and Stop are thrown at
  * once. Every request runs under a deadline, `timeoutMs` or requestTimeoutMs by
- * default, and `signal` (the run's Stop signal) aborts it.
+ * default, and `signal` (the run's Stop signal) aborts it. `maxTokens` caps the
+ * reply below the provider's usual MAX_OUTPUT_TOKENS (the check at Start asks
+ * for one token); Ollama ignores it.
  */
 async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry,
-                      { signal = null, retry = true, timeoutMs = null } = {}) {
-  const prov = PROVIDERS[providerKey];
-
+                      { signal = null, retry = true, timeoutMs = null, maxTokens = null } = {}) {
   // fetch rejects only when no HTTP answer came back at all.
   const post = (url, init, reqSignal) =>
     fetch(url, { method: "POST", ...init, signal: reqSignal })
@@ -329,69 +138,31 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
   };
 
   const doCall = async (reqSignal) => {
+    const request = { model, system: systemPrompt, messages, tools, apiKey, maxTokens };
+
     if (providerKey === "anthropic") {
-      const body = {
-        model,
-        max_tokens: 4096,
-        system: systemPrompt,
-        messages,
-        tools: tools.length ? tools : undefined,
-      };
-      const res = await post(prov.baseURL, {
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify(body),
-      }, reqSignal);
+      const { url, init } = anthropicRequest(request);
+      const res = await post(url, init, reqSignal);
       if (!res.ok) throw await refusal(res);
       return res.json();
     }
 
     if (providerKey === "openai") {
-      const body = {
-        model,
-        messages: [{ role: "system", content: systemPrompt }, ...toOpenAIMessages(messages)],
-        tools: tools.length ? toOpenAITools(tools) : undefined,
-        max_tokens: 4096,
-      };
-      const res = await post(prov.baseURL, {
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify(body),
-      }, reqSignal);
+      const { url, init } = openaiRequest(request);
+      const res = await post(url, init, reqSignal);
       if (!res.ok) throw await refusal(res);
       return fromOpenAI(await res.json());
     }
 
     if (providerKey === "gemini") {
-      const body = {
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents: toGeminiMessages(messages),
-        tools: tools.length ? toGeminiTools(tools) : undefined,
-        generationConfig: { maxOutputTokens: 4096 },
-      };
-      const url = `${prov.baseURL}/${model}:generateContent?key=${apiKey}`;
-      const res = await post(url, {
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      }, reqSignal);
+      const { url, init } = geminiRequest(request);
+      const res = await post(url, init, reqSignal);
       if (!res.ok) throw await refusal(res);
       return fromGemini(await res.json());
     }
 
     if (providerKey === "ollama") {
-      const body = {
-        model,
-        messages: [{ role: "system", content: systemPrompt }, ...toOpenAIMessages(messages)],
-        tools: tools.length ? toOpenAITools(tools) : undefined,
-        stream: false,
-        // Ollama defaults to temperature 1.0. Choosing a game move is a
-        // decision, not creative writing — sample the model's best judgment
-        // instead of a random one from the distribution.
-        temperature: 0.25,
-        top_p: 0.9,
-      };
+      const body = ollamaChatBody(request);
       const t0 = Date.now();
 
       // Preferred path: relay through the local backend. The browser then only
@@ -1395,8 +1166,15 @@ function HudRow({ label, value, color }) {
 export default function GameAgent() {
   // Provider / model state
   const [providerKey, setProviderKey] = useState("gemini");
+  // Any model id: the picker's defaults and listed models, or one typed in.
   const [model, setModel] = useState(PROVIDERS.gemini.defaultModel);
   const [apiKeyInput, setApiKeyInput] = useState("");
+  // What the chosen provider lists for the picker, {provider, ok, models, error},
+  // or null until it answers (src/llm/models.js); and whether a listing is under way.
+  const [modelList, setModelList] = useState(null);
+  const [modelListBusy, setModelListBusy] = useState(false);
+  // Set while ▶ Start checks the chosen model, which takes a few seconds.
+  const [checkingModel, setCheckingModel] = useState(false);
   // The OLLAMA SERVER field. With the relay on it starts as the backend's server
   // (capabilities.ollama); with the relay off the browser calls it directly.
   const [ollamaHost, setOllamaHost] = useState(OLLAMA_DEFAULT_BASE);
@@ -1517,6 +1295,9 @@ export default function GameAgent() {
   // Set while ▶ Start waits on the backend before the run begins, until the
   // page shows the run: a second click in that gap would start a second run.
   const startingRef = useRef(false);
+  // Counts model listings, so a reply to one that was replaced (another key,
+  // another provider) is dropped rather than shown for the wrong one.
+  const modelListSeqRef = useRef(0);
   // Aborted by Stop, so a model request in flight ends now rather than when it
   // answers or times out. Replaced at the start of every run.
   const stopCtrlRef = useRef(new AbortController());
@@ -1743,6 +1524,58 @@ export default function GameAgent() {
       }
     })();
   }, [addLog, loadCapabilities]);
+
+  // ── Model picker ──────────────────────────────────────────────────────────────
+  // The picker lists what the provider offers, so a model id is not only what
+  // this page was written with (src/llm/models.js says why). A cloud provider
+  // is asked with the key; Ollama through the relay's GET /llm/ollama/tags, or
+  // at the OLLAMA SERVER field with the relay off.
+  const providerApiKey = apiKeyInput || getEnv(PROVIDERS[providerKey].envKey ?? "");
+  const canListModels = providerKey === "ollama"
+    ? (ollamaViaBackend ? !!capabilities.ollama?.base : !!tidyOllamaBase(ollamaHost))
+    : !!providerApiKey;
+  // What a session is started with (provider, model, key, Ollama server and
+  // relay) stays put while ▶ Start checks the model and while the session runs.
+  // The session uses the values from the click, but the frame size, image count,
+  // history window and relay setting follow the controls, so a provider switched
+  // during the check would start an Ollama session with Gemini's settings.
+  const settingsLocked = checkingModel || running;
+  const refreshModelList = useCallback(async ({ log = false, signal = null } = {}) => {
+    const seq = ++modelListSeqRef.current;
+    const provider = providerKey;
+    setModelListBusy(true);
+    try {
+      const result = await listModels(provider, {
+        apiKey: providerApiKey, relay: ollamaViaBackend, base: tidyOllamaBase(ollamaHost) || OLLAMA_DEFAULT_BASE, signal, backend,
+      });
+      if (seq !== modelListSeqRef.current) return;
+      setModelList({ provider, ...result });
+      // backend() has already said so when the backend refused the page.
+      if (log && !result.refused) {
+        const said = modelListMessage(provider, result);
+        addLog(said.text, said.type);
+      }
+    } finally {
+      if (seq === modelListSeqRef.current) setModelListBusy(false);
+    }
+  }, [providerKey, providerApiKey, ollamaViaBackend, ollamaHost, addLog]);
+  // Listed once there is something to ask with, after typing has paused, so a
+  // half-typed key is not sent. A newer listing cancels an older one. A list
+  // belongs to the key or server it was asked with, so when that changes or is
+  // cleared the old list goes, and the line under the picker no longer speaks
+  // for a key that is not there.
+  useEffect(() => {
+    setModelList(null);
+    if (!canListModels) return undefined;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => { refreshModelList({ signal: ctrl.signal }); }, MODEL_LIST_PAUSE_MS);
+    return () => {
+      clearTimeout(timer);
+      ctrl.abort();
+      modelListSeqRef.current++;
+      setModelListBusy(false);
+    };
+  }, [canListModels, refreshModelList, capabilities.ollama?.base]);
 
   // Keep refs in sync with control-scheme / native-capture / pause-to-think state
   useEffect(() => { activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled); }, [controlScheme, gridEnabled]);
@@ -3124,6 +2957,8 @@ Reply with ONLY a JSON object, no other text:
       const kb = sendImage && frame?.data ? Math.round(frame.data.length * 0.75 / 1024) : 0;
       const imgNote = sendImage && frame ? ` (sent ${frame.imgW}×${frame.imgH} image, ~${kb}KB)` : " (no image)";
       addLog(`   LLM replied in ${secs}s${imgNote}`, "info");
+      const cutOff = cutOffNote(providerKey, resp);
+      if (cutOff) addLog(cutOff, "warn");
     } catch (e) {
       // The model never saw this turn, so undo it: take the turn's message back
       // (asking again would otherwise send it twice), keep the turn number, and
@@ -3406,6 +3241,22 @@ Reply with ONLY a JSON object, no other text:
       if (problem) { startingRef.current = false; addLog(problem, "error"); return; }
     }
 
+    // The chosen model, checked before anything else happens: a retired or
+    // mistyped id, a model not pulled, or a key the provider refuses used to
+    // show only as a failed first turn, after research and study had run
+    // (src/llm/models.js). A cloud check is one request for a one-token reply.
+    startingRef.current = true;
+    setCheckingModel(true);
+    let modelCheck;
+    try {
+      modelCheck = await checkModel(providerKey, model, {
+        apiKey, relay: ollamaViaBackend, base: tidyOllamaBase(ollamaHost) || OLLAMA_DEFAULT_BASE, backend, callAI,
+      });
+    } finally {
+      setCheckingModel(false);
+    }
+    if (!modelCheck.ok) { startingRef.current = false; addLog(modelCheck.text, modelCheck.type); return; }
+
     // Reset everything
     stopRef.current = false;
     stopCtrlRef.current = new AbortController();
@@ -3449,6 +3300,7 @@ Reply with ONLY a JSON object, no other text:
         ? `Ollama: ${model} on ${ollamaRelay?.base ?? "the backend's configured server"}, through the backend relay.`
         : `Ollama: ${model} on ${shownOllamaBase(ollamaHost) || OLLAMA_DEFAULT_BASE}, called directly from the browser.`, "info");
     }
+    addLog(modelCheck.text, modelCheck.type);
 
     const gameKey = slugify(gameDesc);
     const startTime = Date.now();
@@ -3652,6 +3504,8 @@ REASONING STYLE (for analyse_game_state):
         const studyTools = noToolsMode ? [] : TOOLS.filter(t => studyToolNames.has(t.name));
         const resp = await callAI(providerKey, model, systemPrompt, convRef.current, studyTools, apiKey, msg => addLog(msg, "warn"),
           { signal: stopCtrlRef.current.signal });
+        const cutOff = cutOffNote(providerKey, resp);
+        if (cutOff) addLog(cutOff, "warn");
         const content = resp.content ?? [];
         if (noToolsMode) {
           // No-tools study: just observe in plain text (no action parsing/execution)
@@ -4199,6 +4053,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   const handleProviderChange = useCallback((key) => {
     setProviderKey(key);
     setModel(PROVIDERS[key].defaultModel);
+    setModelList(null); // the last provider's list is not this one's
     setApiKeyInput("");
     // Local models usually can't tool-call — default them to JSON-action mode.
     setNoToolsMode(key === "ollama");
@@ -4316,27 +4171,75 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>PROVIDER</div>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {Object.entries(PROVIDERS).map(([key, prov]) => (
-              <button key={key} onClick={() => handleProviderChange(key)}
-                style={{ ...btnStyle(providerKey === key ? C.accent : C.border), fontSize: 11, padding: "3px 8px" }}>
+              <button key={key} onClick={() => handleProviderChange(key)} disabled={settingsLocked}
+                style={{ ...btnStyle(providerKey === key ? C.accent : C.border, settingsLocked && providerKey !== key), fontSize: 11, padding: "3px 8px" }}>
                 {prov.icon} {prov.label}
               </button>
             ))}
           </div>
+          {settingsLocked && (
+            <div style={{ fontSize: 9, color: C.dim, marginTop: 3 }}>
+              {running ? "Provider, model and key are locked while the session runs: ■ Stop to change them." : "Locked while ▶ Start checks the model."}
+            </div>
+          )}
           <div style={{ fontSize: 10, color: C.textDim, marginTop: 4 }}>{PROVIDERS[providerKey].notes}</div>
-          <select value={model} onChange={e => setModel(e.target.value)}
-            style={{ ...inputStyle(), marginTop: 6 }}>
-            {PROVIDERS[providerKey].models.map(m => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
+          {(() => {
+            // The defaults, then what the provider listed; the text field below
+            // takes any id, listed or not, and ▶ Start checks whichever it is.
+            const listing = modelList?.provider === providerKey ? modelList : null;
+            const choices = modelChoices(providerKey, listing?.ok ? listing.models : null);
+            const picked = choices.some(m => m.id === model);
+            const said = listing && !listing.refused ? modelListMessage(providerKey, listing) : null;
+            return (
+              <>
+                <select value={picked ? model : ""} onChange={e => { if (e.target.value) setModel(e.target.value); }}
+                  disabled={settingsLocked} style={{ ...inputStyle(), marginTop: 6 }}>
+                  {!picked && <option value="">{model ? `Typed below: ${model}` : "Pick a model, or type its id below"}</option>}
+                  {choices.map(m => (
+                    <option key={m.id} value={m.id}>{m.label}</option>
+                  ))}
+                </select>
+                <div style={{ display: "flex", gap: 5, marginTop: 4 }}>
+                  <input
+                    type="text"
+                    aria-label="Model id"
+                    placeholder="Model id, e.g. one from the provider's docs"
+                    value={model}
+                    spellCheck={false}
+                    onChange={e => setModel(e.target.value.trim())}
+                    disabled={settingsLocked}
+                    style={{ ...inputStyle(), flex: 1, minWidth: 0 }}
+                  />
+                  <button onClick={() => refreshModelList({ log: true })} disabled={!canListModels || modelListBusy}
+                    title={providerKey === "ollama" ? "Lists the models pulled on the Ollama server" : "Asks the provider which models this key may use"}
+                    style={{ ...btnStyle(C.border, !canListModels || modelListBusy), fontSize: 10, whiteSpace: "nowrap" }}>
+                    {modelListBusy ? "…" : "↻ List"}
+                  </button>
+                </div>
+                <div style={{ fontSize: 9, color: said ? { success: C.green, warn: C.yellow }[said.type] ?? C.dim : C.dim, marginTop: 3 }}>
+                  {said?.text ?? (canListModels
+                    ? "Any model id works; ▶ Start checks it first."
+                    : providerKey === "ollama"
+                      ? "Any model id works; ▶ Start checks the server has it."
+                      : "Enter the API key to list this provider's models. Any model id works; ▶ Start checks it first.")}
+                </div>
+              </>
+            );
+          })()}
           {PROVIDERS[providerKey].envKey && (
             <input
               type="password"
               placeholder={`${PROVIDERS[providerKey].label} API key`}
               value={apiKeyInput}
               onChange={e => handleApiKeyChange(e.target.value)}
+              disabled={settingsLocked}
               style={{ ...inputStyle(), marginTop: 6 }}
             />
+          )}
+          {PROVIDERS[providerKey].keyNote && (
+            <div style={{ fontSize: 9, color: providerKey === "anthropic" ? C.yellow : C.dim, marginTop: 3, lineHeight: 1.35 }}>
+              ⚠ {PROVIDERS[providerKey].keyNote}
+            </div>
           )}
           {providerKey === "ollama" && (
             <>
@@ -4348,6 +4251,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 placeholder="Ollama server (e.g. http://192.168.1.50:11434)"
                 value={ollamaHost}
                 onChange={e => setOllamaHost(e.target.value)}
+                disabled={settingsLocked}
                 style={{ ...inputStyle(), border: `1px solid ${C.accent}` }}
               />
               {(() => {
@@ -4373,7 +4277,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 localhost = model on this PC. For a separate GPU box, use its IP, and start Ollama there with OLLAMA_HOST=0.0.0.0 so other PCs can reach it.
               </div>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, cursor: "pointer", color: C.text, marginTop: 5 }}>
-                <input type="checkbox" checked={ollamaViaBackend} onChange={e => setOllamaViaBackendState(e.target.checked)} />
+                <input type="checkbox" checked={ollamaViaBackend} onChange={e => setOllamaViaBackendState(e.target.checked)} disabled={settingsLocked} />
                 Relay through local backend
               </label>
               <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
@@ -4636,7 +4540,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {!running
-              ? <button onClick={startAgent} disabled={!readyToPlay} style={btnStyle(readyToPlay ? C.green : C.dim, !readyToPlay)}>▶ Start</button>
+              ? <button onClick={startAgent} disabled={!readyToPlay || checkingModel}
+                  style={btnStyle(readyToPlay && !checkingModel ? C.green : C.dim, !readyToPlay || checkingModel)}>
+                  {checkingModel ? "Checking the model…" : "▶ Start"}
+                </button>
               : <>
                   <button onClick={togglePause} style={btnStyle(C.yellow)}>{paused ? "▶ Resume" : "⏸ Pause"}</button>
                   <button onClick={stopAgent} style={btnStyle(C.red)}>■ Stop</button>
