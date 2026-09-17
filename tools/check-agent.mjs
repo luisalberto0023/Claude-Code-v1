@@ -73,6 +73,16 @@
 //     field and the relay's server differ, as the backend says at Start, or
 //     while the backend has not said; and no typed password reaches the log
 //
+// Then how long one action may hold and how much it may type, because hold_key
+// with a duration of 600 held a key down for ten minutes that Stop could not end.
+// The backend bounds holds and typed text (tools/check_backend.py checks that).
+// Here:
+//   - the page's limits (src/agent/inputLimits.js) are the backend's numbers, and
+//     the hold_key, type_text and gamepad schemas state them, as does JSON-action
+//     mode's tool list
+//   - the tool result says what the backend really held or typed, and every hold
+//     or type in GameAgent.jsx, execute_sequence's steps included, reports it
+//
 // Values that live inside GameAgent.jsx (TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS,
 // pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase,
 // backend, onBackendRefused) are
@@ -601,6 +611,116 @@ console.log("ollama server");
   const badLists = lists.map(([label, reply, ok]) => [label, ollama.ollamaModelsMessage(reply), ok]).filter(([, m, ok]) => !ok(m));
   check(`ollamaModelsMessage reports the relay's server and its models (${lists.length} cases)`, !badLists.length,
     badLists.map(([label, m]) => `${label}: ${show(m)}`).join("; "));
+}
+
+// ── How long one action may hold, and how much it may type ────────────────────
+// hold_key with a duration of 600 held a key down for ten minutes that Stop could
+// not end, and type_text took text of any length. The backend now bounds both, and
+// the gamepad's holds (tools/check_backend.py checks that side). Here: the page
+// states the backend's numbers in the tool schemas and in JSON-action mode's tool
+// list, and every hold or type the model asks for tells it what was really done.
+console.log("input limits");
+{
+  const limits = await import(pathToFileURL(path.join(ROOT, "src", "agent", "inputLimits.js")).href);
+  const pyNumber = name => {
+    const m = py.match(new RegExp(`^${name}\\s*=\\s*([\\d.]+)\\s*$`, "m"));
+    return m ? Number(m[1]) : null;
+  };
+  const numbers = ["KEY_HOLD_MAX_S", "GAMEPAD_HOLD_MAX_S", "GAMEPAD_BUTTON_MIN_S", "TYPE_TEXT_MAX_CHARS"]
+    .map(n => [n, pyNumber(n), limits[n]]);
+  check("the page's hold and typing limits are the backend's", numbers.every(([, a, b]) => typeof a === "number" && a === b), show(numbers));
+  const { KEY_HOLD_MAX_S, GAMEPAD_HOLD_MAX_S, GAMEPAD_BUTTON_MIN_S, TYPE_TEXT_MAX_CHARS } = limits;
+
+  if (agent) {
+    const tool = name => [...agent.__TOOLS, ...agent.__GAMEPAD_TOOLS].find(t => t.name === name);
+    const prop = (name, field) => tool(name)?.input_schema?.properties?.[field];
+    const schemas = [
+      ["hold_key", "duration", { minimum: 0, maximum: KEY_HOLD_MAX_S }, `at most ${KEY_HOLD_MAX_S} per call`],
+      ["type_text", "text", { maxLength: TYPE_TEXT_MAX_CHARS }, `at most ${TYPE_TEXT_MAX_CHARS} characters per call`],
+      ["gamepad_button", "hold", { minimum: GAMEPAD_BUTTON_MIN_S, maximum: GAMEPAD_HOLD_MAX_S }, `at most ${GAMEPAD_HOLD_MAX_S}`],
+      ["gamepad_stick", "duration", { minimum: 0, maximum: GAMEPAD_HOLD_MAX_S }, `at most ${GAMEPAD_HOLD_MAX_S}`],
+      ["gamepad_trigger", "duration", { minimum: 0, maximum: GAMEPAD_HOLD_MAX_S }, `at most ${GAMEPAD_HOLD_MAX_S}`],
+    ].filter(([name, field, bounds, words]) =>
+      !Object.entries(bounds).every(([k, v]) => prop(name, field)?.[k] === v) ||
+      !`${tool(name)?.description} ${prop(name, field)?.description ?? ""}`.includes(words))
+      .map(([name, field]) => `${name}.${field}: ${show(prop(name, field))}; ${show(tool(name)?.description)}`);
+    check("the hold_key, type_text and gamepad schemas state the backend's limits, in the schema and in words", !schemas.length,
+      schemas.join("; "));
+    // The key goes up when each call ends, and the next call comes a model turn
+    // later: "call again to keep holding" had the model plan on an unbroken hold.
+    const holdWords = tool("hold_key")?.description ?? "";
+    check("hold_key says the key is let go when each call ends, not that another call keeps holding",
+      holdWords.includes("released when the call ends") && !/call again|keep holding|repeat/i.test(holdWords), show(holdWords));
+
+    const reference = agent.__buildActionReference([...agent.__TOOLS, ...agent.__GAMEPAD_TOOLS]).split("\n");
+    const listed = [
+      ["hold_key", `"duration" (0 to ${KEY_HOLD_MAX_S})`],
+      ["type_text", `"text" (max ${TYPE_TEXT_MAX_CHARS} chars)`],
+      ["gamepad_button", `"hold"? (${GAMEPAD_BUTTON_MIN_S} to ${GAMEPAD_HOLD_MAX_S})`],
+      ["gamepad_stick", `"duration"? (0 to ${GAMEPAD_HOLD_MAX_S})`],
+    ].map(([name, want]) => [want, reference.find(l => l.startsWith(`- ${name} `)) ?? ""]).filter(([want, line]) => !line.includes(want));
+    check("JSON-action mode lists the limits too", !listed.length, show(listed));
+  }
+
+  const hold = (requested, applied, extra = {}) => ({
+    ok: true, method: "sendinput", held: applied, halted: false,
+    limit: { requested, applied, min: 0, max: KEY_HOLD_MAX_S, unit: "s", clamped: requested !== applied }, ...extra,
+  });
+  const typed = (requested, applied) => ({
+    ok: true, limit: { requested, applied, min: 0, max: TYPE_TEXT_MAX_CHARS, unit: "characters", clamped: requested !== applied },
+  });
+  const results = [
+    ["a 600 s hold cut to 5 s", limits.holdKeyResult(hold(600, 5), { duration: 600 }),
+      t => t.startsWith("Key held for 5s.") && t.includes("Asked for 600s") && t.includes("at most 5s per call")
+        && t.includes("let go when the call ends") && !/repeat|call again|keep holding/i.test(t)],
+    ["a hold within the limit", limits.holdKeyResult(hold(0.25, 0.25), { duration: 0.25 }), t => t === "Key held for 0.25s."],
+    ["a hold below zero", limits.holdKeyResult(hold(-3, 0), { duration: -3 }),
+      t => t.startsWith("Key held for 0s.") && t.includes("at least 0s")],
+    ["an infinite hold (not from this page)", limits.holdKeyResult(hold("inf", 5), {}), t => t.includes("Asked for inf,") && t.includes("at most 5s")],
+    ["a hold halted part-way", limits.holdKeyResult(hold(600, 5, { held: 0.3, halted: true }), { duration: 600 }),
+      t => t.startsWith("Key held for 0.3s.") && t.includes("halted after 0.3s") && !t.includes("repeat")],
+    ["a backend from before the limits", limits.holdKeyResult({ ok: true, method: "sendinput" }, { duration: 2 }), t => t === "Key held for 2s."],
+    ["a failed hold", limits.holdKeyResult({ ok: false, error: "no key to hold in ''", limit: hold(1, 1).limit }, {}),
+      t => t === "Error: no key to hold in ''"],
+    ["a hold the backend refused", limits.holdKeyResult({ detail: [{ loc: ["body", "duration"], msg: "Field required" }] }, {}),
+      t => t === "Error: duration: Field required"],
+    ["1000 characters cut to 300", limits.typeTextResult(typed(1000, 300)),
+      t => t.startsWith("Text typed.") && t.includes("first 300 of 1000 characters") && t.includes("send the rest")],
+    ["300 characters", limits.typeTextResult(typed(300, 300)), t => t === "Text typed."],
+    ["typed, by a backend from before the limits", limits.typeTextResult({ ok: true }), t => t === "Text typed."],
+    ["a gamepad press too short to see", limits.withLimitNotes("Pressed a.", { ok: true, limit: { requested: 0, applied: 0.02, min: 0.02, max: 5, unit: "s", clamped: true } }),
+      t => t.startsWith("Pressed a. ") && t.includes("at least 0.02s")],
+    ["no reply at all", limits.limitNote(undefined) + limits.haltNote(null), t => t === ""],
+    // The backend sends `limit` with its errors too. A call that failed typed or
+    // held nothing, so no note may say it did so in part.
+    ["a failed type that carries a cut limit", limits.limitNote({ ok: false, error: "no clipboard", limit: typed(1000, 300).limit }),
+      t => t === ""],
+    ["a failed hold that carries a cut limit and a halt",
+      limits.replyNote({ ...hold(600, 5, { held: 0.3, halted: true }), ok: false, error: "SendInput failed" })
+        + limits.withLimitNotes("", { ...hold(600, 5), ok: false }), t => t === ""],
+    ["a sequence step both halted and cut", limits.replyNote(hold(600, 5, { held: 0.3, halted: true })),
+      t => t.includes("halted after 0.3s") && !t.includes("per call")],
+  ].filter(([, text, ok]) => !ok(text)).map(([label, text]) => `${label}: ${show(text)}`);
+  check("tool results say what the backend held or typed, not what was asked", !results.length, results.join("; "));
+
+  // Every hold or type in GameAgent.jsx, the steps of execute_sequence included,
+  // has its result go through those, up to the next tool's handler.
+  const calls = [...code.matchAll(/backend\("\/(keyboard\/hold|keyboard\/type|gamepad\/(?:button|stick|trigger))"/g)];
+  const unreported = calls.map(m => {
+    const rest = code.slice(m.index);
+    const next = rest.search(/\btoolName === /);
+    const handler = next < 0 ? rest : rest.slice(0, next);
+    return /\b(?:limitNote|replyNote|withLimitNotes|holdKeyResult|typeTextResult)\(/.test(handler) ? null : `${m[1]} at: ${context(m.index)}`;
+  }).filter(Boolean);
+  check(`every hold and type the model asks for tells it what was cut (${calls.length} calls)`, calls.length >= 7 && !unreported.length,
+    unreported.length ? unreported.join("  |  ") : `found ${calls.length}, expected at least 7 — has the tool code changed shape?`);
+  // execute_sequence answers with one line per step, changed or not.
+  // replyNote, not limitNote: a step that was halted must not be told to hold longer.
+  const noted = code.match(/const (\w+) = replyNote\(r\);\s*const (\w+) = \1 \?/);
+  const stepLines = [...code.matchAll(/summary\.push\(`\$\{executed\}: \$\{t\}[^`]*?(no change|changed)(\$\{\w+\})?`\)/g)];
+  check("execute_sequence puts what was cut on each step's line",
+    !!noted && stepLines.length === 2 && stepLines.every(m => m[2] === `\${${noted[2]}}`),
+    show({ note: noted?.[0] ?? null, lines: stepLines.map(m => m[0]) }));
 }
 
 // ── Failed model requests ─────────────────────────────────────────────────────

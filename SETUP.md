@@ -346,6 +346,40 @@ alone, and carries on by itself once the model answers again.
   the page logs the same, and **▶ Start** refuses with `Not started: the backend's relay refuses model requests ...`.
   Put the right address back (or delete the file) and restart.
 
+### ✅ Test 11 — A key hold ends after 5 seconds, and typing after 300 characters
+The backend holds a key or gamepad button for at most 5 seconds per call, puts a
+stick or trigger given a duration back to rest after at most 5 seconds, and types
+at most 300 characters per call. (A stick or trigger sent with duration 0 stays
+where it was put until the next call, as the tool tells the model.) It used to
+hold a key for as long as the model asked (600 s held it for ten minutes), with no
+way to stop it.
+- After the pull, restart `start.bat`: a backend left running keeps the old code
+  and holds keys for as long as asked.
+- Open Notepad next to the agent tab (`http://localhost:5173`). In the agent tab
+  press F12, and in its **Console** paste this and press Enter. It holds Shift down
+  for 600 seconds, starting 5 seconds later:
+  ```js
+  setTimeout(() => fetch("/api/keyboard/hold", {method: "POST", headers: {"Content-Type": "application/json", "X-Agent-Token": window.__AGENT_TOKEN__}, body: JSON.stringify({key: "shift", duration: 600})}).then(r => r.json()).then(r => console.log(JSON.stringify(r))), 5000)
+  ```
+  Click into Notepad straight away and keep typing letters for about 15 seconds.
+  **Pass:** after about 5 seconds the letters come out as CAPITALS for about 5
+  seconds, then small again, and stay small (Shift was let go). Back in the
+  Console, the reply shows `"held":5,"halted":false` and
+  `"limit":{"requested":600,"applied":5,"min":0,"max":5,"unit":"s","clamped":true}`.
+  If the capitals never stop, press and release both Shift keys, and see
+  Troubleshooting (the backend was not restarted).
+- Same again with typing (clear Notepad first):
+  ```js
+  setTimeout(() => fetch("/api/keyboard/type", {method: "POST", headers: {"Content-Type": "application/json", "X-Agent-Token": window.__AGENT_TOKEN__}, body: JSON.stringify({text: "b".repeat(1000), interval: 0})}).then(r => r.json()).then(r => console.log(JSON.stringify(r))), 5000)
+  ```
+  **Pass:** Notepad gets exactly 300 `b`s (Ctrl+End: the status bar says column
+  301), and the Console prints `"limit":{"requested":1000,"applied":300,...,"clamped":true}`.
+- Optional, with a model: play a real-time game with **🖥️ Native · KB/Mouse** (or a
+  browser game that needs held keys). When the model asks for a longer hold, the
+  log shows `⚠ hold_key: Asked for 8s, but a hold lasts at most 5s per call and is let go when the call ends, so a longer hold is several calls with a gap between them, not one unbroken hold.`
+  and play carries on. Most models keep to 5 s once the tool says so, so this
+  line may not appear at all.
+
 ---
 
 ## 5. What to watch in the log
@@ -378,6 +412,8 @@ alone, and carries on by itself once the model answers again.
 | `Ollama: <model> on http://..., through the backend relay.` | At Start: where this session's model requests go. `called directly from the browser` when the relay is off |
 | `💾 Saved http://... as the Ollama server (agent-config.json). Restart start.bat to use it; ...` | The address is saved for the backend's next start; the running backend still relays to the old one |
 | `✓ Ollama at http://... answers, with N models: ...` | **↻ Check server**: the backend reached its Ollama server, and these models are pulled there |
+| `⚠ hold_key: Asked for 8s, but a hold lasts at most 5s per call and is let go when the call ends, so a longer hold is several calls with a gap between them, not one unbroken hold.` (also `gamepad_button`, `gamepad_stick`, `gamepad_trigger`, and `seq.` steps) | The model asked for a longer hold than the backend allows. It held for 5 s and then let go, and the model's tool result says so. `... lasts at least 0.02s` is a gamepad press too short for a game to see, made that long |
+| `⚠ type_text: Only the first 300 of N characters were typed: ...` | The model sent more than 300 characters in one call. The first 300 were typed, and the model is told to send the rest in another call |
 
 ---
 
@@ -417,6 +453,7 @@ alone, and carries on by itself once the model answers again.
 | `Memory not saved — outcome: Input should be ...` | The page sent an outcome name the backend does not accept, which is a bug. Run `npm run check` (it compares the two lists) and report the log line |
 | `Memory not saved — no reply from the backend (HTTP 500, empty); check that the backend window is running. game-agent-memory.json was not updated.` | The backend was down when the session ended (the page and Vite were still up), so that session is not in memory. Re-run `start.bat`; later sessions save normally |
 | `Memory not saved — Failed to fetch` | Vite itself was gone (the `npm run dev` window closed) while the page stayed open. Re-run `start.bat` and reload the page |
+| A key stays held far longer than 5 s, or typing goes on past 300 characters, and no `⚠ hold_key` / `⚠ type_text` line appears | The backend window still runs code from before the pull. Close it and the `start.bat` window, and run `start.bat` again |
 
 ---
 
@@ -436,6 +473,13 @@ alone, and carries on by itself once the model answers again.
   this launch's token (see **Only the agent page can use the backend** under
   Launch), so a site open in another tab cannot drive the mouse or read the
   screen. Keep `.agent-token` private.
+- **Held keys and typing:** one call holds a key or gamepad button for at most 5
+  seconds, puts a stick or trigger given a duration back to rest after at most 5
+  seconds (with duration 0 it stays where it was put until the next call), and
+  types at most 300 characters. Whatever a hold pressed is let go even when the
+  call fails part-way, or while the mouse sits in a screen corner (FAILSAFE). A
+  model's mistake cannot hold a key down for minutes. (■ Stop still does not cut
+  a hold already under way short; it ends within those 5 seconds.)
 - **Other machines on your network:** the Ollama relay sends requests only to the
   Ollama server the backend started with (see **Ollama on another PC**), never to
   an address a request names, and does not follow redirects.

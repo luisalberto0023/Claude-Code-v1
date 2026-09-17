@@ -13,6 +13,7 @@ import sys
 import time
 import platform
 import json
+import math
 import re
 import datetime
 import hmac
@@ -546,6 +547,140 @@ def mouse_scroll(b: ScrollBody):
         return {"ok": False, "error": str(e)}
 
 
+# ── How long one request may hold, and how much it may type ────────────────────
+# A key hold used to sleep for whatever duration it was sent: hold_key with 600
+# held a key down for ten minutes, on a worker thread nothing could interrupt
+# (■ Stop only stops the page asking for more), and typed text had no limit at
+# all. Held keys drive most real-time games, so rather than take hold_key away
+# from games the agent has never seen, every hold is bounded here:
+#   - a key is held at most KEY_HOLD_MAX_S per call, and a gamepad button, stick
+#     or trigger at most GAMEPAD_HOLD_MAX_S (the limit those routes always had),
+#   - a hold waits in steps of HOLD_STEP_S and asks _input_halted() before each,
+#     so input that has been told to stop is let go within a step (and a hold
+#     asked for while it is halted presses nothing),
+#   - whatever goes down comes back up, even when a step raises, and a pyautogui
+#     key-up goes through even while the mouse is in a screen corner,
+#   - at most TYPE_TEXT_MAX_CHARS characters are typed per call, TYPE_INTERVAL_MAX_S
+#     apart at most, so a call to type text ends within a minute.
+# A value outside its bounds is brought inside them, not refused, and the reply's
+# "limit" says what was asked and what was done, so the page can tell the model it
+# was cut. The page's tool schemas state the same numbers (src/agent/inputLimits.js;
+# tools/check-agent.mjs fails if they differ).
+KEY_HOLD_MAX_S = 5.0
+GAMEPAD_HOLD_MAX_S = 5.0
+# A button pressed and let go in the same instant is missed by games that read
+# the pad once a frame, so a press lasts at least this long.
+GAMEPAD_BUTTON_MIN_S = 0.02
+HOLD_STEP_S = 0.1
+TYPE_TEXT_MAX_CHARS = 300
+TYPE_INTERVAL_MAX_S = 0.2
+
+
+def _input_halted() -> bool:
+    """Whether injected input has been told to stop. Nothing tells it to yet, so
+    this is always False; a kill switch will make it True, and every hold checks
+    it before it presses anything and before each step."""
+    return False
+
+
+def _wait(seconds: float) -> None:
+    """The one sleep a hold waits with (tools/check_backend.py stands in for it,
+    so a check of a five-second hold takes no time)."""
+    time.sleep(seconds)
+
+
+def _clock() -> float:
+    """The clock a hold keeps time by (tools/check_backend.py stands in a fake one
+    that its _wait moves on)."""
+    return time.monotonic()
+
+
+def _within(value: float, low: float, high: float) -> float:
+    """`value` brought inside low..high. JSON has no NaN or Infinity, but Python's
+    parser reads both, so they can arrive. Infinity is brought inside like any
+    other number. A NaN compares false with everything, so it would pass min()
+    and max() unchanged and fail the sleep with a key already down; it counts as
+    `low`."""
+    if math.isnan(value):
+        return low
+    return max(low, min(high, value))
+
+
+def _limit(requested, applied, low, high, unit: str) -> dict:
+    """What a reply says about a bounded value: what was asked, what was done,
+    the bounds, and whether the two differ.
+
+    A value is not refused for being out of bounds, NaN and Infinity included:
+    FastAPI's refusal repeats the value it refused, and a reply cannot hold NaN
+    or Infinity, so it would fail as an HTTP 500. For the same reason they are
+    reported here as text ("nan", "inf")."""
+    return {"requested": requested if math.isfinite(requested) else str(requested),
+            "applied": applied, "min": low, "max": high, "unit": unit,
+            "clamped": applied != requested}
+
+
+def _hold(seconds: float) -> Tuple[float, bool]:
+    """Wait `seconds` in steps of at most HOLD_STEP_S, asking _input_halted()
+    before each one. Returns the seconds held and whether a halt cut it short.
+
+    It waits for a deadline on the clock rather than counting steps: every sleep
+    overshoots a little (up to a timer tick, about 15 ms, on Windows before Python
+    3.11), and fifty steps' overshoot added up would stretch a 5 s hold by most of
+    a second. A hold that reaches its deadline reports `seconds`; one that is
+    halted reports the time it had held, to the millisecond."""
+    start = _clock()
+    while True:
+        now = _clock()
+        left = start + seconds - now
+        if left <= 1e-9:
+            return seconds, False
+        if _input_halted():
+            return round(now - start, 3), True
+        _wait(min(HOLD_STEP_S, left))
+
+
+def _pyautogui_key_up(key: str) -> None:
+    """pyautogui's key-up, for letting go of a key a hold pressed. pyautogui
+    refuses every call while the mouse is in a screen corner (its fail-safe, the
+    emergency stop in SETUP.md), a key-up included, which would leave the key down
+    for good at the moment the operator wants input to stop. A key-up refused that
+    way goes straight to pyautogui's platform layer, which does not check; new
+    presses are still refused."""
+    try:
+        pyautogui.keyUp(key)
+    except pyautogui.FailSafeException:
+        pyautogui.platformModule._keyUp(key)
+
+
+def _hold_down(press, release, keys: list, seconds: float) -> Tuple[float, bool]:
+    """Press `keys` in order, hold them for `seconds` (see _hold), and release them
+    in reverse order. Every key it tried to press is released, whatever happens in
+    between: a press or a step that raises, or a halt. That includes a press that
+    raised part-way, which may have gone down (a gamepad button set but its report
+    not sent); letting go of a key that is up does no harm, and a key left down
+    would stay down. A release that raises does not stop the others; the first
+    such error is raised once all were tried.
+
+    While input is halted it presses nothing, and returns (0.0, True)."""
+    if _input_halted():
+        return 0.0, True
+    pressed = []
+    try:
+        for k in keys:
+            pressed.append(k)
+            press(k)
+        return _hold(seconds)
+    finally:
+        failed = None
+        for k in reversed(pressed):
+            try:
+                release(k)
+            except Exception as e:
+                failed = failed or e
+        if failed is not None:
+            raise failed
+
+
 # ── Keyboard ───────────────────────────────────────────────────────────────────
 
 class KeyBody(BaseModel):
@@ -631,38 +766,39 @@ def key_press(b: KeyPressBody):
 
 @app.post("/keyboard/hold")
 def key_hold(b: HoldBody):
+    duration = _within(b.duration, 0.0, KEY_HOLD_MAX_S)
+    limit = _limit(b.duration, duration, 0.0, KEY_HOLD_MAX_S, "s")
+    keys = _parse_key(b.key)
+    if not keys:
+        return {"ok": False, "error": f"no key to hold in {b.key!r}", "limit": limit}
     try:
-        keys = _parse_key(b.key)
         scans = [_scan_for(k) for k in keys]
-        if scans and all(s is not None for s in scans):
-            for s in scans:
-                _send_scan(s)
-            time.sleep(b.duration)
-            for s in reversed(scans):
-                _send_scan(s, keyup=True)
-            return {"ok": True, "method": "sendinput"}
-        for k in keys:
-            pyautogui.keyDown(k)
-        time.sleep(b.duration)
-        for k in reversed(keys):
-            pyautogui.keyUp(k)
-        return {"ok": True, "method": "pyautogui"}
+        if all(s is not None for s in scans):
+            method = "sendinput"
+            held, halted = _hold_down(_send_scan, lambda s: _send_scan(s, keyup=True), scans, duration)
+        else:
+            method = "pyautogui"
+            held, halted = _hold_down(pyautogui.keyDown, _pyautogui_key_up, keys, duration)
+        return {"ok": True, "method": method, "held": held, "halted": halted, "limit": limit}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "limit": limit}
 
 
 @app.post("/keyboard/type")
 def key_type(b: TypeBody):
+    text = b.text[:TYPE_TEXT_MAX_CHARS]
+    limit = _limit(len(b.text), len(text), 0, TYPE_TEXT_MAX_CHARS, "characters")
+    interval = _within(b.interval, 0.0, TYPE_INTERVAL_MAX_S)
     try:
-        if all(ord(c) < 128 for c in b.text):
-            pyautogui.typewrite(b.text, interval=b.interval)
+        if all(ord(c) < 128 for c in text):
+            pyautogui.typewrite(text, interval=interval)
         else:
             prev = ""
             try:
                 prev = pyperclip.paste()
             except Exception:
                 pass
-            pyperclip.copy(b.text)
+            pyperclip.copy(text)
             pyautogui.hotkey("ctrl", "v")
             time.sleep(0.1)
             if prev:
@@ -670,9 +806,9 @@ def key_type(b: TypeBody):
                     pyperclip.copy(prev)
                 except Exception:
                     pass
-        return {"ok": True}
+        return {"ok": True, "limit": limit}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "limit": limit}
 
 
 # ── Screen info ────────────────────────────────────────────────────────────────
@@ -1411,17 +1547,43 @@ def gamepad_button(b: GamepadButtonBody):
     key = b.button.strip().lower()
     if key not in _BTN_MAP:
         return {"ok": False, "error": f"unknown button '{b.button}'"}
+    hold = _within(b.hold, GAMEPAD_BUTTON_MIN_S, GAMEPAD_HOLD_MAX_S)
+    limit = _limit(b.hold, hold, GAMEPAD_BUTTON_MIN_S, GAMEPAD_HOLD_MAX_S, "s")
     try:
         gp = _get_gamepad()
         btn = _xusb(key)
-        gp.press_button(button=btn)
-        gp.update()
-        time.sleep(max(0.02, min(b.hold, 5.0)))
-        gp.release_button(button=btn)
-        gp.update()
-        return {"ok": True}
+
+        def press(_):
+            gp.press_button(button=btn)
+            gp.update()
+
+        def release(_):
+            gp.release_button(button=btn)
+            gp.update()
+
+        held, halted = _hold_down(press, release, [key], hold)
+        return {"ok": True, "held": held, "halted": halted, "limit": limit}
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": str(e), "limit": limit}
+
+
+def _stay_or_hold(set_value, value, rest, duration: float) -> dict:
+    """Move a stick or trigger to `value` with `set_value`. With a duration of 0
+    (or less) it stays there until the next call; with a positive one it is held
+    for up to GAMEPAD_HOLD_MAX_S (see _hold) and then set back to `rest`, however
+    the hold ends. While input is halted it is not moved at all."""
+    applied = _within(duration, 0.0, GAMEPAD_HOLD_MAX_S)
+    limit = _limit(duration, applied, 0.0, GAMEPAD_HOLD_MAX_S, "s")
+    if _input_halted():
+        return {"held": 0.0, "halted": True, "limit": limit}
+    set_value(value)
+    if applied <= 0:
+        return {"held": 0.0, "halted": False, "limit": limit}
+    try:
+        held, halted = _hold(applied)
+    finally:
+        set_value(rest)
+    return {"held": held, "halted": halted, "limit": limit}
 
 
 @app.post("/gamepad/stick")
@@ -1433,13 +1595,12 @@ def gamepad_stick(b: GamepadStickBody):
         x = max(-1.0, min(1.0, b.x))
         y = max(-1.0, min(1.0, b.y))
         setter = gp.left_joystick_float if b.stick == "left" else gp.right_joystick_float
-        setter(x_value_float=x, y_value_float=y)
-        gp.update()
-        if b.duration and b.duration > 0:
-            time.sleep(min(b.duration, 5.0))
-            setter(x_value_float=0.0, y_value_float=0.0)
+
+        def set_value(v):
+            setter(x_value_float=v[0], y_value_float=v[1])
             gp.update()
-        return {"ok": True}
+
+        return {"ok": True, **_stay_or_hold(set_value, (x, y), (0.0, 0.0), b.duration)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
@@ -1452,13 +1613,12 @@ def gamepad_trigger(b: GamepadTriggerBody):
         gp = _get_gamepad()
         val = max(0.0, min(1.0, b.value))
         setter = gp.left_trigger_float if b.trigger == "left" else gp.right_trigger_float
-        setter(value_float=val)
-        gp.update()
-        if b.duration and b.duration > 0:
-            time.sleep(min(b.duration, 5.0))
-            setter(value_float=0.0)
+
+        def set_value(v):
+            setter(value_float=v)
             gp.update()
-        return {"ok": True}
+
+        return {"ok": True, **_stay_or_hold(set_value, val, 0.0, b.duration)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 

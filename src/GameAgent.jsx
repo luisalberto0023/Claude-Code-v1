@@ -16,6 +16,10 @@ import {
 import {
   OLLAMA_DEFAULT_BASE, tidyOllamaBase, shownOllamaBase, ollamaServerNote, ollamaStartProblem, ollamaSavedMessage, ollamaModelsMessage,
 } from "./agent/ollamaServer.js";
+import {
+  KEY_HOLD_MAX_S, GAMEPAD_HOLD_MAX_S, GAMEPAD_BUTTON_MIN_S, TYPE_TEXT_MAX_CHARS,
+  limitNote, replyNote, withLimitNotes, holdKeyResult, typeTextResult,
+} from "./agent/inputLimits.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
@@ -1013,24 +1017,26 @@ const TOOLS = [
       required: ["key"],
     },
   },
+  // The limits the backend holds these to (src/agent/inputLimits.js), stated here
+  // so the model can keep inside them.
   {
     name: "hold_key",
-    description: "Hold a key down for a duration in seconds.",
+    description: `Hold a key down for a duration in seconds, at most ${KEY_HOLD_MAX_S} per call (a longer hold is cut to ${KEY_HOLD_MAX_S}). The key is released when the call ends, so a longer hold is several calls with a gap between them, not one unbroken hold.`,
     input_schema: {
       type: "object",
       properties: {
         key: { type: "string" },
-        duration: { type: "number", description: "Seconds to hold" },
+        duration: { type: "number", minimum: 0, maximum: KEY_HOLD_MAX_S, description: `Seconds to hold, 0 to ${KEY_HOLD_MAX_S}` },
       },
       required: ["key", "duration"],
     },
   },
   {
     name: "type_text",
-    description: "Type text as keyboard input.",
+    description: `Type text as keyboard input, at most ${TYPE_TEXT_MAX_CHARS} characters per call (anything longer is cut; send the rest in another call).`,
     input_schema: {
       type: "object",
-      properties: { text: { type: "string" } },
+      properties: { text: { type: "string", maxLength: TYPE_TEXT_MAX_CHARS } },
       required: ["text"],
     },
   },
@@ -1143,34 +1149,43 @@ const GAMEPAD_TOOLS = [
       type: "object",
       properties: {
         button: { type: "string", enum: GAMEPAD_BUTTONS },
-        hold: { type: "number", description: "Seconds to hold the button (default 0.08; use larger for charged actions)" },
+        hold: {
+          type: "number", minimum: GAMEPAD_BUTTON_MIN_S, maximum: GAMEPAD_HOLD_MAX_S,
+          description: `Seconds to hold the button (default 0.08; use larger for charged actions, at most ${GAMEPAD_HOLD_MAX_S})`,
+        },
       },
       required: ["button"],
     },
   },
   {
     name: "gamepad_stick",
-    description: "Move an analog stick. x,y range -1..1. y: +1 = up/forward, -1 = down/back. x: +1 = right, -1 = left. duration = seconds to hold before recentering (0 = leave it held until changed).",
+    description: `Move an analog stick. x,y range -1..1. y: +1 = up/forward, -1 = down/back. x: +1 = right, -1 = left. duration = seconds to hold before recentering, at most ${GAMEPAD_HOLD_MAX_S} (0 = leave it held until changed).`,
     input_schema: {
       type: "object",
       properties: {
         stick: { type: "string", enum: ["left", "right"] },
-        x: { type: "number", description: "-1..1 (left/right)" },
-        y: { type: "number", description: "-1..1 (down/up)" },
-        duration: { type: "number", description: "Seconds to hold before recentering (0 = stay)" },
+        x: { type: "number", minimum: -1, maximum: 1, description: "-1..1 (left/right)" },
+        y: { type: "number", minimum: -1, maximum: 1, description: "-1..1 (down/up)" },
+        duration: {
+          type: "number", minimum: 0, maximum: GAMEPAD_HOLD_MAX_S,
+          description: `Seconds to hold before recentering, at most ${GAMEPAD_HOLD_MAX_S} (0 = stay)`,
+        },
       },
       required: ["stick", "x", "y"],
     },
   },
   {
     name: "gamepad_trigger",
-    description: "Squeeze an analog trigger (e.g. accelerate / shoot). value 0..1. duration = seconds to hold before releasing (0 = stay held).",
+    description: `Squeeze an analog trigger (e.g. accelerate / shoot). value 0..1. duration = seconds to hold before releasing, at most ${GAMEPAD_HOLD_MAX_S} (0 = stay held).`,
     input_schema: {
       type: "object",
       properties: {
         trigger: { type: "string", enum: ["left", "right"] },
-        value: { type: "number", description: "0..1 squeeze amount" },
-        duration: { type: "number", description: "Seconds to hold before releasing (0 = stay)" },
+        value: { type: "number", minimum: 0, maximum: 1, description: "0..1 squeeze amount" },
+        duration: {
+          type: "number", minimum: 0, maximum: GAMEPAD_HOLD_MAX_S,
+          description: `Seconds to hold before releasing, at most ${GAMEPAD_HOLD_MAX_S} (0 = stay)`,
+        },
       },
       required: ["trigger", "value"],
     },
@@ -1234,7 +1249,20 @@ function controlSchemeDescription(scheme, pauseToThink, gridEnabled = false) {
 // values it reports how a game ended in its own words ("loss", "game over"),
 // which count as nothing. Long lists (the gamepad's 19 button names) are left
 // out to keep a small model's prompt small; their tools' descriptions name them.
+// A number's bounds and a text's length limit are spelled out too, as in
+// `"duration" (0 to 5)`: the backend cuts a longer hold or text short, and this
+// line is all a small model sees of the limit.
 const INLINE_ENUM_MAX = 6;
+
+function schemaBounds(prop) {
+  if (typeof prop?.maxLength === "number") return `max ${prop.maxLength} chars`;
+  const low = typeof prop?.minimum === "number" ? prop.minimum : null;
+  const high = typeof prop?.maximum === "number" ? prop.maximum : null;
+  if (low !== null && high !== null) return `${low} to ${high}`;
+  if (high !== null) return `max ${high}`;
+  if (low !== null) return `min ${low}`;
+  return "";
+}
 
 function buildActionReference(tools) {
   return tools.map(t => {
@@ -1244,9 +1272,11 @@ function buildActionReference(tools) {
     const arg = k => {
       const name = `"${k}"${req.includes(k) ? "" : "?"}`;
       const values = props[k]?.enum;
-      return Array.isArray(values) && values.length && values.length <= INLINE_ENUM_MAX
-        ? `${name}: ${values.map(v => JSON.stringify(v)).join("|")}`
-        : name;
+      if (Array.isArray(values) && values.length && values.length <= INLINE_ENUM_MAX) {
+        return `${name}: ${values.map(v => JSON.stringify(v)).join("|")}`;
+      }
+      const bounds = schemaBounds(props[k]);
+      return bounds ? `${name} (${bounds})` : name;
     };
     const args = keys.length ? `{ ${keys.map(arg).join(", ")} }` : "{ }";
     return `- ${t.name} ${args}`;
@@ -1984,6 +2014,13 @@ export default function GameAgent() {
       content: [{ type: "text", text }],
     });
 
+    // The backend holds and types only so much per call. When it cut what the
+    // model asked for, the tool result tells the model, and this tells the operator.
+    const logLimit = (name, reply) => {
+      const note = limitNote(reply);
+      if (note) addLog(`⚠ ${name}: ${note}`, "warn");
+    };
+
     // ── Screen observation ───────────────────────────────────────────────────
     if (toolName === "observe_screen" || toolName === "read_screen_text") {
       const frame = await grabFrame();
@@ -2109,8 +2146,9 @@ export default function GameAgent() {
       const res = await backend("/keyboard/hold", { key: toolInput.key, duration: toolInput.duration });
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
+      logLimit(toolName, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
-      return toolResult(res.ok ? `Key held for ${toolInput.duration}s.` : `Error: ${res.error}`);
+      return toolResult(holdKeyResult(res, toolInput));
     }
 
     if (toolName === "type_text") {
@@ -2118,8 +2156,9 @@ export default function GameAgent() {
       const res = await backend("/keyboard/type", { text: toolInput.text, interval: timing.typingInterval });
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
+      logLimit(toolName, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
-      return toolResult(res.ok ? "Text typed." : `Error: ${res.error}`);
+      return toolResult(typeTextResult(res));
     }
 
     // ── Gamepad actions ──────────────────────────────────────────────────────
@@ -2129,9 +2168,10 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
+      logLimit(toolName, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
+        ? withLimitNotes(`Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`, res)
         : `Error: ${res.error}${res.available === false ? " (install vgamepad + ViGEmBus on Windows)" : ""}`);
     }
 
@@ -2145,9 +2185,10 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
+      logLimit(toolName, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Stick ${toolInput.stick} → (${toolInput.x}, ${toolInput.y}). Screen ${confirm.changed ? "changed" : "unchanged"}.`
+        ? withLimitNotes(`Stick ${toolInput.stick} → (${toolInput.x}, ${toolInput.y}). Screen ${confirm.changed ? "changed" : "unchanged"}.`, res)
         : `Error: ${res.error}`);
     }
 
@@ -2161,9 +2202,10 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
+      logLimit(toolName, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok
-        ? `Trigger ${toolInput.trigger} → ${toolInput.value}. Screen ${confirm.changed ? "changed" : "unchanged"}.`
+        ? withLimitNotes(`Trigger ${toolInput.trigger} → ${toolInput.value}. Screen ${confirm.changed ? "changed" : "unchanged"}.`, res)
         : `Error: ${res.error}`);
     }
 
@@ -2227,17 +2269,22 @@ export default function GameAgent() {
         executed++;
         lastConfirmInfo = confirm;
         addAction(`seq.${t}`, inp, { ok: r?.ok ?? false, ...confirm });
+        logLimit(`seq.${t}`, r);
+        // What the backend cut short (typed text, a button hold, or input halted)
+        // goes on the step's line, as it goes in a single tool's result.
+        const cut = replyNote(r);
+        const cutNote = cut ? ` (${cut})` : "";
 
         if (!confirm.changed) {
           noChangeStreak++;
-          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — no change`);
+          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — no change${cutNote}`);
           if (noChangeStreak >= 2) {
             summary.push("ABORT: 2 consecutive no-change actions");
             break;
           }
         } else {
           noChangeStreak = 0;
-          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — changed`);
+          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — changed${cutNote}`);
         }
 
         if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));

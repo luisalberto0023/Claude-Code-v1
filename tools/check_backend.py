@@ -40,7 +40,8 @@ How it stays safe, in the order it happens:
      so on Windows either one failing to import fails the run: the backend
      could not start there. Only elsewhere (a headless Linux session) does a
      stand-in module take the place of one that will not import.
-  5. agent_server is imported, its SendInput scan-code sender is swapped, and
+  5. agent_server is imported, its SendInput scan-code sender and the sleep and
+     clock its holds keep time with are swapped, and
      its log directory, memory file, token file and config file are pointed at
      a temp directory so the real game-agent-memory.json, logs/, .agent-token
      and agent-config.json are never written. It is given a test token
@@ -75,8 +76,9 @@ one argument, a Harness, with:
                headers={"X-Agent-Token": None}.
     h.inputs   every stubbed call made since this test started, in order, as
                Call(name, args, kwargs). Names look like "pyautogui.click",
-               "sendinput.scan", "vgamepad.press_button", "dxcam.grab", and,
-               from the guards, "user32.SendInput" or "import.keyboard".
+               "sendinput.scan", "vgamepad.press_button", "dxcam.grab", "wait"
+               (a step of a hold), and, from the guards, "user32.SendInput" or
+               "import.keyboard".
                h.inputs.named("pyautogui.click") filters.
     h.server   the imported agent_server module, for reading or patching state.
     h.tmp      a temp directory, deleted at the end; LOG_DIR, MEMORY_FILE and
@@ -94,8 +96,16 @@ too. For example:
         expect(body.get("ok") is False, f"accepted: {body}")
         expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
 
-Routes still sleep for real (a key hold waits out its duration), so keep the
-durations in tests short. A new input library in agent_server (keyboard, pynput,
+Holds (a key, a gamepad button, a stick or trigger held for a duration) wait
+through the backend's _wait and keep time by its _clock. Here _clock is a
+FakeClock and _wait its wait: waiting returns at once, moves the fake clock on by
+exactly that long, and shows up in h.inputs as Call("wait", (seconds,), {}), in
+order with the key-down and key-up around it. A test that swaps _wait for its own
+calls the harness's through (wait = h.server._wait before swapping), or the hold
+it runs never reaches its deadline; one that wants a sleep to overshoot moves
+h.server._clock.now on as well. Other sleeps are still real (a key press holds for up to
+2 s, typing waits its interval between characters), so keep those short in
+tests. A new input library in agent_server (keyboard, pynput,
 pydirectinput, win32api, ...) is refused by the import guard until it gets a
 stand-in here: build one with stand_in(name) in import_server, before
 agent_server is imported. Win32 input written with ctypes needs no stand-in to
@@ -351,10 +361,14 @@ def install_pyautogui(inputs):
             def __getattr__(self, name):
                 if name.startswith("__") or name == "platformModule":
                     raise AttributeError(name)
-                return inputs.stub(f"pyautogui.{name}")
+                return inputs.stub(f"{self.__name__}.{name}")
 
         pyautogui = StandIn("pyautogui")
         pyautogui.is_stand_in = True
+        # A hold lets a key go past pyautogui's fail-safe by catching its exception
+        # and calling the platform layer, so the stand-in has both.
+        pyautogui.FailSafeException = type("FailSafeException", (Exception,), {})
+        pyautogui.platformModule = StandIn("pyautogui.platform")
         sys.modules["pyautogui"] = pyautogui
 
     def swap(module, prefix):
@@ -456,6 +470,31 @@ class RefuseInputLibs:
                           f"add one in tools/check_backend.py import_server", name=fullname)
 
 
+class FakeClock:
+    """The backend's _clock, with `wait` as its _wait: waiting records a "wait"
+    call and moves `now` on by exactly that long, at once. A hold that has
+    stopped waiting would read the clock for ever, so reading it very many times
+    with no wait between raises instead, and that check fails rather than hangs."""
+
+    MAX_READS_WITHOUT_WAIT = 100_000
+
+    def __init__(self, inputs):
+        self.now = 0.0
+        self._reads = 0
+        self._record = inputs.stub("wait")
+
+    def __call__(self):
+        self._reads += 1
+        if self._reads > self.MAX_READS_WITHOUT_WAIT:
+            raise RuntimeError(f"the clock was read {self._reads} times with no wait between: a hold that never waits")
+        return self.now
+
+    def wait(self, seconds):
+        self._record(seconds)
+        self._reads = 0
+        self.now += seconds
+
+
 def import_server(inputs, tmp):
     sys.meta_path.insert(0, RefuseInputLibs(inputs))
     install_user32(inputs)
@@ -470,6 +509,15 @@ def import_server(inputs, tmp):
 
     if hasattr(server, "_send_scan"):
         server._send_scan = inputs.stub("sendinput.scan")
+    # Key, button, stick and trigger holds keep time by _clock and wait through
+    # _wait. With a fake clock that only the recorded wait moves on, a check of a
+    # five-second hold takes no time and can see where each wait fell between
+    # key-down and key-up.
+    if hasattr(server, "_wait"):
+        clock = FakeClock(inputs)
+        server._wait = clock.wait
+        if hasattr(server, "_clock"):
+            server._clock = clock
     server.LOG_DIR = Path(tmp) / "logs"
     server.MEMORY_FILE = Path(tmp) / "game-agent-memory.json"
     # The backend refuses every request without its launch token. Importing it
@@ -954,6 +1002,376 @@ def _(h):
     released = h.inputs.named("vgamepad.release_button")
     expect(len(pressed) == 1 and pressed[0].kwargs.get("button") == 0x1000, f"pressed: {pressed}")
     expect(len(released) == 1, f"released: {released}")
+
+
+# ── Holds and typed text ─────────────────────────────────────────────────────
+# A key hold used to sleep for whatever it was sent: 600 held a key down for ten
+# minutes that nothing could interrupt, and typed text had no limit. Every hold
+# is now cut to a few seconds, waits in short steps that ask _input_halted()
+# before each, and lets go of what it pressed however it ends; typed text is cut
+# to TYPE_TEXT_MAX_CHARS. Each reply's "limit" says what was asked and what was
+# done. _wait is a recorder here, so no hold below really waits.
+
+@contextlib.contextmanager
+def swapped(target, **attrs):
+    """Set attributes on `target` (a module, usually h.server) for a with block."""
+    before = {name: getattr(target, name) for name in attrs}
+    for name, value in attrs.items():
+        setattr(target, name, value)
+    try:
+        yield
+    finally:
+        for name, value in before.items():
+            setattr(target, name, value)
+
+
+def key_paths(h):
+    """Each way the backend sends keys, as (method, the key ids it sends, patches
+    that make it take that way): SendInput scan codes where it has them
+    (Windows), and pyautogui for a key without one (and on other systems)."""
+    paths = [("pyautogui", {"ctrl": "ctrl", "shift": "shift", "a": "a"}, {"_scan_for": lambda key: None})]
+    if h.server.SENDINPUT_OK:
+        paths.insert(0, ("sendinput", {"ctrl": 0x1D, "shift": 0x2A, "a": 0x1E}, {}))
+    return paths
+
+
+def key_events(h):
+    """The key-downs, key-ups and hold steps sent so far, in order, as ("down", key),
+    ("up", key) and ("wait", seconds), whichever way the keys went."""
+    events = []
+    for c in h.inputs.calls:
+        if c.name == "sendinput.scan":
+            events.append(("up" if c.kwargs.get("keyup") else "down", c.args[0]))
+        elif c.name in ("pyautogui.keyDown", "pyautogui.keyUp"):
+            events.append(("down" if c.name == "pyautogui.keyDown" else "up", c.args[0]))
+        elif c.name == "wait":
+            events.append(("wait", round(c.args[0], 6)))
+    return events
+
+
+def seconds_limit(requested, applied, low, high):
+    return {"requested": requested, "applied": applied, "min": low, "max": high, "unit": "s",
+            "clamped": applied != requested}
+
+
+@test("POST /keyboard/hold cuts a 600 s hold to 5 s, held in 0.1 s steps without really waiting, and lets the key up")
+def _(h):
+    expect((h.server.KEY_HOLD_MAX_S, h.server.HOLD_STEP_S) == (5.0, 0.1),
+           f"KEY_HOLD_MAX_S {h.server.KEY_HOLD_MAX_S}, HOLD_STEP_S {h.server.HOLD_STEP_S}")
+    for method, ids, patches in key_paths(h):
+        with swapped(h.server, **patches):
+            h.inputs.clear()
+            started = time.monotonic()
+            status, body = h.api.post("/keyboard/hold", {"key": "a", "duration": 600})
+            took = time.monotonic() - started
+            events = key_events(h)
+            expect(status == 200 and body.get("ok") is True and body.get("method") == method,
+                   f"{method}, 600 s: status {status}: {body}")
+            expect(body.get("limit") == seconds_limit(600, 5, 0, 5) and body.get("held") == 5 and body.get("halted") is False,
+                   f"{method}, 600 s: reply {body}")
+            expect(events == [("down", ids["a"])] + [("wait", 0.1)] * 50 + [("up", ids["a"])],
+                   f"{method}, 600 s: {len(events)} events: {events[:3]} ... {events[-3:]}")
+            expect(took < 3, f"{method}, 600 s: took {took:.1f} s, so something slept for real")
+
+            # Within the limit it holds as asked, the last step making up the rest,
+            # and a combination goes down in order and comes up in reverse.
+            h.inputs.clear()
+            status, body = h.api.post("/keyboard/hold", {"key": "ctrl+shift+a", "duration": 0.25})
+            expect(status == 200 and body.get("ok") is True and body.get("limit") == seconds_limit(0.25, 0.25, 0, 5)
+                   and body.get("held") == 0.25, f"{method}, 0.25 s: status {status}: {body}")
+            expect(key_events(h) == [("down", ids["ctrl"]), ("down", ids["shift"]), ("down", ids["a"]),
+                                     ("wait", 0.1), ("wait", 0.1), ("wait", 0.05),
+                                     ("up", ids["a"]), ("up", ids["shift"]), ("up", ids["ctrl"])],
+                   f"{method}, 0.25 s: {key_events(h)}")
+
+            # Below zero is a tap, and says it was raised to 0.
+            h.inputs.clear()
+            status, body = h.api.post("/keyboard/hold", {"key": "a", "duration": -3})
+            expect(status == 200 and body.get("ok") is True and body.get("limit") == seconds_limit(-3, 0, 0, 5),
+                   f"{method}, -3 s: status {status}: {body}")
+            expect(key_events(h) == [("down", ids["a"]), ("up", ids["a"])], f"{method}, -3 s: {key_events(h)}")
+
+
+@test("POST /keyboard/hold lets every key up when a step or a press fails, or input is halted part-way")
+def _(h):
+    for method, ids, patches in key_paths(h):
+        with swapped(h.server, **patches):
+            # A step that raises part-way through the hold.
+            wait = h.server._wait
+            steps = []
+
+            def breaking_wait(seconds):
+                wait(seconds)
+                steps.append(seconds)
+                if len(steps) == 3:
+                    raise RuntimeError("the hold broke")
+
+            h.inputs.clear()
+            with swapped(h.server, _wait=breaking_wait):
+                status, body = h.api.post("/keyboard/hold", {"key": "ctrl+a", "duration": 4})
+            expect(status == 200 and body.get("ok") is False and "the hold broke" in body.get("error", "")
+                   and body.get("limit") == seconds_limit(4, 4, 0, 5), f"{method}, a step raised: status {status}: {body}")
+            expect(key_events(h) == [("down", ids["ctrl"]), ("down", ids["a"])] + [("wait", 0.1)] * 3
+                   + [("up", ids["a"]), ("up", ids["ctrl"])], f"{method}, a step raised: {key_events(h)}")
+
+            # Input halted after three steps: the keys come up at once.
+            h.inputs.clear()
+            with swapped(h.server, _input_halted=lambda: len(h.inputs.named("wait")) >= 3):
+                status, body = h.api.post("/keyboard/hold", {"key": "a", "duration": 600})
+            expect(status == 200 and body.get("ok") is True and body.get("halted") is True
+                   and abs(body.get("held", 0) - 0.3) < 1e-6 and body.get("limit") == seconds_limit(600, 5, 0, 5),
+                   f"{method}, halted: status {status}: {body}")
+            expect(key_events(h) == [("down", ids["a"])] + [("wait", 0.1)] * 3 + [("up", ids["a"])],
+                   f"{method}, halted: {key_events(h)}")
+
+            # Input already halted when the hold is asked for: nothing goes down at
+            # all (pressing and at once letting go would still be a tap).
+            h.inputs.clear()
+            with swapped(h.server, _input_halted=lambda: True):
+                status, body = h.api.post("/keyboard/hold", {"key": "ctrl+a", "duration": 2})
+            expect(status == 200 and body.get("ok") is True and body.get("halted") is True and body.get("held") == 0
+                   and body.get("limit") == seconds_limit(2, 2, 0, 5), f"{method}, halted before: status {status}: {body}")
+            expect(not h.inputs.calls, f"{method}, halted before: input reached: {h.inputs.names()}")
+
+            # The second key fails to go down: it and the first are let go, and the
+            # hold never starts. Then a release that fails does not stop the others.
+            if method == "sendinput":
+                def fail_on(key, up):
+                    def send(scan, **kw):
+                        h.inputs.record("sendinput.scan", scan, **kw)
+                        if scan == ids[key] and bool(kw.get("keyup")) is up:
+                            raise OSError(f"SendInput failed on {key}")
+                    return swapped(h.server, _send_scan=send)
+            else:
+                def fail_on(key, up):
+                    name = "keyUp" if up else "keyDown"
+
+                    def send(k, *args, **kw):
+                        h.inputs.record(f"pyautogui.{name}", k, *args, **kw)
+                        if k == key:
+                            raise OSError(f"pyautogui failed on {key}")
+                    return swapped(h.server.pyautogui, **{name: send})
+
+            h.inputs.clear()
+            with fail_on("shift", up=False):
+                status, body = h.api.post("/keyboard/hold", {"key": "ctrl+shift+a", "duration": 2})
+            expect(status == 200 and body.get("ok") is False and "failed on shift" in body.get("error", ""),
+                   f"{method}, a press raised: status {status}: {body}")
+            expect(key_events(h) == [("down", ids["ctrl"]), ("down", ids["shift"]), ("up", ids["shift"]), ("up", ids["ctrl"])],
+                   f"{method}, a press raised: {key_events(h)}")
+
+            h.inputs.clear()
+            with fail_on("a", up=True):
+                status, body = h.api.post("/keyboard/hold", {"key": "ctrl+shift+a", "duration": 0.1})
+            expect(status == 200 and body.get("ok") is False and "failed on a" in body.get("error", ""),
+                   f"{method}, a release raised: status {status}: {body}")
+            expect(key_events(h)[-3:] == [("up", ids["a"]), ("up", ids["shift"]), ("up", ids["ctrl"])],
+                   f"{method}, a release raised: {key_events(h)}")
+            expect(not h.inputs.named("pyautogui.platform._keyUp"),
+                   f"{method}, a release raised: an error other than the fail-safe went past pyautogui: {h.inputs.names()}")
+
+            if method == "pyautogui":
+                # The mouse moved into a screen corner during the hold, the operator's
+                # emergency stop: pyautogui's fail-safe refuses every call from then
+                # on, key-ups included, so the key-up goes to its platform layer.
+                def refused_up(k, *args, **kw):
+                    h.inputs.record("pyautogui.keyUp", k, *args, **kw)
+                    raise h.server.pyautogui.FailSafeException("the mouse is in a screen corner")
+
+                h.inputs.clear()
+                with swapped(h.server.pyautogui, keyUp=refused_up):
+                    status, body = h.api.post("/keyboard/hold", {"key": "ctrl+a", "duration": 0.2})
+                ups = [c.args[0] for c in h.inputs.named("pyautogui.platform._keyUp")]
+                expect(status == 200 and body.get("ok") is True, f"fail-safe during the hold: status {status}: {body}")
+                expect(ups == ["a", "ctrl"], f"fail-safe during the hold: keys left down; calls {h.inputs.names()}")
+
+
+@test("POST /keyboard/hold ends on time when every sleep overshoots, rather than adding the overshoot up")
+def _(h):
+    # time.sleep on Windows before Python 3.11 can wake a whole timer tick late,
+    # about 15.6 ms. Fifty steps each that late would make a 5 s hold last 5.78 s.
+    clock, wait = h.server._clock, h.server._wait
+
+    def late_wait(seconds):
+        wait(seconds)
+        clock.now += 0.0156
+
+    for method, ids, patches in key_paths(h):
+        with swapped(h.server, _wait=late_wait, **patches):
+            for duration in (5, 0.25):
+                h.inputs.clear()
+                started = clock.now
+                status, body = h.api.post("/keyboard/hold", {"key": "a", "duration": duration})
+                took = clock.now - started
+                expect(status == 200 and body.get("ok") is True and body.get("held") == duration and body.get("halted") is False,
+                       f"{method}, {duration} s: status {status}: {body}")
+                expect(duration - 1e-6 <= took <= duration + 0.0156 + 1e-6,
+                       f"{method}, {duration} s: held for {took:.4f} s by the clock, in {len(h.inputs.named('wait'))} steps")
+
+
+@test("POST /keyboard/hold bounds NaN and Infinity too, and refuses a duration that is no number, or no key, before any input")
+def _(h):
+    # JSON has no NaN or Infinity, but the backend's parser reads them. A NaN used
+    # to pass min() and max() untouched, and a refusal that repeats either one
+    # cannot be sent (an HTTP 500), so they are bounded like any other value.
+    for label, duration, applied, shown in (("NaN", float("nan"), 0, "nan"), ("Infinity", float("inf"), 5, "inf"),
+                                            ("-Infinity", float("-inf"), 0, "-inf")):
+        h.inputs.clear()
+        status, body = h.api.post("/keyboard/hold", {"key": "a", "duration": duration})
+        steps = [c.args[0] for c in h.inputs.named("wait")]
+        expect(status == 200 and body.get("ok") is True
+               and body.get("limit") == {"requested": shown, "applied": applied, "min": 0, "max": 5, "unit": "s", "clamped": True},
+               f"duration {label}: status {status}: {body}")
+        expect(abs(sum(steps) - applied) < 1e-6, f"duration {label}: waited {steps}")
+    for label, duration in (("text", "long"), ("null", None)):
+        h.inputs.clear()
+        status, body = h.api.post("/keyboard/hold", {"key": "a", "duration": duration})
+        refused_before_running(h, status, body, 422, f"duration {label}")
+    status, body = h.api.post("/keyboard/hold", {"key": "a"})
+    refused_before_running(h, status, body, 422, "no duration")
+    for key in ("", "+", " + "):
+        status, body = h.api.post("/keyboard/hold", {"key": key, "duration": 1})
+        expect(status == 200 and body.get("ok") is False and "no key" in body.get("error", ""), f"key {key!r}: status {status}: {body}")
+        expect(not h.inputs.calls, f"key {key!r}: input reached: {h.inputs.names()}")
+
+
+@test("POST /keyboard/type types at most 300 characters, says how many it left out, and bounds the interval")
+def _(h):
+    most = h.server.TYPE_TEXT_MAX_CHARS
+    expect(most == 300, f"TYPE_TEXT_MAX_CHARS is {most}")
+
+    def chars_limit(requested, applied):
+        return {"requested": requested, "applied": applied, "min": 0, "max": most, "unit": "characters",
+                "clamped": applied != requested}
+
+    text = "".join(chr(ord("a") + i % 26) for i in range(1000))
+    status, body = h.api.post("/keyboard/type", {"text": text, "interval": 0})
+    typed = h.inputs.named("pyautogui.typewrite")
+    expect(status == 200 and body.get("ok") is True and body.get("limit") == chars_limit(1000, 300), f"1000 characters: status {status}: {body}")
+    expect(len(typed) == 1 and typed[0].args == (text[:300],), f"1000 characters: typed {[len(c.args[0]) for c in typed]}")
+
+    h.inputs.clear()
+    status, body = h.api.post("/keyboard/type", {"text": text[:300], "interval": 0})
+    typed = h.inputs.named("pyautogui.typewrite")
+    expect(body.get("ok") is True and body.get("limit") == chars_limit(300, 300) and typed[0].args == (text[:300],),
+           f"exactly 300: {body}; typed {typed}")
+
+    # Text with characters typewrite cannot type goes through the clipboard, cut the same way.
+    for label, char in (("accented", "é"), ("an emoji", "\U0001F600")):
+        h.inputs.clear()
+        status, body = h.api.post("/keyboard/type", {"text": char * 1000, "interval": 0})
+        copied = h.inputs.named("pyperclip.copy")
+        expect(status == 200 and body.get("ok") is True and body.get("limit") == chars_limit(1000, 300),
+               f"{label}: status {status}: {body}")
+        expect(len(copied) == 1 and copied[0].args == (char * 300,) and h.inputs.named("pyautogui.hotkey"),
+               f"{label}: copied {[len(c.args[0]) for c in copied]}, calls {h.inputs.names()}")
+
+    # The page sends its timing profile's interval (0.08 s at most); a larger one
+    # would stretch 300 characters over many minutes.
+    for given, used in ((0.03, 0.03), (10, h.server.TYPE_INTERVAL_MAX_S), (-1, 0.0),
+                        (float("inf"), h.server.TYPE_INTERVAL_MAX_S), (float("nan"), 0.0)):
+        h.inputs.clear()
+        status, body = h.api.post("/keyboard/type", {"text": "hi", "interval": given})
+        typed = h.inputs.named("pyautogui.typewrite")
+        expect(body.get("ok") is True and len(typed) == 1 and typed[0].kwargs.get("interval") == used,
+               f"interval {given}: {body}; typed {typed}")
+    expect(h.server.TYPE_INTERVAL_MAX_S * most <= 60, f"300 characters can take {h.server.TYPE_INTERVAL_MAX_S * most} s")
+
+
+@test("Gamepad button, stick and trigger holds are cut to 5 s, held in steps, say so, and always let go")
+def _(h):
+    expect((h.server.GAMEPAD_HOLD_MAX_S, h.server.GAMEPAD_BUTTON_MIN_S) == (5.0, 0.02),
+           f"GAMEPAD_HOLD_MAX_S {h.server.GAMEPAD_HOLD_MAX_S}, GAMEPAD_BUTTON_MIN_S {h.server.GAMEPAD_BUTTON_MIN_S}")
+
+    def pad_events():
+        events = []
+        for c in h.inputs.calls:
+            if c.name == "wait":
+                events.append(("wait", round(c.args[0], 6)))
+            elif c.name in ("vgamepad.press_button", "vgamepad.release_button"):
+                events.append((c.name.split(".")[1], c.kwargs.get("button")))
+            elif c.name.endswith(("_joystick_float", "_trigger_float")):
+                events.append((c.name.split(".")[1], *c.kwargs.values()))
+            elif c.name == "vgamepad.update":
+                events.append(("update",))
+        return events
+
+    a = 0x1000
+    for hold, applied, steps in ((60, 5, [0.1] * 50), (0, 0.02, [0.02]), (0.08, 0.08, [0.08])):
+        h.inputs.clear()
+        status, body = h.api.post("/gamepad/button", {"button": "a", "hold": hold})
+        expect(status == 200 and body.get("ok") is True and body.get("limit") == seconds_limit(hold, applied, 0.02, 5)
+               and abs(body.get("held", -1) - applied) < 1e-6 and body.get("halted") is False,
+               f"button hold {hold}: status {status}: {body}")
+        expect(pad_events() == [("press_button", a), ("update",)] + [("wait", s) for s in steps]
+               + [("release_button", a), ("update",)], f"button hold {hold}: {pad_events()}")
+
+    wait = h.server._wait
+
+    def breaking_wait(seconds):
+        wait(seconds)
+        raise RuntimeError("the hold broke")
+
+    h.inputs.clear()
+    with swapped(h.server, _wait=breaking_wait):
+        status, body = h.api.post("/gamepad/button", {"button": "a", "hold": 3})
+    expect(body.get("ok") is False and "the hold broke" in body.get("error", ""), f"button, a step raised: {body}")
+    expect(pad_events()[-2:] == [("release_button", a), ("update",)], f"button, a step raised: {pad_events()}")
+
+    # A stick or trigger with a duration goes back to rest after it; with none it
+    # stays where it was put, as the tool says.
+    for route, body, moved, rest in (
+        ("/gamepad/stick", {"stick": "left", "x": 0.5, "y": -1}, ("left_joystick_float", 0.5, -1.0), ("left_joystick_float", 0.0, 0.0)),
+        ("/gamepad/trigger", {"trigger": "right", "value": 1}, ("right_trigger_float", 1.0), ("right_trigger_float", 0.0)),
+    ):
+        for duration, applied, steps, back in ((30, 5, [0.1] * 50, True), (0.3, 0.3, [0.1] * 3, True), (0, 0, [], False)):
+            h.inputs.clear()
+            status, reply = h.api.post(route, {**body, "duration": duration})
+            expect(status == 200 and reply.get("ok") is True and reply.get("limit") == seconds_limit(duration, applied, 0, 5)
+                   and reply.get("halted") is False, f"{route} duration {duration}: status {status}: {reply}")
+            want = [moved, ("update",)] + [("wait", s) for s in steps] + ([rest, ("update",)] if back else [])
+            expect(pad_events() == want, f"{route} duration {duration}: {pad_events()}")
+
+        h.inputs.clear()
+        with swapped(h.server, _input_halted=lambda: len(h.inputs.named("wait")) >= 2):
+            status, reply = h.api.post(route, {**body, "duration": 5})
+        expect(reply.get("ok") is True and reply.get("halted") is True and abs(reply.get("held", 0) - 0.2) < 1e-6,
+               f"{route}, halted: {reply}")
+        expect(pad_events() == [moved, ("update",), ("wait", 0.1), ("wait", 0.1), rest, ("update",)], f"{route}, halted: {pad_events()}")
+
+        h.inputs.clear()
+        with swapped(h.server, _wait=breaking_wait):
+            status, reply = h.api.post(route, {**body, "duration": 2})
+        expect(reply.get("ok") is False and pad_events()[-2:] == [rest, ("update",)], f"{route}, a step raised: {reply}; {pad_events()}")
+
+    # While input is halted, a button is not pressed and a stick or trigger is not
+    # moved, with or without a duration.
+    for route, body in (("/gamepad/button", {"button": "a", "hold": 1}),
+                        ("/gamepad/stick", {"stick": "left", "x": 1, "y": 1, "duration": 0}),
+                        ("/gamepad/stick", {"stick": "left", "x": 1, "y": 1, "duration": 2}),
+                        ("/gamepad/trigger", {"trigger": "left", "value": 1, "duration": 0})):
+        h.inputs.clear()
+        with swapped(h.server, _input_halted=lambda: True):
+            status, reply = h.api.post(route, body)
+        expect(status == 200 and reply.get("ok") is True and reply.get("halted") is True and reply.get("held") == 0,
+               f"{route} {body}, halted before: status {status}: {reply}")
+        expect(not [e for e in pad_events() if e != ("update",)] and not h.inputs.named("wait"),
+               f"{route} {body}, halted before: input reached: {h.inputs.names()}")
+
+    # NaN and Infinity are bounded too: a NaN button press is the shortest one, a
+    # NaN stick or trigger duration leaves it where it was put.
+    for route, field, value, applied, shown in (("/gamepad/button", "hold", float("inf"), 5, "inf"),
+                                                 ("/gamepad/button", "hold", float("nan"), 0.02, "nan"),
+                                                 ("/gamepad/stick", "duration", float("inf"), 5, "inf"),
+                                                 ("/gamepad/stick", "duration", float("nan"), 0, "nan"),
+                                                 ("/gamepad/trigger", "duration", float("-inf"), 0, "-inf")):
+        h.inputs.clear()
+        status, reply = h.api.post(route, {"button": "a", field: value})
+        low = 0.02 if field == "hold" else 0
+        steps = [c.args[0] for c in h.inputs.named("wait")]
+        expect(status == 200 and reply.get("ok") is True
+               and reply.get("limit") == {"requested": shown, "applied": applied, "min": low, "max": 5, "unit": "s", "clamped": True}
+               and abs(sum(steps) - applied) < 1e-6, f"{route} {field} {value}: status {status}: {reply}; waited {steps}")
 
 
 # ── Memory: outcome names ────────────────────────────────────────────────────
