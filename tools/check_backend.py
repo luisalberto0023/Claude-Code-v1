@@ -96,6 +96,7 @@ import collections
 import enum
 import functools
 import inspect
+import io
 import json
 import os
 import shutil
@@ -731,6 +732,54 @@ def _(h):
     h.server._fold_legacy_outcomes(again)
     expect(again == saved, f"a second fold changed the data: {again} vs {saved}")
     expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
+# ── Ollama relay ─────────────────────────────────────────────────────────────
+# urlopen is replaced for these, so no request leaves the process: no Ollama is
+# needed, and none is called.
+
+def relay_through(h, failure):
+    """POST /llm/ollama while urlopen raises `failure`. Returns the reply and
+    what urlopen was asked for."""
+    asked = []
+
+    def fake_urlopen(req, timeout=None, **_):
+        asked.append({"url": req.full_url, "timeout": timeout})
+        raise failure
+
+    real = h.server.urllib.request.urlopen
+    h.server.urllib.request.urlopen = fake_urlopen
+    try:
+        status, body = h.api.post("/llm/ollama", {
+            "base_url": "http://127.0.0.1:9", "payload": {"model": "test-model"}, "timeout": 600,
+        })
+    finally:
+        h.server.urllib.request.urlopen = real
+    return status, body, asked
+
+
+@test("POST /llm/ollama says when Ollama ran out of time, apart from other failures")
+def _(h):
+    # The page reads timedOut as a deadline, which it does not retry at once, and
+    # anything else with status 0 as a dropped connection, which it does.
+    cases = [
+        ("reading the reply timed out", TimeoutError("timed out"), 0, True),
+        ("connecting timed out", urllib.error.URLError(TimeoutError("timed out")), 0, True),
+        ("connection refused", urllib.error.URLError(ConnectionRefusedError(10061, "refused")), 0, False),
+        ("connection dropped", ConnectionResetError(10054, "reset"), 0, False),
+        ("Ollama refused the request", urllib.error.HTTPError(
+            "http://127.0.0.1:9/v1/chat/completions", 400, "Bad Request", None,
+            io.BytesIO(b'{"error":"model does not support tools"}')), 400, False),
+    ]
+    for label, failure, want_status, want_timed_out in cases:
+        status, body, asked = relay_through(h, failure)
+        expect(len(asked) == 1, f"{label}: urlopen was asked {len(asked)} times: {asked}")
+        expect(asked[0]["timeout"] == 600, f"{label}: the relay did not pass the page's timeout on: {asked}")
+        expect(status == 200 and body.get("ok") is False and body.get("status") == want_status,
+               f"{label}: status {status}: {body}")
+        expect(bool(body.get("timedOut")) is want_timed_out, f"{label}: timedOut should be {want_timed_out}: {body}")
+    expect("does not support tools" in body.get("error", ""), f"Ollama's own words were lost: {body}")
+    expect(not h.inputs.calls, f"the relay touched input: {h.inputs.names()}")
 
 
 # ── Run ──────────────────────────────────────────────────────────────────────

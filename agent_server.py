@@ -734,8 +734,14 @@ def llm_ollama(b: OllamaRelayBody):
         return {"ok": False, "status": e.code, "elapsed": round(time.time() - started, 1),
                 "error": detail or str(e)}
     except Exception as e:
+        # timedOut tells the page this was the timeout above running out, not a
+        # connection that dropped. It treats the one as a deadline and the other
+        # as worth asking again at once (src/agent/llmErrors.js). urlopen raises
+        # the timeout bare while reading the reply, and inside a URLError while
+        # connecting.
+        timed_out = isinstance(e, TimeoutError) or isinstance(getattr(e, "reason", None), TimeoutError)
         return {"ok": False, "status": 0, "elapsed": round(time.time() - started, 1),
-                "error": f"{type(e).__name__}: {e}"}
+                "timedOut": timed_out, "error": f"{type(e).__name__}: {e}"}
 
 
 @app.delete("/memory/{game_key}")

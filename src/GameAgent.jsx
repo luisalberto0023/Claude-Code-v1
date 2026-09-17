@@ -4,6 +4,13 @@ import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
 import { MODEL_OUTCOMES, MODEL_OUTCOME_CHOICES, normalizeOutcome } from "./agent/outcomes.js";
 import { backendFailure, readReply } from "./agent/backend.js";
+import {
+  classifyLlmError, httpError, networkError, timeoutError, backendRefusedError, withDeadline, sleep,
+  requestTimeoutMs, relayTimeoutS, relayTimedOut, OLLAMA_400_RETRIES,
+} from "./agent/llmErrors.js";
+import {
+  settleModelCall, gameEnding, nextModelCheck, modelCheckTimeoutMs, turnFailure, MODEL_WAIT_CAP_MS,
+} from "./agent/turnResult.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
 // When one matches, the agent reads the true game state from pixels and picks
@@ -29,18 +36,25 @@ function getEnv(key) {
 function setRuntimeKey(k, v) { _runtimeKeys[k] = v; }
 
 // ── Backend proxy ─────────────────────────────────────────────────────────────
-async function backend(path, body = null) {
+// `signal` lets a caller abort the request (the Ollama relay passes one, so Stop
+// and its deadline reach it). An abort is thrown rather than returned as a
+// failure: it is the caller's own decision, not the backend going wrong.
+async function backend(path, body = null, { signal } = {}) {
   try {
     const res = await fetch(`/api${path}`, {
       method: body ? "POST" : "GET",
       headers: body ? { "Content-Type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
+      signal,
     });
     // Read as text first: a reply that is not JSON is not from the backend
     // (Vite's proxy answers with an empty HTTP 500 when the backend is down),
     // and readReply says so instead of reporting a JSON parse error.
     return readReply(res.status, await res.text());
-  } catch (e) { return { ok: false, error: e.message }; }
+  } catch (e) {
+    if (signal?.aborted) throw e;
+    return { ok: false, error: e.message };
+  }
 }
 
 // ── Providers ─────────────────────────────────────────────────────────────────
@@ -253,18 +267,44 @@ function fromGemini(resp) {
   };
 }
 
-// ── callAI — unified caller with 429-aware retry ──────────────────────────────
+// ── callAI — unified caller ───────────────────────────────────────────────────
+// A 429 lifts after tens of seconds (the Gemini free tier), not two, so rate
+// limits are waited out on their own longer schedule.
 const RETRY_429 = [15000, 30000, 62000];
 // Local models on slow GPUs drop long-running connections while the server is
 // still computing; the retry then hits Ollama's prompt cache and returns
-// quickly. Retrying persistently is what keeps a session alive, so allow more
-// attempts than the old 3.
-const RETRY_ERR = [2000, 4000, 8000, 8000, 8000, 8000];
+// quickly, so a failure worth retrying is retried a few times within the call.
+// Past that the games loop takes over: it pauses the session and waits for the
+// model to answer again (src/agent/turnResult.js), which beats both retrying
+// here for ever and ending a game that nothing is wrong with.
+const RETRY_ERR = [2000, 4000, 8000];
 
-async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry) {
+/**
+ * One model request, in the Anthropic message format whatever the provider.
+ *
+ * A failure is thrown with `err.verdict` set to what classifyLlmError made of
+ * it (retry, fatal or stopped), so callers act on what it means rather than on
+ * its wording. Failures worth retrying are retried here first, unless
+ * `retry: false`; a fatal one, a deadline that ran out, and Stop are thrown at
+ * once. Every request runs under a deadline, `timeoutMs` or requestTimeoutMs by
+ * default, and `signal` (the run's Stop signal) aborts it.
+ */
+async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry,
+                      { signal = null, retry = true, timeoutMs = null } = {}) {
   const prov = PROVIDERS[providerKey];
 
-  const doCall = async () => {
+  // fetch rejects only when no HTTP answer came back at all.
+  const post = (url, init, reqSignal) =>
+    fetch(url, { method: "POST", ...init, signal: reqSignal })
+      .catch(e => { throw networkError(e?.message, e); });
+
+  // A cloud provider's refusal, in its own words when it sent any.
+  const refusal = async (res) => {
+    const err = await res.json().catch(() => ({}));
+    return httpError(res.status, err.error?.message ?? `HTTP ${res.status}`);
+  };
+
+  const doCall = async (reqSignal) => {
     if (providerKey === "anthropic") {
       const body = {
         model,
@@ -273,21 +313,15 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         messages,
         tools: tools.length ? tools : undefined,
       };
-      const res = await fetch(prov.baseURL, {
-        method: "POST",
+      const res = await post(prov.baseURL, {
         headers: {
           "Content-Type": "application/json",
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        const error = new Error(err.error?.message ?? `HTTP ${res.status}`);
-        error.status = res.status;
-        throw error;
-      }
+      }, reqSignal);
+      if (!res.ok) throw await refusal(res);
       return res.json();
     }
 
@@ -298,17 +332,11 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         tools: tools.length ? toOpenAITools(tools) : undefined,
         max_tokens: 4096,
       };
-      const res = await fetch(prov.baseURL, {
-        method: "POST",
+      const res = await post(prov.baseURL, {
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
         body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        const error = new Error(err.error?.message ?? `HTTP ${res.status}`);
-        error.status = res.status;
-        throw error;
-      }
+      }, reqSignal);
+      if (!res.ok) throw await refusal(res);
       return fromOpenAI(await res.json());
     }
 
@@ -320,17 +348,11 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
         generationConfig: { maxOutputTokens: 4096 },
       };
       const url = `${prov.baseURL}/${model}:generateContent?key=${apiKey}`;
-      const res = await fetch(url, {
-        method: "POST",
+      const res = await post(url, {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        const error = new Error(err.error?.message ?? `HTTP ${res.status}`);
-        error.status = res.status;
-        throw error;
-      }
+      }, reqSignal);
+      if (!res.ok) throw await refusal(res);
       return fromGemini(await res.json());
     }
 
@@ -352,21 +374,37 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
       // holds a localhost connection, so security software / network gear on the
       // LAN path can't kill the long request while the model is thinking.
       if (_ollamaViaBackend) {
-        let relay;
-        try {
-          relay = await backend("/llm/ollama", { base_url: _ollamaBase, payload: body, timeout: 600 });
-        } catch (e) {
-          throw new Error(`Relay unreachable: ${e.message} — is agent_server.py running?`);
-        }
+        // The relay waits a little less than the page does, so it is the relay
+        // that times out and says so. A caller's shorter deadline shortens both.
+        const relayTimeout = relayTimeoutS(timeoutMs);
+        const relay = await backend(
+          "/llm/ollama",
+          { base_url: _ollamaBase, payload: body, timeout: relayTimeout },
+          { signal: reqSignal },
+        );
         if (relay?.ok && relay.body) return fromOpenAI(relay.body);
         const secs = relay?.elapsed ?? ((Date.now() - t0) / 1000).toFixed(1);
-        const err = new Error(
-          relay?.status
-            ? `HTTP ${relay.status} after ${secs}s: ${String(relay.error ?? "").slice(0, 300)}`
-            : `Ollama relay failed after ${secs}s: ${String(relay?.error ?? "unknown")}`
-        );
-        if (relay?.status) err.status = relay.status;
-        throw err;
+        // FastAPI refused the relay request itself, so nothing reached Ollama
+        // and asking again would be refused the same way.
+        if (relay?.detail != null) throw backendRefusedError(backendFailure(relay));
+        if (relay?.status) {
+          throw httpError(relay.status, `HTTP ${relay.status} after ${secs}s: ${String(relay.error ?? "").slice(0, 300)}`);
+        }
+        // The relay ran out of its own time waiting for Ollama. That is a
+        // deadline like the page's, so it is reported as one: a dropped
+        // connection is worth asking again at once, but a request that already
+        // waited ten minutes is not, and retrying it here would cost forty.
+        // relayTimedOut also recognises it from a backend not yet restarted.
+        if (relayTimedOut(relay)) {
+          const err = timeoutError(relayTimeout * 1000);
+          err.message = `the backend relay got no reply from Ollama after ${secs}s (${String(relay.error ?? "timed out")})`;
+          throw err;
+        }
+        // Status 0: the backend got no answer from Ollama. No status at all: the
+        // page got no answer from the backend.
+        throw networkError(relay?.status === 0
+          ? `Ollama relay failed after ${secs}s: ${String(relay.error ?? "unknown")}`
+          : `Relay unreachable: ${backendFailure(relay)} — is agent_server.py running?`);
       }
 
       let res;
@@ -375,20 +413,19 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: reqSignal,
         });
       } catch (netErr) {
         // Connection died rather than returning an HTTP status. Report how long
         // it survived — a consistent cutoff points at a timeout in the path,
         // while a fast failure means Ollama is unreachable.
         const secs = ((Date.now() - t0) / 1000).toFixed(1);
-        throw new Error(`${netErr.message} after ${secs}s — the request was still being processed when the connection dropped. Shrink the screenshot (Advanced -> Local screenshot width) so each turn finishes sooner.`);
+        throw networkError(`${netErr.message} after ${secs}s — the request was still being processed when the connection dropped. Shrink the screenshot (Advanced -> Local screenshot width) so each turn finishes sooner.`, netErr);
       }
       if (!res.ok) {
         let detail = "";
         try { detail = (await res.text() || "").slice(0, 300); } catch {}
-        const error = new Error(detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`);
-        error.status = res.status;
-        throw error;
+        throw httpError(res.status, detail ? `HTTP ${res.status}: ${detail}` : `HTTP ${res.status}`);
       }
       return fromOpenAI(await res.json());
     }
@@ -396,23 +433,59 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
     throw new Error(`Unknown provider: ${providerKey}`);
   };
 
-  let errAttempts = 0;
-  const rateLimits = [...RETRY_429];
+  // One try under its own deadline. The deadline covers reading the reply too,
+  // since a body can stall as well as a connection.
+  const attempt = async () => {
+    const ms = timeoutMs ?? requestTimeoutMs(providerKey, { viaBackend: _ollamaViaBackend });
+    const deadline = withDeadline(signal, ms);
+    try {
+      return await doCall(deadline.signal);
+    } catch (err) {
+      throw deadline.explain(err);
+    } finally {
+      deadline.done();
+    }
+  };
 
+  let errAttempts = 0;
+  let rateAttempts = 0;
+  let badRequests = 0; // HTTP 400s in a row: Ollama gets only a few retries of those
+  // The verdict on the last try that failed. A Stop that lands after one has
+  // (in the wait before a retry, or during the retry) stopped a request that was
+  // not getting through, and carries it as `afterFailure` so the games loop does
+  // not mistake it for a Stop of a healthy run (decideAfterTurn).
+  let lastFailure = null;
   for (;;) {
     try {
-      return await doCall();
-    } catch (err) {
-      if (err.status === 429 && rateLimits.length > 0) {
-        const delay = rateLimits.shift();
-        onRetry?.(`Rate limited — waiting ${delay / 1000}s...`);
-        await new Promise(r => setTimeout(r, delay));
-      } else if (err.status !== 429 && errAttempts < RETRY_ERR.length) {
-        const delay = RETRY_ERR[errAttempts++];
-        onRetry?.(`Error: ${err.message} — retrying in ${delay / 1000}s...`);
-        await new Promise(r => setTimeout(r, delay));
-      } else {
+      return await attempt();
+    } catch (thrown) {
+      const err = thrown instanceof Error ? thrown : new Error(String(thrown));
+      err.verdict = classifyLlmError(err, providerKey, { previous400s: badRequests });
+      badRequests = err.status === 400 ? badRequests + 1 : 0;
+      const { kind, reason, userText } = err.verdict;
+      if (kind === "stopped") {
+        if (lastFailure) err.verdict.afterFailure = lastFailure;
         throw err;
+      }
+      // A request that used up its whole deadline is not tried again here: that
+      // wait already was the retry, and the loop's pause handles what follows.
+      // Nor is an Ollama 400 past its few retries, which the loop's pause
+      // handles too.
+      if (!retry || kind !== "retry" || reason === "timeout" || badRequests > OLLAMA_400_RETRIES) throw err;
+      lastFailure = err.verdict;
+      const limited = reason === "rate-limited";
+      const schedule = limited ? RETRY_429 : RETRY_ERR;
+      const n = limited ? rateAttempts++ : errAttempts++;
+      if (n >= schedule.length) throw err;
+      const delay = schedule[n];
+      onRetry?.(limited
+        ? `Rate limited — waiting ${delay / 1000}s...`
+        : `Error: ${userText} — retrying in ${delay / 1000}s...`);
+      try {
+        await sleep(delay, signal);
+      } catch (stopped) {
+        stopped.verdict = { ...classifyLlmError(stopped, providerKey), afterFailure: lastFailure };
+        throw stopped;
       }
     }
   }
@@ -749,7 +822,10 @@ function stripAllImages(messages) {
     .filter(Boolean);
 }
 
-async function buildChkRequest(providerKey, model, systemPrompt, messages, apiKey, onRetry) {
+// A checkpoint is optional: when the request fails the session carries on
+// without a new one, and the turn that follows meets the same failure and
+// deals with it.
+async function buildChkRequest(providerKey, model, systemPrompt, messages, apiKey, onRetry, signal) {
   try {
     const resp = await callAI(
       providerKey, model, systemPrompt,
@@ -757,7 +833,7 @@ async function buildChkRequest(providerKey, model, systemPrompt, messages, apiKe
         ...pruneImages(messages).slice(-10),
         { role: "user", content: "Summarize this game session in 3-5 bullet points: current state, score, strategies in use, key learnings. Label it [CHECKPOINT]." },
       ],
-      [], apiKey, onRetry
+      [], apiKey, onRetry, { signal }
     );
     const text = resp.content?.find(c => c.type === "text")?.text ?? "";
     return text ? { role: "user", content: `[CHECKPOINT] ${text}` } : null;
@@ -1327,6 +1403,10 @@ export default function GameAgent() {
   const [screenInfo, setScreenInfo] = useState(null);
   const [backendOk, setBackendOk] = useState(false);
   const [capturing, setCapturing] = useState(false);
+  // Set while the session is paused because the model is not answering:
+  // {since, nextCheckAt, reason}. Null otherwise.
+  const [modelWait, setModelWait] = useState(null);
+  const [modelWaitSecondsLeft, setModelWaitSecondsLeft] = useState(null);
 
   // Collapse
   const [showMemory, setShowMemory] = useState(false);
@@ -1358,6 +1438,9 @@ export default function GameAgent() {
   const convRef = useRef([]);
   const checkpointRef = useRef(null);
   const stopRef = useRef(false);
+  // Aborted by Stop, so a model request in flight ends now rather than when it
+  // answers or times out. Replaced at the start of every run.
+  const stopCtrlRef = useRef(new AbortController());
   const pauseRef = useRef(false);
   const stuckRingRef = useRef([]);
   const stuckTriggerRef = useRef(0);
@@ -1408,6 +1491,16 @@ export default function GameAgent() {
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [pendingDecision]);
+
+  // Count down to the next check while waiting for the model.
+  useEffect(() => {
+    if (!modelWait?.nextCheckAt) { setModelWaitSecondsLeft(null); return; }
+    const until = modelWait.nextCheckAt;
+    const tick = () => setModelWaitSecondsLeft(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [modelWait]);
 
   const answerDecision = useCallback((choice) => {
     if (!decisionResolverRef.current) return;
@@ -2190,13 +2283,17 @@ Reply with ONLY a JSON object, no other text:
             { type: "text", text: `Controls found on screen:\n${list}\n\nWhat is happening, and what is each control?` },
           ],
         }],
-        [], apiKey,
+        [], apiKey, null, { signal: stopCtrlRef.current.signal },
       );
       const text = (res?.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n");
       const m = text.match(/\{[\s\S]*\}/);
       if (m) labelled = JSON.parse(m[0]);
     } catch (e) {
-      addLog(`Could not interpret the screen (${e.message}) — will ask you instead.`, "warn");
+      // The controls were measured from pixels, so a model that cannot label
+      // them leaves a decision to ask about, not a game that has ended.
+      if (e.verdict?.kind !== "stopped") {
+        addLog(`Could not interpret the screen (${e.verdict?.userText ?? e.message}) — will ask you instead.`, "warn");
+      }
     }
 
     const options = found.map((b, i) => {
@@ -2555,6 +2652,13 @@ Reply with ONLY a JSON object, no other text:
   // General pattern: detect terminal state -> click the restart control -> verify.
   // The button's location is remembered after the first success and reused, so
   // later restarts cost no LLM call at all (a small learned "skill").
+  //
+  // Returns {ok: true} once a new game has started, and {ok: false} when no
+  // restart control worked. When the model had to be asked and did not answer,
+  // it returns {ok: false, failure} instead, with failure a turn result
+  // (transport-error, fatal-error or stopped): that says nothing about whether
+  // the game can be restarted, only that the model could not be asked, and the
+  // games loop waits for the model or gives the session up accordingly.
   const attemptRestart = useCallback(async (systemPrompt, apiKey) => {
     const timing = getTiming();
     const verify = async (base) => {
@@ -2606,13 +2710,13 @@ Reply with ONLY a JSON object, no other text:
         if (fresh === true) {
           restartPointRef.current = { x, y };
           addLog("✓ New game started (fresh board confirmed).", "success");
-          return true;
+          return { ok: true };
         }
         if (fresh === null && await verify(base)) {
           // No plugin verification available — fall back to a screen change
           restartPointRef.current = { x, y };
           addLog("✓ New game started.", "success");
-          return true;
+          return { ok: true };
         }
         addLog(`That button did not start a new game (attempt ${attempt + 1}/3).`, "warn");
       }
@@ -2626,7 +2730,7 @@ Reply with ONLY a JSON object, no other text:
       const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
       if (res.ok && await verify(base)) {
         addLog("✓ New game started.", "success");
-        return true;
+        return { ok: true };
       }
       addLog("Remembered button did not work — asking the model to find it.", "warn");
       restartPointRef.current = null;
@@ -2638,7 +2742,7 @@ Reply with ONLY a JSON object, no other text:
     try {
       for (let attempt = 1; attempt <= 3 && !stopRef.current; attempt++) {
         const frame = await grabFrame();
-        if (!frame) return false;
+        if (!frame) return { ok: false };
         const ask = [
           "The game has ENDED (no moves left, or a game-over screen is showing).",
           "Find the button that starts a new game — labelled something like",
@@ -2647,21 +2751,28 @@ Reply with ONLY a JSON object, no other text:
           "Use the labelled grid drawn on the screenshot to pick the cell containing that button.",
         ].join("\n");
 
-        convRef.current.push({
+        const question = {
           role: "user",
           content: [
             { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
             { type: "text", text: ask },
           ],
-        });
+        };
+        convRef.current.push(question);
         convRef.current = pruneConv(convRef.current, checkpointRef.current);
 
         let resp;
         try {
-          resp = await callAI(providerKey, model, systemPrompt, convRef.current, noToolsRef.current ? [] : activeToolsRef.current, apiKey, m => addLog(m, "warn"));
+          resp = await callAI(providerKey, model, systemPrompt, convRef.current, noToolsRef.current ? [] : activeToolsRef.current, apiKey, m => addLog(m, "warn"),
+            { signal: stopCtrlRef.current.signal });
         } catch (e) {
-          addLog(`Restart attempt failed: ${e.message}`, "warn");
-          continue;
+          // Unanswered, the question is taken back so asking again does not
+          // leave it in the conversation twice. Trying the next attempt at once
+          // would only fail the same way, so the loop is told instead.
+          convRef.current = convRef.current.filter(m => m !== question);
+          const verdict = e.verdict ?? classifyLlmError(e, providerKey);
+          if (verdict.kind !== "stopped") addLog(`Restart attempt ${attempt}: the model did not answer — ${verdict.userText}`, "warn");
+          return { ok: false, failure: turnFailure(verdict) };
         }
 
         const txt = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
@@ -2693,14 +2804,14 @@ Reply with ONLY a JSON object, no other text:
             };
           }
           addLog("✓ New game started.", "success");
-          return true;
+          return { ok: true };
         }
         addLog(`Restart attempt ${attempt}: screen did not change.`, "warn");
       }
     } finally {
       gridEnabledRef.current = savedGrid;
     }
-    return false;
+    return { ok: false };
   }, [getTiming, grabFrame, executeTool, providerKey, model, addLog, useSolver, gameDesc]);
 
   // ── Solver diagnostics ──────────────────────────────────────────────────────
@@ -2750,13 +2861,19 @@ Reply with ONLY a JSON object, no other text:
   }, [gameDesc, addLog]);
 
   // ── agentTurn ────────────────────────────────────────────────────────────────
+  // One model turn. Returns a turn result (src/agent/turnResult.js):
+  //   {kind: "action"}                                   the model acted
+  //   {kind: "game-ended", outcome, finalScore, reason}  it signalled game over
+  //   {kind: "transport-error" | "fatal-error", error}   it did not answer
+  //   {kind: "stopped"}                                  Stop was pressed
+  // A turn the model did not answer is undone, so it can simply be run again.
   const agentTurn = useCallback(async (systemPrompt, apiKey) => {
     turnCountRef.current++;
 
     // Generate checkpoint every N turns
     if (turnCountRef.current > 1 && turnCountRef.current % CHECKPOINT_EVERY === 0 && convRef.current.length > 4) {
       addLog("Generating checkpoint summary...", "info");
-      const chk = await buildChkRequest(providerKey, model, systemPrompt, convRef.current, apiKey, msg => addLog(msg, "warn"));
+      const chk = await buildChkRequest(providerKey, model, systemPrompt, convRef.current, apiKey, msg => addLog(msg, "warn"), stopCtrlRef.current.signal);
       if (chk) checkpointRef.current = chk;
     }
 
@@ -2803,45 +2920,65 @@ Reply with ONLY a JSON object, no other text:
       actNudge = `Your last move (${lastNoOp}) changed NOTHING — that direction is blocked. Do NOT repeat it.${tried ? ` Already failed here: ${tried}.` : ""} Pick a DIFFERENT direction now. ${actNudge}`;
     }
 
+    let turnMessage;
     if (sendImage) {
-      convRef.current.push({
+      turnMessage = {
         role: "user",
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } },
           { type: "text", text: `${baseLine}\nLook at the screen and make your move. ${actNudge}` },
         ],
-      });
+      };
     } else if (isStrategyTurn) {
       // Strategy turn but no fresh image (unchanged screen or capture unavailable)
-      convRef.current.push({
+      turnMessage = {
         role: "user",
         content: frame
           ? `${baseLine}\n[Screen unchanged since last action — image omitted to save tokens.] ${actNudge}`
           : `${baseLine} (screen unavailable) ${actNudge}`,
-      });
+      };
     } else {
       // Tactical turn — deliberately text-only to save tokens
-      convRef.current.push({
+      turnMessage = {
         role: "user",
         content: `${baseLine}\nTACTICAL turn (no screenshot, saving tokens). ${actNudge}`,
-      });
+      };
       addLog(`Tactical turn ${turnCountRef.current} (text-only)`, "info");
     }
+    convRef.current.push(turnMessage);
+    const previousHash = lastTurnHashRef.current;
     lastTurnHashRef.current = currentHash;
 
     let resp;
     const __t0 = Date.now();
     try {
       const toolsArg = noToolsRef.current ? [] : activeToolsRef.current;
-      resp = await callAI(providerKey, model, systemPrompt, convRef.current, toolsArg, apiKey, msg => addLog(msg, "warn"));
+      resp = await callAI(providerKey, model, systemPrompt, convRef.current, toolsArg, apiKey, msg => addLog(msg, "warn"),
+        { signal: stopCtrlRef.current.signal });
       const secs = ((Date.now() - __t0) / 1000).toFixed(1);
       const kb = sendImage && frame?.data ? Math.round(frame.data.length * 0.75 / 1024) : 0;
       const imgNote = sendImage && frame ? ` (sent ${frame.imgW}×${frame.imgH} image, ~${kb}KB)` : " (no image)";
       addLog(`   LLM replied in ${secs}s${imgNote}`, "info");
     } catch (e) {
-      await setGameSpeed(1); // always resume the game on the way out
-      addLog(`API error after ${((Date.now() - __t0) / 1000).toFixed(1)}s: ${e.message}`, "error");
-      return { stop: true, reason: "api-error" };
+      // The model never saw this turn, so undo it: take the turn's message back
+      // (asking again would otherwise send it twice), keep the turn number, and
+      // make sure the next try looks at the screen afresh rather than skipping
+      // the image as "unchanged" against a frame the model never received.
+      convRef.current = convRef.current.filter(m => m !== turnMessage);
+      lastTurnHashRef.current = previousHash;
+      forceStrategyRef.current = forced || isStrategyTurn;
+      turnCountRef.current--;
+      const verdict = e.verdict ?? classifyLlmError(e, providerKey);
+      // With pause-to-think, a game frozen for this turn stays frozen while the
+      // run waits for the model, so a real-time game does not play on by itself
+      // for up to MODEL_WAIT_CAP_MS; waitForModel lets it run again once the
+      // model answers. Stopped or given up, it runs again now (and the session
+      // end makes sure of it).
+      if (verdict.kind !== "retry") await setGameSpeed(1);
+      if (verdict.kind !== "stopped") {
+        addLog(`Model request failed after ${((Date.now() - __t0) / 1000).toFixed(1)}s: ${verdict.userText}`, "error");
+      }
+      return turnFailure(verdict);
     }
 
     // Reasoning done — resume the game so the action below executes in real time
@@ -2953,10 +3090,11 @@ Reply with ONLY a JSON object, no other text:
     }
 
     if (gameEndRef.current) {
-      return { stop: true, reason: "game-end", ...gameEndRef.current };
+      const { outcome, finalScore, reason } = gameEndRef.current;
+      return { kind: "game-ended", outcome, finalScore, reason };
     }
 
-    return { stop: false };
+    return { kind: "action" };
   }, [providerKey, model, addLog, executeTool, maxTokens, grabFrame, setGameSpeed]);
 
   // ── runResearch ──────────────────────────────────────────────────────────────
@@ -2974,16 +3112,91 @@ Reply with ONLY a JSON object, no other text:
             ? `In at most 4 SHORT imperative rules (max 15 words each, no preamble, no headings), how should a player win at "${gameDesc}"? Give only concrete per-move rules, e.g. "keep the largest tile in one corner".`
             : `What are the best strategies for playing "${gameDesc}"? Provide 3-5 concise bullet points covering: core mechanics, optimal strategy, common mistakes to avoid, and any tips for high scores. Use your training knowledge.`,
         }],
-        [], apiKey, msg => addLog(msg, "warn")
+        [], apiKey, msg => addLog(msg, "warn"), { signal: stopCtrlRef.current.signal }
       );
       const text = resp.content?.find(c => c.type === "text")?.text ?? "";
       if (text) addLog(`Research: ${text.slice(0, 300)}`, "success");
       return text;
     } catch (e) {
-      addLog(`Research failed: ${e.message} — continuing without research`, "warn");
+      // Research is optional. A model that is not answering, or refuses the key,
+      // is dealt with by the first turn of play, which meets the same failure.
+      if (e.verdict?.kind !== "stopped") {
+        addLog(`Research failed: ${e.verdict?.userText ?? e.message} — continuing without research`, "warn");
+      }
       return null;
     }
   }, [providerKey, model, gameDesc, addLog]);
+
+  // ── Waiting for the model ────────────────────────────────────────────────────
+  // The model stopped answering, which says nothing about the game, so the board
+  // is left exactly as it is: no restart, no New Game click, no outcome. Now and
+  // then, check whether the model answers a tiny request, and resume as soon as
+  // it does.
+  //
+  // `outage` is decideAfterTurn's {lostMs, probes}, and is updated in place so
+  // the backoff and the cap carry on across waits in a row. Returns
+  //   {kind: "answered"}           the model replied; play resumes
+  //   {kind: "stopped"}            Stop was pressed
+  //   {kind: "gave-up", message}   the cap was reached, or the check itself was
+  //                                refused outright (a key revoked meanwhile)
+  const waitForModel = useCallback(async (apiKey, outage, lastError) => {
+    const capMinutes = Math.round(MODEL_WAIT_CAP_MS / 60000);
+    const stop = stopCtrlRef.current.signal;
+    let reason = lastError?.userText ?? "no answer";
+    let first = true;
+    try {
+      for (;;) {
+        if (stopRef.current) return { kind: "stopped" };
+        const delay = nextModelCheck(outage);
+        if (delay == null) {
+          return { kind: "gave-up", message: `the model has not answered for ${capMinutes} minutes (last error: ${reason})` };
+        }
+        setModelWait({ nextCheckAt: Date.now() + delay, reason });
+        const frozen = pauseToThinkRef.current && attachedRef.current
+          ? " The game stays frozen (pause-to-think) until play resumes." : "";
+        addLog(first
+          ? `⏸ Paused: model unreachable. The board is left as it is.${frozen} Checking again in ${Math.round(delay / 1000)}s; ` +
+            `the session is given up after ${capMinutes} minutes without an answer.`
+          : `Model still unreachable (${reason}) — checking again in ${Math.round(delay / 1000)}s.`,
+          "warn");
+        first = false;
+
+        try {
+          await sleep(delay, stop);
+        } catch {
+          return { kind: "stopped" };
+        } finally {
+          outage.lostMs += delay;
+        }
+
+        outage.probes++;
+        const t0 = Date.now();
+        try {
+          // The smallest request that proves the model answers: no tools, no
+          // image, and one try, since the waiting above is the retry schedule.
+          // It gets a short deadline of its own (modelCheckTimeoutMs), so a
+          // model that hangs rather than refusing cannot hold one check for a
+          // whole turn's ten minutes and carry the wait far past the cap.
+          const timeoutMs = modelCheckTimeoutMs(outage, requestTimeoutMs(providerKey, { viaBackend: _ollamaViaBackend }));
+          await callAI(providerKey, model, "You are checking that a connection works.",
+            [{ role: "user", content: "Reply with the single word OK." }], [], apiKey, null,
+            { signal: stop, retry: false, timeoutMs });
+          addLog("▶ The model is answering again — resuming play.", "success");
+          await setGameSpeed(1); // unfrozen for whatever plays next
+          return { kind: "answered" };
+        } catch (e) {
+          const verdict = e.verdict ?? classifyLlmError(e, providerKey);
+          if (verdict.kind === "stopped") return { kind: "stopped" };
+          if (verdict.kind === "fatal") return { kind: "gave-up", message: verdict.userText };
+          reason = verdict.userText;
+        } finally {
+          outage.lostMs += Date.now() - t0;
+        }
+      }
+    } finally {
+      setModelWait(null);
+    }
+  }, [providerKey, model, addLog, setGameSpeed]);
 
   // ── startAgent ───────────────────────────────────────────────────────────────
   const startAgent = useCallback(async () => {
@@ -3013,6 +3226,8 @@ Reply with ONLY a JSON object, no other text:
 
     // Reset everything
     stopRef.current = false;
+    stopCtrlRef.current = new AbortController();
+    setModelWait(null);
     pauseRef.current = false;
     gameEndRef.current = null;
     convRef.current = [];
@@ -3232,7 +3447,7 @@ REASONING STYLE (for analyse_game_state):
         ? "Study the game board carefully. Identify the game type, current state, score if visible, and controls. Do NOT take any action yet."
         : `Study turn ${i + 1}/3 — continue observing. Note any additional details.`;
 
-      convRef.current.push({
+      const studyMessage = {
         role: "user",
         content: frame
           ? [
@@ -3240,14 +3455,16 @@ REASONING STYLE (for analyse_game_state):
               { type: "text", text: turnMsg },
             ]
           : turnMsg,
-      });
+      };
+      convRef.current.push(studyMessage);
       // The play loop prunes, but the study loop did not — so study sent 1, then
       // 2, then 3 screenshots on successive turns. Prune here too.
       convRef.current = pruneConv(convRef.current, checkpointRef.current);
 
       try {
         const studyTools = noToolsMode ? [] : TOOLS.filter(t => studyToolNames.has(t.name));
-        const resp = await callAI(providerKey, model, systemPrompt, convRef.current, studyTools, apiKey, msg => addLog(msg, "warn"));
+        const resp = await callAI(providerKey, model, systemPrompt, convRef.current, studyTools, apiKey, msg => addLog(msg, "warn"),
+          { signal: stopCtrlRef.current.signal });
         const content = resp.content ?? [];
         if (noToolsMode) {
           // No-tools study: just observe in plain text (no action parsing/execution)
@@ -3265,7 +3482,16 @@ REASONING STYLE (for analyse_game_state):
           if (text) addLog(`Study ${i + 1}/3: ${text.slice(0, 200)}`, "info");
         }
       } catch (e) {
-        addLog(`Study turn error: ${e.message}`, "warn");
+        // Study is optional too: a model that is not answering, or refuses the
+        // request, meets the first turn of play and is dealt with there. The
+        // unanswered question is taken back, so play does not start after it,
+        // and the rest of the study is skipped: each turn of it would sit
+        // through the same retries first and fail the same way.
+        convRef.current = convRef.current.filter(m => m !== studyMessage);
+        if (e.verdict?.kind !== "stopped") {
+          addLog(`Study turn error: ${e.verdict?.userText ?? e.message} — skipping the rest of the study.`, "warn");
+        }
+        break;
       }
     }
     }
@@ -3279,6 +3505,32 @@ REASONING STYLE (for analyse_game_state):
     let finalOutcome = "ended";
     let finalScore = null;
     const totalGames = Math.max(1, gamesPerSession || 1);
+
+    // What the model's failures have come to (see settleModelCall):
+    //   outage       {lostMs, probes} while the model is not answering, null
+    //                while its calls get through
+    //   abortReason  why the session was given up, once it has been. It then
+    //                ends as "aborted", which says the agent stopped, not how
+    //                any game went.
+    const session = { outage: null, abortReason: null };
+    const waitForTheModel = (outage, lastError) => waitForModel(apiKey, outage, lastError);
+
+    // Start a new game. When the restart had to ask the model and got no answer,
+    // wait for the model and try again, rather than calling the game impossible
+    // to restart. Returns attemptRestart's result; session.abortReason is set if
+    // the session was given up meanwhile.
+    const restartGame = async () => {
+      for (;;) {
+        const started = Date.now();
+        const restart = await attemptRestart(systemPrompt, apiKey);
+        // A restart that needed nothing from the model, or got its answer, is
+        // a call that got through.
+        const settled = await settleModelCall(restart.failure ?? { kind: "action" }, session,
+          Date.now() - started, waitForTheModel);
+        if (settled.loop === "retry") continue;
+        return restart;
+      }
+    };
 
     solverActiveRef.current = !!activePlugin;
     // Read when the model reports a win: the game name can be edited during a
@@ -3302,7 +3554,7 @@ REASONING STYLE (for analyse_game_state):
           : !!activePlugin.isGameOverScreen?.(solverCanvasRef.current);
         if (finished) {
           addLog("Board still shows a finished game — starting a fresh one first.", "info");
-          await attemptRestart(systemPrompt, apiKey);
+          await restartGame();
         }
       } catch {
         // Not readable yet (capture still warming up) — the games loop handles it.
@@ -3314,7 +3566,7 @@ REASONING STYLE (for analyse_game_state):
     // requested, click the restart control and keep going. This also recovers a
     // game that never started: every move is a no-op, which reads as "no moves
     // left", and the same restart path clicks New Game.
-    for (let gameIdx = 0; gameIdx < totalGames && !stopRef.current; gameIdx++) {
+    for (let gameIdx = 0; gameIdx < totalGames && !stopRef.current && !session.abortReason; gameIdx++) {
       setGameNumber(gameIdx + 1);
       if (totalGames > 1) addLog(`── Game ${gameIdx + 1} of ${totalGames} ──`, "info");
 
@@ -3336,7 +3588,9 @@ REASONING STYLE (for analyse_game_state):
       lastBoardRef.current = null;
       readClashRef.current = 0;
       snapshotsRef.current = 0;
-      let gameOutcome = "ended";
+      // Set by whatever ends play on this game. Left null, the game gets no
+      // result unless Stop ended it (gameEnding, below).
+      let gameOutcome = null;
 
     while (!stopRef.current) {
       while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 500));
@@ -3429,6 +3683,10 @@ REASONING STYLE (for analyse_game_state):
         }
         if (sr.ok) {
           solverFailRef.current = 0;
+          // A solver move that changed the board is play getting through, so a
+          // model outage before it is over: a later one starts its own count
+          // and its checks from the start (turnResult.js).
+          if (sr.changed) session.outage = null;
           turnCountRef.current++;
           setTurnCount(t => t + 1);
           addLog(`⚙ ${sr.reason}${sr.changed ? "" : " — no change"}`, sr.changed ? "info" : "warn");
@@ -3484,16 +3742,23 @@ REASONING STYLE (for analyse_game_state):
         }
       }
 
+      const turnStarted = Date.now();
       const result = await agentTurn(systemPrompt, apiKey);
-
-      if (result.stop) {
-        gameOutcome = result.outcome ?? "ended";
-        if (result.finalScore != null) {
-          currentScoreRef.current = result.finalScore;
-          setCurrentScore(result.finalScore);
+      const turn = await settleModelCall(result, session, Date.now() - turnStarted, waitForTheModel);
+      // Only a game the model said was over ends here with an outcome. A turn
+      // the model did not answer changed nothing in the game: once the model
+      // answers again, go round and play on (pause and solver included); a
+      // session given up or stopped leaves play with no outcome of its own.
+      if (turn.loop === "retry") continue;
+      if (turn.loop === "end-game") {
+        gameOutcome = turn.outcome;
+        if (turn.finalScore != null) {
+          currentScoreRef.current = turn.finalScore;
+          setCurrentScore(turn.finalScore);
         }
         break;
       }
+      if (turn.loop !== "play") break;
 
       // ── Stuck detection ──────────────────────────────────────────────────
       // Based on whether ACTIONS actually changed the screen, not on comparing
@@ -3536,23 +3801,31 @@ REASONING STYLE (for analyse_game_state):
       }
     }
 
+      // Whether this game has a result at all. A session given up mid-game has
+      // none: the game did not finish, the agent did.
+      const thisGame = gameEnding({ outcome: gameOutcome, abortReason: session.abortReason, stopped: stopRef.current });
+      if (!thisGame.record) {
+        session.abortReason = session.abortReason || thisGame.abortReason;
+        break;
+      }
+
       // ── Game finished ──────────────────────────────────────────────────────
       const thisScore = gameEndRef.current?.finalScore ?? currentScoreRef.current;
       const thisBestTile = gameBestTileRef.current;
       gameScoresRef.current = [...gameScoresRef.current,
         { game: gameIdx + 1, score: thisScore, bestTile: thisBestTile,
-          fromScreen: screenScoreRef.current != null, outcome: gameOutcome }];
+          fromScreen: screenScoreRef.current != null, outcome: thisGame.outcome }];
       setGameScores([...gameScoresRef.current]);
       // What a game is worth is not the same in every game: 2048 has a running
       // score, Minesweeper has squares cleared and no score at all.
       const scoreLabel = activePlugin?.scoreLabel ?? "score";
       addLog(
-        `Game ${gameIdx + 1} finished — ${gameOutcome}` +
+        `Game ${gameIdx + 1} finished — ${thisGame.outcome}` +
         `${thisScore != null ? `, ${scoreLabel} ${thisScore}` : ""}` +
         `${thisBestTile ? `, highest tile ${thisBestTile}` : ""}.`,
         "success");
 
-      finalOutcome = gameOutcome;
+      finalOutcome = thisGame.outcome;
       finalScore = thisScore ?? finalScore;
 
       const moreToPlay = gameIdx + 1 < totalGames;
@@ -3560,9 +3833,10 @@ REASONING STYLE (for analyse_game_state):
 
       // Restart for the next game
       setPhase("restarting");
-      const ok = await attemptRestart(systemPrompt, apiKey);
+      const restart = await restartGame();
       setPhase("playing");
-      if (!ok) {
+      if (session.abortReason || stopRef.current) break;
+      if (!restart.ok) {
         addLog("Could not start a new game — ending session.", "warn");
         break;
       }
@@ -3575,6 +3849,14 @@ REASONING STYLE (for analyse_game_state):
       lastTurnHashRef.current = null;
       forceStrategyRef.current = true;
       activePlugin?.resetGrid?.();
+    }
+
+    if (session.abortReason) {
+      finalOutcome = "aborted";
+      addLog(
+        `Session given up: ${session.abortReason}. The board was left as it is; ` +
+        `the session is recorded as aborted, not as a game result.`,
+        "error");
     }
 
     // Per-game results, then the session roll-up. Each game is listed on its own
@@ -3602,10 +3884,23 @@ REASONING STYLE (for analyse_game_state):
       }
     }
 
-    // Post-session analysis — use the LLM to extract structured lessons
+    // Post-session analysis — use the LLM to extract structured lessons.
+    // Not for a session given up on the model: there is no game to learn from
+    // in "the model stopped answering", and the model would not answer anyway.
     let analysis = null;
-    if (turnCountRef.current >= 3) {
-      addLog("Running post-session analysis...", "info");
+    if (session.abortReason) {
+      addLog("No post-session analysis: the session was given up.", "info");
+    } else if (turnCountRef.current >= 3) {
+      // Stop ends play, not the session's bookkeeping, which ran after a Stop
+      // before Stop could cut a request short. Stop has already aborted the
+      // run's signal, though, so the analysis gets a signal of its own, and a
+      // second press of Stop cancels it.
+      if (stopCtrlRef.current.signal.aborted) {
+        stopCtrlRef.current = new AbortController();
+        addLog("Running post-session analysis... (press ■ Stop again to skip it)", "info");
+      } else {
+        addLog("Running post-session analysis...", "info");
+      }
       try {
         const perGame = gameScoresRef.current.length > 1
           ? `\nResults per game:\n${gameScoresRef.current.map(g =>
@@ -3635,7 +3930,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           providerKey, model,
           "You are a game session analyst. Respond with ONLY valid JSON — no markdown fences, no commentary.",
           [...stripAllImages(convRef.current).slice(-40), { role: "user", content: analysisPrompt }],
-          [], apiKey, msg => addLog(msg, "warn")
+          [], apiKey, msg => addLog(msg, "warn"), { signal: stopCtrlRef.current.signal }
         );
         const text = analysisResp.content?.find(c => c.type === "text")?.text ?? "";
         const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -3648,7 +3943,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           analysis = { discoveries: [text.slice(0, 200)] };
         }
       } catch (e) {
-        addLog(`Analysis failed: ${e.message}`, "warn");
+        // The games are already decided; a failed analysis only means no
+        // lessons are saved with them.
+        if (e.verdict?.kind === "stopped") addLog("Post-session analysis skipped.", "info");
+        else addLog(`Analysis failed: ${e.verdict?.userText ?? e.message}`, "warn");
       }
     }
 
@@ -3686,10 +3984,14 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     addLog(`Session complete — outcome: ${finalOutcome}, turns: ${turnCountRef.current}, duration: ${durationSeconds}s`, "success");
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
       gamesPerSession, attemptRestart, useSolver, solverTurn,
-      providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision]);
+      providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
+      waitForModel]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
+    // Ends a model request in flight, and a wait for the model, now: a Stop
+    // that has to sit out a ten-minute local-model request is not a stop.
+    stopCtrlRef.current.abort();
     pauseRef.current = false;
     setPaused(false);
     addLog("Stopping agent...", "warn");
@@ -3703,6 +4005,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
 
   const restartAgent = useCallback(() => {
     stopRef.current = true;
+    stopCtrlRef.current.abort();
     setTimeout(() => startAgent(), 300);
   }, [startAgent]);
 
@@ -4267,7 +4570,11 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           {currentScore != null && <span style={{ fontSize: 11, color: C.green }}>Score: {currentScore}</span>}
           {bestTile > 0 && <span style={{ fontSize: 11, color: C.yellow }}>Highest tile: {bestTile}</span>}
           {bestScore != null && <span style={{ fontSize: 11, color: C.dim }}>Best: {bestScore}</span>}
-          {running && <span style={{ fontSize: 11, color: paused ? C.yellow : C.green }}>● {paused ? "PAUSED" : "RUNNING"}</span>}
+          {running && (
+            <span style={{ fontSize: 11, color: paused || modelWait ? C.yellow : C.green }}>
+              ● {modelWait ? "PAUSED: MODEL UNREACHABLE" : paused ? "PAUSED" : "RUNNING"}
+            </span>
+          )}
           <button
             onClick={saveLogFile}
             title="Download every line of this run, including entries scrolled out of the view above"
@@ -4295,7 +4602,14 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       <div style={{ width: 230, borderLeft: `1px solid ${C.border}`, display: "flex", flexDirection: "column", background: C.panel, flexShrink: 0 }}>
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, color: C.accentL, fontSize: 12 }}>HUD</div>
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
-          <HudRow label="Status"  value={running ? (paused ? "paused" : "running") : phase} color={running ? (paused ? C.yellow : C.green) : phaseColor} />
+          <HudRow
+            label="Status"
+            value={running ? (modelWait ? "paused: model unreachable" : paused ? "paused" : "running") : phase}
+            color={running ? (paused || modelWait ? C.yellow : C.green) : phaseColor}
+          />
+          {running && modelWait && (
+            <HudRow label="Model" value={modelWaitSecondsLeft > 0 ? `next check in ${modelWaitSecondsLeft}s` : "checking…"} color={C.yellow} />
+          )}
           <HudRow label="Mouse"   value={`${mousePos.x}, ${mousePos.y}`} />
           <HudRow label="Scale"   value={scaleRef.current.scale > 0 ? `${scaleRef.current.scale.toFixed(2)}x` : "—"} />
           <HudRow label="Turns"   value={turnCount} />
