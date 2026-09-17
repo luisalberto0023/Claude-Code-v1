@@ -3,7 +3,9 @@ import game2048 from "./plugins/game2048.js";
 import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
 import { MODEL_OUTCOMES, MODEL_OUTCOME_CHOICES, normalizeOutcome } from "./agent/outcomes.js";
-import { backendFailure, readReply } from "./agent/backend.js";
+import {
+  backendFailure, readReply, pageToken, backendHeaders, accessRefusal, logBatches, snapshotBytes, SNAPSHOT_MAX_BYTES,
+} from "./agent/backend.js";
 import {
   classifyLlmError, httpError, networkError, timeoutError, backendRefusedError, withDeadline, sleep,
   requestTimeoutMs, relayTimeoutS, relayTimedOut, OLLAMA_400_RETRIES,
@@ -36,21 +38,35 @@ function getEnv(key) {
 function setRuntimeKey(k, v) { _runtimeKeys[k] = v; }
 
 // ── Backend proxy ─────────────────────────────────────────────────────────────
+// Every request to the backend goes through here, because each one must carry
+// the page's token (src/agent/backend.js says why); tools/check-agent.mjs fails
+// on a fetch to /api anywhere else.
 // `signal` lets a caller abort the request (the Ollama relay passes one, so Stop
 // and its deadline reach it). An abort is thrown rather than returned as a
 // failure: it is the caller's own decision, not the backend going wrong.
-async function backend(path, body = null, { signal } = {}) {
+let _onBackendRefused = null;
+// The page registers this to hear, once, that the backend turned it away.
+function onBackendRefused(listener) { _onBackendRefused = listener; }
+
+async function backend(path, body = null, { signal, method } = {}) {
   try {
+    const token = pageToken();
     const res = await fetch(`/api${path}`, {
-      method: body ? "POST" : "GET",
-      headers: body ? { "Content-Type": "application/json" } : {},
+      method: method ?? (body ? "POST" : "GET"),
+      headers: backendHeaders(token, { json: !!body }),
       body: body ? JSON.stringify(body) : undefined,
       signal,
     });
     // Read as text first: a reply that is not JSON is not from the backend
     // (Vite's proxy answers with an empty HTTP 500 when the backend is down),
     // and readReply says so instead of reporting a JSON parse error.
-    return readReply(res.status, await res.text());
+    const reply = readReply(res.status, await res.text());
+    const refused = accessRefusal(res.status, token);
+    if (!refused) return reply;
+    _onBackendRefused?.(refused);
+    // `error` is what callers print. `detail` marks a request refused before
+    // anything ran, which the Ollama relay reads as not worth asking again.
+    return { ...reply, ok: false, error: refused.message, detail: reply?.detail ?? refused.message, refused: refused.kind };
   } catch (e) {
     if (signal?.aborted) throw e;
     return { ok: false, error: e.message };
@@ -551,6 +567,25 @@ function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
   };
 }
 
+// A canvas as a base64 PNG small enough for /log/snapshot, which refuses more
+// than SNAPSHOT_MAX_BYTES. The solver canvas is full resolution (up to 4000 px
+// wide), and a busy frame that size can pass the cap as a PNG, so it is halved
+// until it fits (up to four times) rather than lost. Returns {png, halvings};
+// png is null if it never fit.
+function snapshotPng(canvas, text) {
+  let source = canvas;
+  for (let halvings = 0; ; halvings++) {
+    const png = source.toDataURL("image/png").split(",")[1];
+    if (snapshotBytes(png, text) <= SNAPSHOT_MAX_BYTES) return { png, halvings };
+    if (halvings === 4) return { png: null, halvings };
+    const half = document.createElement("canvas");
+    half.width = Math.max(1, Math.floor(source.width / 2));
+    half.height = Math.max(1, Math.floor(source.height / 2));
+    half.getContext("2d").drawImage(source, 0, 0, half.width, half.height);
+    source = half;
+  }
+}
+
 // Draw a base64 JPEG (from the backend's native capture) onto the canvas so the
 // perceptual-hash / change-detection code can run on it just like a browser frame.
 async function drawDataURLToCanvas(dataURL, canvasEl) {
@@ -877,10 +912,7 @@ async function saveMemory(gameKey, patch, warn) {
 }
 
 async function clearMemory(gameKey) {
-  try {
-    const res = await fetch(`/api/memory/${encodeURIComponent(gameKey)}`, { method: "DELETE" });
-    return res.json();
-  } catch (e) { return { ok: false, error: e.message }; }
+  return backend(`/memory/${encodeURIComponent(gameKey)}`, null, { method: "DELETE" });
 }
 
 // ── Tool definitions (13 tools) ───────────────────────────────────────────────
@@ -1402,6 +1434,9 @@ export default function GameAgent() {
   const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
   const [screenInfo, setScreenInfo] = useState(null);
   const [backendOk, setBackendOk] = useState(false);
+  // Set when the backend turned this page away ({kind, message}, from
+  // accessRefusal): usually a backend restarted with a new token. Null otherwise.
+  const [backendRefused, setBackendRefused] = useState(null);
   const [capturing, setCapturing] = useState(false);
   // Set while the session is paused because the model is not answering:
   // {since, nextCheckAt, reason}. Null otherwise.
@@ -1451,6 +1486,7 @@ export default function GameAgent() {
   const currentGoalIndexRef = useRef(0);
   const lastTurnHashRef = useRef(null);
   const backendHealthRef = useRef(0);
+  const backendRefusedRef = useRef(null); // backendRefused, readable without a render
   const streamRef = useRef(null);
   const logEndRef = useRef(null);
   const gameEndRef = useRef(null); // set by signal_game_end tool
@@ -1531,9 +1567,12 @@ export default function GameAgent() {
   useEffect(() => {
     const flush = async () => {
       if (!logQueueRef.current.length) return;
-      const batch = logQueueRef.current.splice(0, logQueueRef.current.length);
+      const queued = logQueueRef.current.splice(0, logQueueRef.current.length);
       try {
-        await backend("/log/append", { session: logSessionRef.current, lines: batch });
+        // In pieces the backend accepts: it refuses a request over its caps.
+        for (const lines of logBatches(queued)) {
+          await backend("/log/append", { session: logSessionRef.current, lines });
+        }
       } catch {
         // Backend down or restarting — keep the lines in the full in-memory copy
         // so "Save log" still produces everything; just do not retry forever.
@@ -1577,7 +1616,13 @@ export default function GameAgent() {
     let png = null;
     if (canvas) {
       try {
-        png = canvas.toDataURL("image/png").split(",")[1];
+        const fitted = snapshotPng(canvas, text);
+        png = fitted.png;
+        if (fitted.halvings) {
+          addLog(png
+            ? `📷 The frame was too large to save whole; saving it at 1/${2 ** fitted.halvings} size.`
+            : "📷 The frame was too large to save even at 1/16 size; saving the text only.", "warn");
+        }
       } catch { /* tainted or oversized canvas — the text alone is still useful */ }
     }
     try {
@@ -1586,6 +1631,8 @@ export default function GameAgent() {
       });
       if (res?.ok && res.files?.length) {
         addLog(`📷 Saved what the agent saw → ${res.files[res.files.length - 1]}`, "info");
+      } else if (res && !res.ok && !res.refused) {
+        addLog(`📷 Snapshot not saved — ${backendFailure(res)}`, "warn");
       }
     } catch { /* backend down; the log line above is the only casualty */ }
   }, [addLog]);
@@ -1594,18 +1641,33 @@ export default function GameAgent() {
     setActions(a => [...a.slice(-60), { id: uid(), ts: ts(), name, args, result }]);
   }, []);
 
-  // Backend health check on mount
+  // The backend turned this page away: say so once, and what to do, instead of
+  // letting every click fail on its own. Cleared when a check gets through again.
   useEffect(() => {
-    backend("/health").then(r => {
-      if (r.status === "ok") {
+    onBackendRefused(refused => {
+      if (backendRefusedRef.current?.message === refused.message) return;
+      backendRefusedRef.current = refused;
+      setBackendRefused(refused);
+      addLog(`⛔ ${refused.message}`, "error");
+    });
+    return () => onBackendRefused(null);
+  }, [addLog]);
+
+  // Backend check on mount. The screen size and capabilities come from routes
+  // that need the page's token: /health answers anyone, so it says only "ok".
+  useEffect(() => {
+    (async () => {
+      const info = await backend("/screen/info");
+      if (Number.isFinite(info?.width)) {
         setBackendOk(true);
-        setScreenInfo({ width: r.screen_width, height: r.screen_height });
-        if (r.capabilities) setCapabilities(r.capabilities);
-        addLog(`Backend online — ${r.platform} ${r.screen_width}×${r.screen_height}`, "success");
-      } else {
+        setScreenInfo({ width: info.width, height: info.height });
+        addLog(`Backend online — ${info.platform} ${info.width}×${info.height}`, "success");
+        const caps = await backend("/capabilities");
+        if (typeof caps?.gamepad === "boolean") setCapabilities(caps);
+      } else if (!info?.refused) {
         addLog("Backend offline — start agent_server.py first", "error");
       }
-    });
+    })();
   }, [addLog]);
 
   // Keep refs in sync with control-scheme / native-capture / pause-to-think state
@@ -1636,30 +1698,39 @@ export default function GameAgent() {
   useEffect(() => { pauseToThinkRef.current = pauseToThink; }, [pauseToThink]);
   useEffect(() => { attachedRef.current = attached; }, [attached]);
 
-  // B4: Continuous backend watchdog — pings every 10s, auto-pauses on 2 consecutive failures
+  // B4: Continuous backend watchdog — pings every 10s, auto-pauses on 2 consecutive failures.
+  // It asks a route that needs the token, so a backend restarted with a new one
+  // (which refuses every action) pauses the run too, and is reported before Start.
   useEffect(() => {
     const interval = setInterval(async () => {
       let ok = false;
+      let reply = null;
       try {
         const ctrl = new AbortController();
         const timer = setTimeout(() => ctrl.abort(), 3000);
-        const res = await fetch("/api/health", { signal: ctrl.signal });
+        reply = await backend("/screen/info", null, { signal: ctrl.signal });
         clearTimeout(timer);
-        const j = await res.json();
-        ok = j?.status === "ok";
+        ok = Number.isFinite(reply?.width);
       } catch { ok = false; }
 
       if (ok) {
+        if (backendRefusedRef.current) {
+          backendRefusedRef.current = null;
+          setBackendRefused(null);
+        }
         if (backendHealthRef.current > 0 || !backendOk) {
           backendHealthRef.current = 0;
           setBackendOk(true);
+          setScreenInfo({ width: reply.width, height: reply.height });
           addLog("Backend healthy again.", "success");
         }
       } else {
         backendHealthRef.current++;
         if (backendHealthRef.current >= 2 && backendOk) {
           setBackendOk(false);
-          addLog("⚠ Backend health check failed (2 consecutive) — auto-paused.", "error");
+          addLog(reply?.refused
+            ? "⚠ The backend refuses this page (see above: reload it) — auto-paused."
+            : "⚠ Backend health check failed (2 consecutive) — auto-paused.", "error");
           if (running && !pauseRef.current) {
             pauseRef.current = true;
             setPaused(true);
@@ -4025,7 +4096,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
 
   // ── Checklist ────────────────────────────────────────────────────────────────
   const checklist = [
-    { label: "Backend online",   done: backendOk },
+    { label: "Backend online",   done: backendOk && !backendRefused },
     { label: "Screen captured",  done: useNativeCapture ? nativeRegionSet : capturing },
     { label: "API key set",      done: !!(apiKeyInput || getEnv(PROVIDERS[providerKey].envKey ?? "")) || providerKey === "ollama" },
     { label: "Game name set",    done: gameDesc.trim().length > 0 },
@@ -4059,6 +4130,14 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             </span>
           ))}
         </div>
+        {backendRefused && (
+          <div style={{ margin: "0 10px 6px", padding: "6px 8px", borderRadius: 4, background: "#3b1515", color: C.red, fontSize: 11, lineHeight: 1.4 }}>
+            ⛔ {backendRefused.message}
+            <div style={{ marginTop: 4 }}>
+              <button onClick={() => window.location.reload()} style={{ ...btnStyle(C.red), fontSize: 11 }}>Reload page</button>
+            </div>
+          </div>
+        )}
 
         {/* Screen capture */}
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
@@ -4426,7 +4505,12 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               </button>
             )}
             {!running && gameDesc.trim() && (
-              <button onClick={async () => { await clearMemory(slugify(gameDesc)); setMemoryData(null); addLog("Memory cleared.", "warn"); }}
+              <button onClick={async () => {
+                const failure = backendFailure(await clearMemory(slugify(gameDesc)));
+                if (failure) { addLog(`Memory not cleared — ${failure}`, "error"); return; }
+                setMemoryData(null);
+                addLog("Memory cleared.", "warn");
+              }}
                 style={{ ...btnStyle(C.border), fontSize: 11 }}>Clear Memory</button>
             )}
           </div>

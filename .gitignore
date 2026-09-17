@@ -12,3 +12,8 @@ Thumbs.db
 
 # Session log files written by the backend
 logs/
+
+# The backend's token for this launch, and its half-written copy. It lets a
+# page drive the mouse and keyboard, so it never leaves this machine.
+.agent-token
+.agent-token.*.tmp

@@ -21,6 +21,6 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
     "esbuild": "^0.21.5",
-    "vite": "^5.4.2"
+    "vite": "^5.4.12"
   }
 }

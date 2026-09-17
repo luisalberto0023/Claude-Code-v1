@@ -43,8 +43,26 @@
 //     loop is wired to settleModelCall and gameEnding with nothing in between
 //     that could turn a failed call into a game result
 //
+// Then who may use the backend, because any web page open in the browser can send
+// requests to localhost, and the backend's routes move the real mouse. The
+// backend refuses a request without its launch token or from another origin
+// (tools/check_backend.py checks that). This checks the page's side:
+//   - the token header, token file, token pattern, page origins and size caps
+//     are the same in agent_server.py, src/agent/backend.js and the Vite plugin
+//   - Vite, run with the project's vite.config.js in middleware mode, puts the
+//     token in the page on every load of one running server, refuses to serve
+//     .agent-token by URL (asked on a free local port), keeps port 5173 with
+//     CORS off, and leaves the token out of `npm run build`
+//   - the installed Vite and package.json's Vite are new enough to check the
+//     Host header, and the plugin stops an older Vite from starting
+//   - backend() sends the token with every request and reports a 401 or 403 with
+//     what to do, and the Ollama relay turned away that way fails at once
+//   - nothing else in GameAgent.jsx fetches /api, and nothing reads /health
+//   - logBatches and snapshotBytes keep the page's writes inside the caps
+//
 // Values that live inside GameAgent.jsx (TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS,
-// pluginName, buildActionReference, callAI, setOllamaViaBackend) are
+// pluginName, buildActionReference, callAI, setOllamaViaBackend, backend,
+// onBackendRefused) are
 // read by bundling it with a line that exports them added at the end, the same
 // way check-render.mjs bundles it, so the check sees what the page really
 // builds. Agent logic that can live in its own module under src/agent/ is
@@ -52,6 +70,7 @@
 
 import { build, transform } from "esbuild";
 import fs from "fs";
+import http from "http";
 import os from "os";
 import path from "path";
 import { randomUUID } from "crypto";
@@ -65,8 +84,8 @@ const BACKEND = path.join(ROOT, "agent_server.py");
 
 const { OUTCOMES, MODEL_OUTCOMES, MODEL_OUTCOME_CHOICES, normalizeOutcome } =
   await import(pathToFileURL(path.join(ROOT, "src", "agent", "outcomes.js")).href);
-const { backendFailure, readReply } =
-  await import(pathToFileURL(path.join(ROOT, "src", "agent", "backend.js")).href);
+const access = await import(pathToFileURL(path.join(ROOT, "src", "agent", "backend.js")).href);
+const { backendFailure, readReply } = access;
 const llmErrors = await import(pathToFileURL(path.join(ROOT, "src", "agent", "llmErrors.js")).href);
 const turns = await import(pathToFileURL(path.join(ROOT, "src", "agent", "turnResult.js")).href);
 
@@ -142,7 +161,7 @@ let agent = null;
 try {
   await build({
     stdin: {
-      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend };\n`,
+      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, backend as __backend, onBackendRefused as __onBackendRefused };\n`,
       resolveDir: path.join(ROOT, "src"),
       sourcefile: "GameAgent.jsx",
       loader: "jsx",
@@ -155,7 +174,7 @@ try {
   const detail = e?.errors?.length
     ? e.errors.map(x => `${x.location?.line ?? ""} ${x.text}`).join("; ")
     : (e?.stack ?? String(e));
-  check("GameAgent.jsx bundles and exposes TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS, pluginName, buildActionReference, callAI and setOllamaViaBackend", false, detail);
+  check("GameAgent.jsx bundles and exposes TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS, pluginName, buildActionReference, callAI, setOllamaViaBackend, backend and onBackendRefused", false, detail);
 } finally {
   fs.rmSync(bundlePath, { force: true });
 }
@@ -266,6 +285,188 @@ const misparsed = bodies
   })
   .filter(Boolean);
 check("readReply passes JSON through and names a reply that is not JSON", !misparsed.length, misparsed.join("; "));
+
+// ── Who may use the backend ───────────────────────────────────────────────────
+// Any web page open in the browser can send requests to localhost, and the
+// backend's routes move the real mouse. So the backend takes requests only with
+// its launch token, from the agent page's origin (tools/check_backend.py checks
+// that side). Here: the page gets the token from Vite and sends it on every
+// request, says what to do when it is refused, and stays inside the backend's
+// size caps, with the numbers the backend uses.
+console.log("backend access");
+{
+  const pyString = name => py.match(new RegExp(`^${name}\\s*=\\s*["']([^"']*)["']`, "m"))?.[1];
+  const pyProduct = name => {
+    const m = py.match(new RegExp(`^${name}\\s*=\\s*([\\d\\s*]+)$`, "m"));
+    return m ? m[1].split("*").reduce((a, b) => a * Number(b.trim()), 1) : null;
+  };
+  const pyPattern = py.match(/^TOKEN_PATTERN\s*=\s*re\.compile\(r["']([^"']*)["']\)/m)?.[1];
+  const pyOrigins = [...(py.match(/^PAGE_ORIGINS\s*=\s*\(([^)]*)\)/m)?.[1] ?? "").matchAll(/["']([^"']*)["']/g)].map(m => m[1]);
+  const pyHosts = [...(py.match(/^BACKEND_HOSTS\s*=\s*\[([^\]]*)\]/m)?.[1] ?? "").matchAll(/["']([^"']*)["']/g)].map(m => m[1]);
+  const plugin = await import(pathToFileURL(path.join(ROOT, "tools", "vite-agent-token.mjs")).href);
+
+  check("the token header is named the same on both sides", pyString("TOKEN_HEADER") === access.TOKEN_HEADER,
+    show({ py: pyString("TOKEN_HEADER"), page: access.TOKEN_HEADER }));
+  check("the token file is named the same on both sides", py.includes(`TOKEN_FILE = Path(__file__).parent / "${plugin.TOKEN_FILE_NAME}"`),
+    `agent_server.py has no TOKEN_FILE = Path(__file__).parent / "${plugin.TOKEN_FILE_NAME}"`);
+  check("a token looks the same to the backend and to Vite",
+    pyPattern !== undefined && `^${pyPattern}$` === plugin.TOKEN_PATTERN.source, show({ py: pyPattern, vite: plugin.TOKEN_PATTERN.source }));
+  check("the backend accepts the page where the page says it is, and nothing else",
+    same(pyOrigins, [access.PAGE_ADDRESS, "http://127.0.0.1:5173"]), show(pyOrigins));
+  check("the backend trusts only local Host names", same(pyHosts, ["localhost", "127.0.0.1"]), show(pyHosts));
+  const caps = ["LOG_APPEND_MAX_LINES", "LOG_APPEND_MAX_BYTES", "SNAPSHOT_MAX_BYTES"].map(n => [n, pyProduct(n), access[n]]);
+  check("the page's size caps are the backend's", caps.every(([, a, b]) => typeof a === "number" && a === b), show(caps));
+
+  const token = "Aa0_-".repeat(9);
+  const tokens = [
+    [{ __AGENT_TOKEN__: token }, token], [{ __AGENT_TOKEN__: null }, null], [{}, null], [undefined, null],
+    [{ __AGENT_TOKEN__: "short" }, null], [{ __AGENT_TOKEN__: `${token}"` }, null], [{ __AGENT_TOKEN__: 42 }, null],
+  ].map(([scope, want]) => [scope, want, access.pageToken(scope)]).filter(([, want, got]) => want !== got);
+  check("pageToken takes a real token and nothing else", !tokens.length, show(tokens));
+  check("backendHeaders sends the token, and a content type only with a body",
+    same(access.backendHeaders(token), { "X-Agent-Token": token }) &&
+      same(access.backendHeaders(token, { json: true }), { "Content-Type": "application/json", "X-Agent-Token": token }) &&
+      same(access.backendHeaders(null, { json: true }), { "Content-Type": "application/json" }),
+    show([access.backendHeaders(token), access.backendHeaders(null, { json: true })]));
+  const refusals = [[401, token, "token", "reload"], [401, null, "no-token", "start.bat"], [403, token, "origin", "5173"],
+    [200, token, null], [422, token, null], [500, null, null], [400, token, null]]
+    .map(([status, t, kind, words]) => [status, t, kind, words, access.accessRefusal(status, t)])
+    .filter(([, , kind, words, got]) => (got?.kind ?? null) !== kind || (kind && !got.message.includes(words)));
+  check("accessRefusal tells a restarted backend from a page without a token or at the wrong address", !refusals.length,
+    show(refusals.map(([s, t, k, , g]) => ({ status: s, token: !!t, want: k, got: g }))));
+
+  // Log batches: split to fit, in order, with nothing lost but the middle of a
+  // line too long to send at all.
+  const small = { maxLines: 3, maxBytes: 20 };
+  const batchCases = [
+    [[], [], "no lines"],
+    [["a", "b", "c", "d", "e", "f", "g"], [["a", "b", "c"], ["d", "e", "f"], ["g"]], "more lines than a batch holds"],
+    [["123456789", "123456789", "x"], [["123456789", "123456789"], ["x"]], "more bytes than a batch holds"],
+    [["é".repeat(5), "é".repeat(5)], [["é".repeat(5)], ["é".repeat(5)]], "bytes, not characters"],
+  ].map(([lines, want, label]) => [label, want, access.logBatches(lines, small)]).filter(([, want, got]) => !same(want, got));
+  check("logBatches splits lines into batches the backend accepts, in order", !batchCases.length, show(batchCases));
+  const bytes = lines => lines.reduce((n, l) => n + new TextEncoder().encode(l).length + 1, 0);
+  const cuts = [["x", 3 * 1024 * 1024], ["€", 1024 * 1024]].map(([ch, count]) => {
+    const got = access.logBatches(["before", ch.repeat(count), "after"]);
+    const size = new TextEncoder().encode(ch.repeat(count)).length + 1;
+    const flat = got.flat();
+    const ok = got.every(b => bytes(b) <= access.LOG_APPEND_MAX_BYTES) && flat.length === 3 && flat[0] === "before" && flat[2] === "after" &&
+      flat[1].endsWith(`[cut: the line was ${size} bytes]`) && bytes([flat[1]]) > access.LOG_APPEND_MAX_BYTES - 100;
+    return ok ? null : { ch, batches: got.map(b => ({ lines: b.length, bytes: bytes(b) })), end: flat[1]?.slice(-40) };
+  }).filter(Boolean);
+  check("logBatches cuts a line too long to send alone to what fits, and says so", !cuts.length, show(cuts));
+  const many = access.logBatches(Array.from({ length: 2500 }, (_, i) => `line ${i}`));
+  check("logBatches keeps a long queue whole, a thousand lines at a time",
+    same(many.map(b => b.length), [1000, 1000, 500]) && many.flat()[2499] === "line 2499", show(many.map(b => b.length)));
+  check("snapshotBytes measures as the backend does (base64 length * 3 // 4, plus the text's UTF-8)",
+    access.snapshotBytes("A".repeat(10), "é") === 9 && access.snapshotBytes(null, null) === 0 && access.snapshotBytes("AAAA", "") === 3,
+    show([access.snapshotBytes("A".repeat(10), "é"), access.snapshotBytes(null, null)]));
+
+  // The Vite plugin, on its own.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "game-agent-token-"));
+  try {
+    const file = path.join(tmp, plugin.TOKEN_FILE_NAME);
+    const reads = [];
+    reads.push(["no file", plugin.readAgentToken(file), null]);
+    fs.writeFileSync(file, `${token}\r\n`);
+    reads.push(["a token and a newline", plugin.readAgentToken(file), token]);
+    fs.writeFileSync(file, "</script><script>alert(1)</script>");
+    reads.push(["not a token", plugin.readAgentToken(file), null]);
+    const badReads = reads.filter(([, got, want]) => got !== want);
+    check("the plugin reads a token from the file, and nothing else", !badReads.length, show(badReads));
+    check("the plugin's script sets window.__AGENT_TOKEN__, to null when there is no token",
+      plugin.tokenScript(token) === `window.__AGENT_TOKEN__ = "${token}";` && plugin.tokenScript(null) === "window.__AGENT_TOKEN__ = null;" &&
+        plugin.tokenScript("</script>") === "window.__AGENT_TOKEN__ = null;",
+      show([plugin.tokenScript(token), plugin.tokenScript("</script>")]));
+
+    // An older Vite does not check the Host header, so a DNS-rebinding site could
+    // read the token from the page. package-lock.json is not in git and start.bat
+    // installs Node packages only once, so the plugin refuses such a Vite at start.
+    const versions = [["5.4.11", false], ["5.4.12", true], ["5.4.21", true], ["5.10.0", true], ["6.0.0-beta.1", true],
+      ["4.5.14", false], ["5.4", false], ["", false], [undefined, false]]
+      .map(([v, want]) => [v, want, plugin.viteChecksHost(v)]).filter(([, want, got]) => want !== got);
+    check("viteChecksHost accepts Vite 5.4.12 or newer and nothing else", !versions.length, show(versions));
+    const tooOld = (() => {
+      try {
+        plugin.default({ viteVersion: "5.4.11" }).configResolved({ root: tmp });
+        return null;
+      } catch (e) {
+        return e.message;
+      }
+    })();
+    check("the plugin stops Vite on a version too old to check the Host header, and says to run npm install",
+      typeof tooOld === "string" && tooOld.includes("5.4.11") && tooOld.includes("npm install"), show(tooOld));
+    const wanted = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).devDependencies?.vite;
+    check("package.json asks for a Vite that checks the Host header, so npm install brings one",
+      typeof wanted === "string" && /^\^5\./.test(wanted) && plugin.viteChecksHost(wanted.slice(1)), show(wanted));
+
+    // Vite itself, with the project's vite.config.js, in middleware mode. The root
+    // is the temp folder, so the real .agent-token is never read.
+    const { createServer, resolveConfig, version: viteVersion } = await import("vite");
+    check("the installed Vite checks the Host header", plugin.viteChecksHost(viteVersion),
+      `Vite ${viteVersion} is older than ${plugin.MIN_VITE_VERSION}: run npm install`);
+    const configFile = path.join(ROOT, "vite.config.js");
+    const inline = { configFile, root: tmp, logLevel: "silent" };
+    fs.writeFileSync(file, token);
+    fs.writeFileSync(path.join(tmp, `${plugin.TOKEN_FILE_NAME}.123.tmp`), token);  // the backend's copy while it writes
+    fs.writeFileSync(path.join(tmp, ".env"), "NOT_A_KEY=1\n");
+    fs.writeFileSync(path.join(tmp, "page.js"), "export default 1;\n");
+    const vite = await createServer({ ...inline, appType: "custom",
+      server: { middlewareMode: true, ws: false, watch: null }, optimizeDeps: { noDiscovery: true, include: [] } });
+    let listener = null;
+    try {
+      const html = await vite.transformIndexHtml("/", "<!doctype html><html><head></head><body></body></html>");
+      const tokenAt = html.indexOf(`window.__AGENT_TOKEN__ = "${token}";`);
+      check("Vite puts the token in the page, before the page's own scripts",
+        tokenAt >= 0 && tokenAt < html.indexOf("type=\"module\""), html.slice(0, 200));
+      // A reload asks the same, still running Vite for the page again, so the
+      // second load has to be on this server: a new server would load the plugin
+      // afresh and hide a plugin that keeps the first token.
+      const newToken = `${token.slice(1)}X`;
+      fs.writeFileSync(file, newToken);
+      const html2 = await vite.transformIndexHtml("/", "<html><head></head><body></body></html>");
+      check("Vite reads the token again for each page load, so a reload picks up a new one",
+        html2.includes(`window.__AGENT_TOKEN__ = "${newToken}";`), html2.slice(0, 200));
+
+      // The page is the only way to the token: Vite must not serve the file by
+      // its path. Served on a free local port for these few requests.
+      listener = http.createServer(vite.middlewares);
+      await new Promise((resolve, reject) => listener.once("error", reject).listen(0, "127.0.0.1", resolve));
+      const base = `http://127.0.0.1:${listener.address().port}`;
+      const fsPath = `/@fs/${tmp.split(path.sep).join("/")}`;
+      const fetched = await Promise.all([
+        "/.agent-token", "/.agent-token?raw", "/.agent-token?import", "/.agent-token?url", "/.AGENT-TOKEN", "/%2Eagent-token",
+        `${fsPath}/.agent-token`, `${fsPath}/.agent-token?raw`, "/.agent-token.123.tmp?raw", "/.env", "/page.js",
+      ].map(async url => {
+        const reply = await fetch(base + url);
+        return { url, status: reply.status, token: (await reply.text()).includes(token.slice(1, -1)) };
+      }));
+      const leaks = fetched.filter(f => f.url === "/page.js" ? f.status !== 200 : f.status !== 403 || f.token);
+      check("Vite refuses to serve .agent-token (or .env) by URL, and still serves the page's own files", !leaks.length, show(leaks));
+    } finally {
+      await new Promise(resolve => (listener ? listener.close(resolve) : resolve()));
+      await vite.close();
+    }
+
+    const served = await resolveConfig(inline, "serve");
+    // Not strictPort: see vite.config.js for why a second Vite must not exit.
+    check("the dev server is on port 5173, with no CORS, and does not exit when the port is taken",
+      served.server.port === 5173 && !served.server.strictPort && served.server.cors === false,
+      show({ port: served.server.port, strictPort: served.server.strictPort, cors: served.server.cors }));
+    const proxy = served.server.proxy?.["/api"];
+    check("/api goes to the backend with the Host rewritten to localhost",
+      proxy?.target === "http://localhost:8765" && proxy.changeOrigin === true && proxy.rewrite?.("/api/health") === "/health",
+      show(proxy && { target: proxy.target, changeOrigin: proxy.changeOrigin }));
+    const built = await resolveConfig(inline, "build");
+    check("npm run build leaves the token out of dist/",
+      served.plugins.some(p => p.name === "agent-token") && !built.plugins.some(p => p.name === "agent-token"),
+      show(built.plugins.filter(p => p.name === "agent-token").map(p => p.name)));
+  } catch (e) {
+    check("the Vite plugin and vite.config.js load", false, e?.stack ?? String(e));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
 
 // ── Failed model requests ─────────────────────────────────────────────────────
 console.log("model request failures");
@@ -812,9 +1013,72 @@ if (agent) {
     check("Stop during a retry in flight says what had failed",
       !inRetry.hung && inRetry.e?.verdict?.kind === "stopped" && inRetry.e.verdict.afterFailure?.reason === "server-error" && inRetry.calls === 2,
       show(inRetry.hung ? "hung" : { verdict: inRetry.e?.verdict, calls: inRetry.calls }));
+
+    // ── backend(): the token on every request, and a refusal said once ──────────
+    console.log("backend()");
+    const token = "Tt0_-".repeat(9);
+    const heard = [];
+    agent.__onBackendRefused(r => heard.push(r));
+    const headerOf = (sent, name) => Object.entries(sent?.init?.headers ?? {}).find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
+    try {
+      globalThis.__AGENT_TOKEN__ = token;
+      calls.length = 0;
+      respond = () => json(200, { width: 1920, height: 1080, platform: "Windows" });
+      const info = await agent.__backend("/screen/info");
+      await agent.__backend("/mouse/click", { x: 1, y: 2 });
+      await agent.__backend("/memory/some-game", null, { method: "DELETE" });
+      const [get, post, del] = calls;
+      check("backend() sends the page's token with every request, and a content type only with a body",
+        info.width === 1920 && get?.url === "/api/screen/info" && headerOf(get, "X-Agent-Token") === token && !headerOf(get, "Content-Type") &&
+          post?.init?.method === "POST" && headerOf(post, "X-Agent-Token") === token && headerOf(post, "Content-Type") === "application/json" &&
+          del?.init?.method === "DELETE" && headerOf(del, "X-Agent-Token") === token && !heard.length,
+        show(calls.map(c => ({ url: c.url, method: c.init?.method, headers: c.init?.headers })).concat(heard)));
+
+      // The backend's access check: a backend restarted since the page loaded.
+      respond = () => json(401, { ok: false, detail: "missing or wrong X-Agent-Token: reload the agent page" });
+      const refused = await agent.__backend("/mouse/click", { x: 1, y: 2 });
+      check("a 401 is reported once to the page, with what to do, and read as a failure that names it",
+        heard.length === 1 && heard[0].kind === "token" && refused.ok === false && refused.refused === "token" &&
+          backendFailure(refused).includes("reload this page") && refused.detail,
+        show({ heard, refused }));
+      delete globalThis.__AGENT_TOKEN__;
+      calls.length = 0;
+      await agent.__backend("/screen/info");
+      check("a page served without a token sends none, and is told how to get one",
+        calls.length === 1 && headerOf(calls[0], "X-Agent-Token") === undefined && heard[1]?.kind === "no-token",
+        show({ headers: calls[0]?.init?.headers, heard: heard[1] }));
+      respond = () => json(403, { ok: false, detail: "requests from 'http://localhost:5174' are not accepted" });
+      await agent.__backend("/screen/info");
+      check("a 403 tells the operator where to open the page", heard[2]?.kind === "origin" && heard[2].message.includes("http://localhost:5173"),
+        show(heard[2]));
+
+      // The Ollama relay turned away the same way cannot be fixed by asking again.
+      globalThis.__AGENT_TOKEN__ = token;
+      respond = () => json(401, { ok: false, detail: "missing or wrong X-Agent-Token" });
+      const relayLocked = await run("ollama", {}, { relay: true });
+      check("ollama via the relay: a backend that refuses the page's token fails at once, saying to reload",
+        !relayLocked.hung && relayLocked.e?.verdict?.kind === "fatal" && relayLocked.e.verdict.reason === "backend-refused" &&
+          relayLocked.calls === 1 && headerOf(relayLocked.sent[0], "X-Agent-Token") === token && /reload/i.test(relayLocked.e.verdict.userText),
+        show({ verdict: relayLocked.e?.verdict, calls: relayLocked.calls }));
+    } finally {
+      agent.__onBackendRefused(null);
+      delete globalThis.__AGENT_TOKEN__;
+    }
   } finally {
     globalThis.fetch = realFetch;
   }
+}
+
+// Every request to the backend must carry the token, and only backend() adds
+// it, so nothing else may fetch /api. /health answers without the token and
+// says nothing else, so nothing may read the screen size from it any more.
+{
+  const direct = [...code.matchAll(/\bfetch\(\s*[`"']\/api/g)].map(m => context(m.index));
+  check("only backend() fetches /api (so every request carries the token)", direct.length === 1, direct.join("  |  "));
+  const fromHealth = [...code.matchAll(/screen_width|screen_height|["'`]\/(?:api\/)?health["'`]/g)].map(m => context(m.index));
+  check("the page reads nothing from /health", !fromHealth.length, fromHealth.join("  |  "));
+  const infoReads = [...code.matchAll(/backend\("\/screen\/info"/g)].length;
+  check("the page's backend check and watchdog ask /screen/info, which needs the token", infoReads === 2, `found ${infoReads}`);
 }
 
 // ── Every model call can be stopped ───────────────────────────────────────────

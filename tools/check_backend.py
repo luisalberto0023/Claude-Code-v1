@@ -41,12 +41,15 @@ How it stays safe, in the order it happens:
      could not start there. Only elsewhere (a headless Linux session) does a
      stand-in module take the place of one that will not import.
   5. agent_server is imported, its SendInput scan-code sender is swapped, and
-     its log directory and memory file are pointed at a temp directory so the
-     real game-agent-memory.json and logs/ are never written.
+     its log directory, memory file and token file are pointed at a temp
+     directory so the real game-agent-memory.json, logs/ and .agent-token are
+     never written. It is given a test token (TEST_TOKEN), which every request
+     sends unless a test leaves it off.
   6. Before the server starts, every input path is checked to be a recorder,
      both guards included. If one is not, nothing is served and the run fails.
 The server itself runs under uvicorn on a free port on 127.0.0.1 (never 8765),
-in a background thread, and is shut down at the end.
+on a socket bound by the backend's own claim_port, in a background thread, and
+is shut down at the end.
 
 What the guards cannot see: input sent by compiled code that calls Windows
 itself (a C extension) or by another process. A library like that needs a
@@ -62,9 +65,10 @@ one argument, a Harness, with:
                  status, body = h.api.post("/mouse/click", {"x": 10, "y": 10})
                Non-2xx responses are returned, not raised, so rejection paths
                are as easy to test as success. h.api.headers (a fresh copy of
-               DEFAULT_HEADERS for each test) go on every request; pass
-               headers={...} to add or override per call, with a value of None
-               to leave a default header off.
+               DEFAULT_HEADERS for each test, which holds the backend's token)
+               go on every request; pass headers={...} to add or override per
+               call, with a value of None to leave a default header off, e.g.
+               headers={"X-Agent-Token": None}.
     h.inputs   every stubbed call made since this test started, in order, as
                Call(name, args, kwargs). Names look like "pyautogui.click",
                "sendinput.scan", "vgamepad.press_button", "dxcam.grab", and,
@@ -99,6 +103,7 @@ import inspect
 import io
 import json
 import os
+import secrets
 import shutil
 import socket
 import sys
@@ -459,6 +464,12 @@ def import_server(inputs, tmp):
         server._send_scan = inputs.stub("sendinput.scan")
     server.LOG_DIR = Path(tmp) / "logs"
     server.MEMORY_FILE = Path(tmp) / "game-agent-memory.json"
+    # The backend refuses every request without its launch token. Importing it
+    # sets none (only running it does), so the tests give it theirs.
+    if hasattr(server, "TOKEN_HEADER"):
+        server.TOKEN_FILE = Path(tmp) / ".agent-token"
+        server.AGENT_TOKEN = TEST_TOKEN
+        DEFAULT_HEADERS[server.TOKEN_HEADER] = TEST_TOKEN
     return server
 
 
@@ -522,6 +533,10 @@ def unstubbed_inputs(server, inputs):
 # requiring something on every request, set it here once, in import_server.
 DEFAULT_HEADERS = {}
 
+# The token the backend under test accepts (import_server gives it this one),
+# made fresh for each run as the backend makes its own.
+TEST_TOKEN = secrets.token_urlsafe(32)
+
 
 class Api:
     def __init__(self, base, headers=None):
@@ -561,12 +576,17 @@ def _parse(raw):
         return {"_raw": raw.decode("utf-8", errors="replace")}
 
 
-def start_server(app):
+def start_server(app, bind=None):
     # Bind first and hand uvicorn the socket: asking for a free port and then
-    # binding it later can lose the port to someone else in between.
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
+    # binding it later can lose the port to someone else in between. `bind` is
+    # the backend's own claim_port when it has one, so the socket is set up the
+    # way start.bat's backend sets up port 8765.
+    if bind is not None:
+        sock = bind("127.0.0.1", 0)
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.bind(("127.0.0.1", 0))
+    try:
         port = sock.getsockname()[1]
         server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
         thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
@@ -618,6 +638,247 @@ def _(h):
     expect(status == 200, f"status {status}: {body}")
     expect(body.get("status") == "ok", f"body {body}")
     expect(not h.inputs.calls, f"health touched input: {h.inputs.names()}")
+
+
+# ── Who may use the backend ──────────────────────────────────────────────────
+# Any web page open in the browser can send requests to 127.0.0.1, and every
+# route here drives the real mouse, keyboard or gamepad, reads the screen or
+# writes files. So only the agent page gets in: with this launch's token, from
+# its own origin, under a Host of localhost or 127.0.0.1.
+
+TOKEN = "X-Agent-Token"
+PAGE = "http://localhost:5173"
+
+
+def refused_before_running(h, status, body, want, label):
+    expect(status == want, f"{label}: status {status}, wanted {want}: {body}")
+    expect(not h.inputs.calls, f"{label}: input reached: {h.inputs.names()}")
+
+
+@test("GET /health answers without the token, and says nothing but ok")
+def _(h):
+    status, body = h.api.get("/health", headers={TOKEN: None})
+    expect(status == 200 and body == {"status": "ok"}, f"status {status}: {body}")
+
+
+@test("Every route but GET /health refuses a request without the token, before it runs")
+def _(h):
+    import re
+    routes = [(method, route.path) for route in h.server.app.routes
+              for method in sorted(getattr(route, "methods", None) or ())
+              if method != "HEAD" and not route.path.startswith(("/docs", "/redoc", "/openapi"))]
+    expect(len(routes) >= 25, f"only {len(routes)} routes found: {routes}")
+    let_through = []
+    for method, path in routes:
+        url = re.sub(r"\{[^}]*\}", "access-check", path)
+        body = {} if method == "POST" else None
+        status, reply = h.api.request(method, url, body, headers={TOKEN: None})
+        if (method, path) == ("GET", "/health"):
+            continue
+        if status != 401 or "reload" not in str(reply.get("detail", "")):
+            let_through.append(f"{method} {path} -> {status} {reply}")
+    expect(not let_through, "not refused with 401: " + "; ".join(let_through))
+    # FastAPI's own pages describe every route, so they are behind the token too,
+    # and so is a path that does not exist (a 404 would confirm which do).
+    for path in ("/docs", "/openapi.json", "/no-such-route"):
+        status, reply = h.api.get(path, headers={TOKEN: None})
+        expect(status == 401, f"GET {path} without the token: status {status}: {reply}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+
+@test("A missing, wrong or empty token is refused with 401 on an input route")
+def _(h):
+    right = h.api.headers[TOKEN]
+    for label, token in (("no token", None), ("wrong token", "x" * len(right)),
+                         ("token cut short", right[:-1]), ("token with more on the end", right + "x"),
+                         ("empty token", ""), ("token in other case", right.swapcase())):
+        status, body = h.api.post("/mouse/click", {"x": 100, "y": 100, "move_duration": 0}, headers={TOKEN: token})
+        refused_before_running(h, status, body, 401, label)
+    # Header names are not case-sensitive, so the page's spelling does not matter.
+    status, body = h.api.post("/mouse/move", {"x": 100, "y": 100, "duration": 0},
+                              headers={TOKEN: None, "x-agent-token": right})
+    expect(status == 200 and body.get("ok") is True, f"lower-case header name: status {status}: {body}")
+    # Imported without being run, the backend has no token, and takes none.
+    h.server.AGENT_TOKEN = None
+    try:
+        status, body = h.api.get("/screen/info")
+    finally:
+        h.server.AGENT_TOKEN = right
+    expect(status == 401, f"with no launch token set: status {status}: {body}")
+    expect(h.server.token_matches(right.encode(), right) and not h.server.token_matches(None, right)
+           and not h.server.token_matches(right.encode(), None), "token_matches")
+
+
+@test("A foreign Origin is refused with 403, even with the right token")
+def _(h):
+    for origin in ("https://evil.example", "http://localhost:5174", "null", "http://localhost:5173.evil.example",
+                   "http://127.0.0.1:8765", "https://localhost:5173", "http://localhost"):
+        for method, path, body in (("POST", "/mouse/click", {"x": 100, "y": 100, "move_duration": 0}),
+                                   ("POST", "/keyboard/type", {"text": "hi", "interval": 0}),
+                                   ("GET", "/capture/frame", None),
+                                   ("GET", "/health", None)):
+            status, reply = h.api.request(method, path, body, headers={"Origin": origin})
+            refused_before_running(h, status, reply, 403, f"{method} {path} from {origin}")
+
+
+@test("A foreign Host is refused with 400, even with the right token and Origin")
+def _(h):
+    # What DNS rebinding looks like: a hostile name that resolves to 127.0.0.1.
+    for host in ("evil.example:8765", "evil.example", "localhost.evil.example:8765", "127.0.0.2:8765"):
+        status, body = h.api.post("/mouse/click", {"x": 100, "y": 100, "move_duration": 0},
+                                  headers={"Host": host, "Origin": PAGE})
+        refused_before_running(h, status, body, 400, f"Host {host}")
+
+
+@test("A refused request with a large body gets its refusal, not a reset connection")
+def _(h):
+    # The page's log batches and snapshots are megabytes. Refused without their
+    # body being read, the connection was reset instead, and through Vite the
+    # page saw an empty HTTP 500 rather than the 401 that says to reload.
+    body = {"session": "refused", "lines": ["x" * 1000] * 2000}
+    for label, headers, want in (("no token", {TOKEN: None}, 401),
+                                 ("a foreign Origin", {"Origin": "https://evil.example"}, 403),
+                                 ("a foreign Host", {"Host": "evil.example:8765"}, 400)):
+        for attempt in range(3):
+            try:
+                status, reply = h.api.post("/log/append", body, headers=headers)
+            except (ConnectionError, urllib.error.URLError) as e:
+                expect(False, f"{label}, attempt {attempt + 1}: {type(e).__name__}: {e}")
+            expect(status == want, f"{label}: status {status}, wanted {want}: {str(reply)[:200]}")
+    expect(not h.server._log_path("refused").exists(), "a refused batch was written")
+
+
+@test("The agent page gets through: right token, its own Origin, a local Host")
+def _(h):
+    for origin, host in ((PAGE, "localhost:8765"), ("http://127.0.0.1:5173", "127.0.0.1:8765"), (None, None)):
+        extra = {"Origin": origin, "Host": host}
+        status, body = h.api.get("/screen/info", headers=extra)
+        expect(status == 200 and body.get("width") == SCREEN[0] and body.get("height") == SCREEN[1],
+               f"GET /screen/info with {extra}: status {status}: {body}")
+        status, body = h.api.post("/mouse/move", {"x": 100, "y": 200, "duration": 0}, headers=extra)
+        expect(status == 200 and body.get("ok") is True, f"POST /mouse/move with {extra}: status {status}: {body}")
+    expect(len(h.inputs.named("pyautogui.moveTo")) == 3, f"moves: {h.inputs.names()}")
+
+
+@test("/screen/info and /capabilities hold what /health used to")
+def _(h):
+    status, body = h.api.get("/screen/info")
+    expect(status == 200 and body.get("width") == SCREEN[0] and body.get("height") == SCREEN[1]
+           and isinstance(body.get("platform"), str), f"/screen/info: status {status}: {body}")
+    status, body = h.api.get("/capabilities")
+    expect(status == 200 and set(body) == {"gamepad", "capture", "windows_api", "speedhack"}
+           and all(isinstance(v, bool) for v in body.values()), f"/capabilities: status {status}: {body}")
+
+
+@test("launch claims the port before it writes the token, and a failed launch leaves the token alone")
+def _(h):
+    folder = Path(h.tmp) / "launch"
+    folder.mkdir(exist_ok=True)
+    token_file = folder / ".agent-token"
+    listener, token = h.server.launch({}, token_file, "127.0.0.1", 0)
+    try:
+        listener.listen()
+        port = listener.getsockname()[1]
+        expect(port != 8765, "launched on the real port")
+        expect(token_file.read_text(encoding="ascii") == token and h.server.TOKEN_PATTERN.fullmatch(token)
+               and len(token) >= 43, f"token file holds {token_file.read_text(encoding='ascii')!r}, launch returned {token!r}")
+        expect(sorted(p.name for p in folder.iterdir()) == [".agent-token"], f"left behind: {list(folder.iterdir())}")
+        # A second copy started by mistake must not replace the running one's token.
+        try:
+            second = h.server.launch({}, token_file, "127.0.0.1", port)
+            second[0].close()
+            expect(False, "a second launch bound the same port")
+        except h.server.LaunchFailed as e:
+            expect("already running" in str(e), f"message: {e}")
+        expect(token_file.read_text(encoding="ascii") == token, "a failed second launch rewrote the token")
+    finally:
+        listener.close()
+
+    listener, again = h.server.launch({}, token_file, "127.0.0.1", 0)
+    listener.close()
+    expect(again != token and token_file.read_text(encoding="ascii") == again, "a new launch did not make a new token")
+
+    chosen = "A" * 20 + "b" * 20 + "-_0"
+    listener, token = h.server.launch({"AGENT_TOKEN": f"  {chosen}\n"}, token_file, "127.0.0.1", 0)
+    listener.close()
+    expect(token == chosen and token_file.read_text(encoding="ascii") == chosen, f"AGENT_TOKEN not used: {token!r}")
+    for bad in ("short", "x" * 31, "has space " * 5, "quote\"" * 8, "x" * 257):
+        try:
+            h.server.launch({"AGENT_TOKEN": bad}, token_file, "127.0.0.1", 0)[0].close()
+            expect(False, f"AGENT_TOKEN {bad!r} was accepted")
+        except h.server.LaunchFailed:
+            pass
+        expect(token_file.read_text(encoding="ascii") == chosen, f"a refused AGENT_TOKEN {bad!r} changed the file")
+
+
+# ── Off-screen input and oversized writes ────────────────────────────────────
+
+@test("POST /mouse/drag and /mouse/scroll refuse off-screen coordinates before any input")
+def _(h):
+    w, hgt = SCREEN
+    for label, body in (("end off the right", {"x1": 100, "y1": 100, "x2": w + 10, "y2": 100}),
+                        ("start above the top", {"x1": 100, "y1": -1, "x2": 200, "y2": 200}),
+                        ("end below the bottom", {"x1": 100, "y1": 100, "x2": 200, "y2": hgt})):
+        status, reply = h.api.post("/mouse/drag", {**body, "duration": 0})
+        expect(status == 200 and reply.get("ok") is False and "outside" in reply.get("error", ""),
+               f"drag {label}: status {status}: {reply}")
+    for label, body in (("off the left", {"x": -5, "y": 100}), ("off the bottom", {"x": 100, "y": hgt + 1})):
+        status, reply = h.api.post("/mouse/scroll", {**body, "amount": -3})
+        expect(status == 200 and reply.get("ok") is False and "outside" in reply.get("error", ""),
+               f"scroll {label}: status {status}: {reply}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+    status, reply = h.api.post("/mouse/drag", {"x1": 100, "y1": 100, "x2": 300, "y2": 400, "duration": 0})
+    expect(status == 200 and reply.get("ok") is True, f"on-screen drag: status {status}: {reply}")
+    status, reply = h.api.post("/mouse/scroll", {"x": 500, "y": 500, "amount": -3})
+    expect(status == 200 and reply.get("ok") is True, f"on-screen scroll: status {status}: {reply}")
+    drags = h.inputs.named("pyautogui.dragTo")
+    scrolls = h.inputs.named("pyautogui.scroll")
+    expect(len(drags) == 1 and drags[0].args[:2] == (300, 400), f"drags: {drags}")
+    expect(len(scrolls) == 1 and scrolls[0].args[:1] == (-3,), f"scrolls: {scrolls}")
+
+
+@test("POST /log/snapshot refuses an oversized snapshot with 413 and writes nothing")
+def _(h):
+    limit = h.server.SNAPSHOT_MAX_BYTES
+    expect(limit == 8 * 1024 * 1024, f"SNAPSHOT_MAX_BYTES is {limit}")
+    folder = Path(h.server.LOG_DIR) / "snapshots" / "size-check"
+    shutil.rmtree(folder, ignore_errors=True)
+    over = "A" * ((limit // 3 + 1) * 4)  # base64 of limit + 3 bytes
+    for label, body in (("an image over the limit", {"png": over}),
+                        ("text over the limit", {"text": "x" * (limit + 1)}),
+                        ("an image and text over the limit together", {"png": "A" * (limit // 2 // 3 * 4), "text": "x" * (limit // 2 + 8)})):
+        status, reply = h.api.post("/log/snapshot", {"session": "size-check", "tag": "big", **body})
+        expect(status == 413 and reply.get("ok") is False and "limit" in reply.get("error", ""),
+               f"{label}: status {status}: {str(reply)[:200]}")
+    expect(not folder.exists() or not any(folder.iterdir()), f"written: {list(folder.iterdir()) if folder.exists() else []}")
+
+    status, reply = h.api.post("/log/snapshot", {"session": "size-check", "tag": "small",
+                                                 "png": "iVBORw0KGgo=", "text": "board"})
+    expect(status == 200 and reply.get("ok") is True and len(reply.get("files", [])) == 2,
+           f"a small snapshot: status {status}: {reply}")
+
+
+@test("POST /log/append refuses too many lines or bytes with 413 and writes nothing")
+def _(h):
+    max_lines, max_bytes = h.server.LOG_APPEND_MAX_LINES, h.server.LOG_APPEND_MAX_BYTES
+    path = h.server._log_path("append-check")
+    path.unlink(missing_ok=True)
+    for label, lines in (("one line too many", ["x"] * (max_lines + 1)),
+                         ("one byte too many", ["x" * (max_bytes // 2 - 1), "y" * (max_bytes // 2)])):
+        status, reply = h.api.post("/log/append", {"session": "append-check", "lines": lines})
+        expect(status == 413 and reply.get("ok") is False, f"{label}: status {status}: {str(reply)[:200]}")
+    expect(not path.exists(), f"a refused batch was written: {path}")
+
+    # Exactly at both limits is accepted, and so is half an emoji (a line the
+    # page cut short mid-character), which used to fail the whole batch.
+    for label, lines in (("the most lines", ["x"] * max_lines),
+                         ("the most bytes", ["x" * (max_bytes // 2 - 1), "y" * (max_bytes // 2 - 1)]),
+                         ("half an emoji", ["cut here: \ud83d", "next line"])):
+        status, reply = h.api.post("/log/append", {"session": "append-check", "lines": lines})
+        expect(status == 200 and reply.get("ok") is True, f"{label}: status {status}: {str(reply)[:200]}")
+    written = path.read_text(encoding="utf-8").splitlines()
+    expect(len(written) == max_lines + 4 and written[-1] == "next line", f"{len(written)} lines written")
 
 
 @test("POST /mouse/click reaches the stub, not the mouse")
@@ -821,7 +1082,7 @@ def main(argv):
         print("  ok    every input path is stubbed")
 
         try:
-            uv, thread, port = start_server(server.app)
+            uv, thread, port = start_server(server.app, getattr(server, "claim_port", None))
         except Exception:
             # Most likely a startup hook added to agent_server that raises.
             print_raised("server starts")

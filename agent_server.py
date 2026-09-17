@@ -15,8 +15,167 @@ import platform
 import json
 import re
 import datetime
+import hmac
+import os
+import secrets
+import socket
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, get_args
+from typing import Any, Dict, List, Literal, Optional, Tuple, get_args
+
+# ── Who may use this server ─────────────────────────────────────────────────────
+# Every route here moves the real mouse, presses real keys, drives the gamepad,
+# reads the screen or writes files. Listening on 127.0.0.1 keeps the LAN out, but
+# not the browser: any web page open while the agent runs can send requests to
+# localhost. Such a page cannot read the replies, but it does not need to. A
+# no-cors POST with a JSON body still reaches the route, and the click happens.
+# So every request is checked before any route runs (the middleware added where
+# the app is made, below):
+#   - a Host other than localhost or 127.0.0.1 is refused with 400, against DNS
+#     rebinding (a hostile name made to resolve to 127.0.0.1),
+#   - an Origin header that is not the agent page's is refused with 403. Browsers
+#     send Origin on every cross-site POST, no-cors included, and Vite's proxy
+#     passes it on, so this also refuses a site that aims at localhost:5173/api,
+#   - every route except GET /health needs this launch's token, or 401. That
+#     covers what Origin cannot: a browser sends no Origin on a plain GET, such
+#     as an <img> pointed at /capture/frame.
+# The token is new at every start (or AGENT_TOKEN from the environment). It is
+# written to .agent-token, and Vite's dev server puts it in the page each time
+# the page loads (tools/vite-agent-token.mjs). Other sites cannot read that page,
+# so they cannot learn the token.
+
+HOST = "127.0.0.1"
+PORT = 8765
+TOKEN_HEADER = "X-Agent-Token"
+TOKEN_FILE = Path(__file__).parent / ".agent-token"
+TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{32,256}")
+# The page as Vite serves it (vite.config.js, port 5173). A page from a second
+# Vite that found 5173 taken, on 5174, is refused here and told where to go.
+PAGE_ORIGINS = ("http://localhost:5173", "http://127.0.0.1:5173")
+# Vite's proxy (changeOrigin) sends Host localhost:8765; direct calls 127.0.0.1.
+BACKEND_HOSTS = ["localhost", "127.0.0.1"]
+# The only route that answers without the token, so "is the backend up?" can be
+# asked by anyone. It says that and nothing else.
+OPEN_ROUTES = frozenset({("GET", "/health")})
+
+# This launch's token. None until the server starts, and None refuses every
+# request that needs a token, so importing this module serves nothing by mistake.
+AGENT_TOKEN: Optional[str] = None
+
+
+def choose_token(environ) -> str:
+    """AGENT_TOKEN from the environment if it is set, else 32 random bytes."""
+    given = (environ.get("AGENT_TOKEN") or "").strip()
+    if not given:
+        return secrets.token_urlsafe(32)
+    # The token travels in an HTTP header and inside the page's HTML, so it is
+    # held to characters that are safe in both, and long enough not to guess.
+    if not TOKEN_PATTERN.fullmatch(given):
+        raise ValueError("AGENT_TOKEN must be 32 to 256 characters, "
+                         "each a letter, a digit, '-' or '_'")
+    return given
+
+
+def write_token_file(token: str, path: Path) -> None:
+    """Replace `path` with `token` in one step, so Vite never reads half a token
+    or an empty file."""
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(token, encoding="ascii")
+    for attempt in range(40):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            # Windows refuses to replace a file another process has open, and
+            # Vite opens this one on every page load, for a moment.
+            if attempt == 39:
+                tmp.unlink(missing_ok=True)
+                raise
+            time.sleep(0.05)
+
+
+def token_matches(given: Optional[bytes], expected: Optional[str]) -> bool:
+    if not given or not expected:
+        return False
+    return hmac.compare_digest(given, expected.encode("ascii"))
+
+
+def refusal(method: str, path: str, headers: List[Tuple[bytes, bytes]]) -> Optional[Tuple[int, str]]:
+    """Why a request may not run, as (HTTP status, message), or None if it may.
+
+    `headers` are the raw ASGI pairs, names lower-case. A header sent twice is
+    refused rather than guessed at."""
+    origins = [v for k, v in headers if k == b"origin"]
+    if origins:
+        origin = origins[0].decode("latin-1")
+        if len(origins) > 1 or origin not in PAGE_ORIGINS:
+            return 403, (f"requests from {origin[:100]!r} are not accepted: "
+                         f"only the agent page at {PAGE_ORIGINS[0]} may use this backend")
+    if (method, path) in OPEN_ROUTES:
+        return None
+    tokens = [v for k, v in headers if k == TOKEN_HEADER.lower().encode("ascii")]
+    if len(tokens) != 1 or not token_matches(tokens[0], AGENT_TOKEN):
+        return 401, (f"missing or wrong {TOKEN_HEADER}: the backend makes a new token each "
+                     f"time it starts, so reload the agent page at {PAGE_ORIGINS[0]}")
+    return None
+
+
+def claim_port(host: str, port: int) -> socket.socket:
+    """Bind the server's port, or raise OSError if something already holds it.
+
+    Bound here rather than by uvicorn, and before the token is written: a second
+    copy of the backend started by mistake must fail before it replaces the
+    running one's token, or the page would be locked out of the backend that
+    is actually serving it. uvicorn allows the port to be shared on Windows
+    (SO_REUSEADDR there lets a second process bind it too); this does not. It
+    does not slow a restart either: a closed backend's connections waiting out
+    TIME_WAIT do not stop this bind on Windows."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:  # elsewhere this only allows a quick restart, never a second listener
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+    except OSError:
+        sock.close()
+        raise
+    return sock
+
+
+class LaunchFailed(Exception):
+    """Why the backend cannot start, in words for its window."""
+
+
+def launch(environ, token_file: Path, host: str = HOST, port: int = PORT) -> Tuple[socket.socket, str]:
+    """Claim the port, then choose this launch's token and write it for Vite.
+
+    In that order, so a copy that cannot serve never touches the token file.
+    Returns the bound socket and the token; raises LaunchFailed with nothing
+    left bound."""
+    try:
+        listener = claim_port(host, port)
+    except OSError as e:
+        raise LaunchFailed(f"Could not start on port {port} ({e}). Is the backend already "
+                           f"running in another window? Close that one first.") from e
+    try:
+        token = choose_token(environ)
+        write_token_file(token, token_file)
+    except (OSError, ValueError) as e:
+        listener.close()
+        raise LaunchFailed(f"Could not set up the page's token: {e}") from e
+    return listener, token
+
+
+if __name__ == "__main__":
+    # Done first, before the slow imports below, so the token is on disk well
+    # within the 4 s start.bat waits before it opens the page; a page opened
+    # earlier than that would get the last launch's token and have to be
+    # reloaded.
+    try:
+        _listener, AGENT_TOKEN = launch(os.environ, TOKEN_FILE)
+    except LaunchFailed as e:
+        print(e)
+        sys.exit(1)
 
 # Windows DPI-awareness — must be set BEFORE pyautogui imports
 if platform.system() == "Windows":
@@ -29,8 +188,9 @@ if platform.system() == "Windows":
 import pyautogui
 import pyperclip
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, field_validator
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
 
 pyautogui.FAILSAFE = True
@@ -178,13 +338,85 @@ _camera = None
 _capture_region = None   # (left, top, right, bottom) in real screen px
 _speed_client = None
 
+class PageOnly:
+    """Refuse, before any route runs, a request that did not come from the
+    agent page (see "Who may use this server" at the top).
+
+    Plain ASGI rather than a FastAPI dependency: a dependency runs after the
+    body has been read and parsed, and after routing, so a refused request
+    could still get a 422 or 404 that says something about the routes.
+
+    A refusal is {"ok": false, "detail": "..."}, the shape FastAPI gives its
+    own refusals, so the page reads it as "nothing ran" (the Ollama relay
+    treats that as fatal rather than retrying it)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            refused = refusal(scope["method"], scope["path"], scope["headers"])
+            if refused is not None:
+                status, message = refused
+                await JSONResponse({"ok": False, "detail": message}, status_code=status)(scope, receive, send)
+                return
+        elif scope["type"] == "websocket":
+            # No route takes one, and none is let through unchecked. 1008 is
+            # "policy violation".
+            if refusal("GET", scope["path"], scope["headers"]) is not None:
+                await send({"type": "websocket.close", "code": 1008})
+                return
+        await self.app(scope, receive, send)
+
+
+class BodyReadBeforeRefusal:
+    """Read what is left of a request's body before a refusal is sent.
+
+    PageOnly and TrustedHostMiddleware answer without reading the body. uvicorn
+    then closes the connection with the body still unread, Windows resets it,
+    and the client can see "connection reset" instead of the refusal: through
+    Vite's proxy, an empty HTTP 500 in place of the 401 that tells the operator
+    to reload the page. Only error replies wait for the body, and only for so
+    much of it; a route has always read its body before it answers."""
+
+    MAX_BYTES = 16 * 1024 * 1024
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        body_read = False
+
+        async def tracked_receive():
+            nonlocal body_read
+            message = await receive()
+            if message["type"] != "http.request" or not message.get("more_body", False):
+                body_read = True
+            return message
+
+        async def send_once_read(message):
+            if message["type"] == "http.response.start" and message["status"] >= 400:
+                seen = 0
+                while not body_read and seen <= self.MAX_BYTES:
+                    seen += len((await tracked_receive()).get("body", b""))
+            await send(message)
+
+        await self.app(scope, tracked_receive, send_once_read)
+
+
 app = FastAPI(title="Game Agent Backend")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# No CORS middleware: the page reaches the backend through Vite's proxy, from its
+# own origin, so no other origin ever needs to read a reply. CORS allowed every
+# origin here before, which let any page read the screen through /capture/frame.
+app.add_middleware(PageOnly)
+# Added after PageOnly, so it runs before it: a request with a hostile Host is
+# turned away before anything else looks at it.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=BACKEND_HOSTS)
+# Added last, so it wraps both refusals above.
+app.add_middleware(BodyReadBeforeRefusal)
 
 
 def _capabilities():
@@ -198,13 +430,10 @@ def _capabilities():
 
 @app.get("/health")
 def health():
-    return {
-        "status": "ok",
-        "platform": platform.system(),
-        "screen_width": SCREEN_W,
-        "screen_height": SCREEN_H,
-        "capabilities": _capabilities(),
-    }
+    # Answers without the token, so it says only that the backend is up. The
+    # screen size and capabilities it used to include are behind the token, at
+    # /screen/info and /capabilities.
+    return {"status": "ok"}
 
 
 @app.get("/capabilities")
@@ -282,8 +511,13 @@ def mouse_click(b: ClickBody):
 @app.post("/mouse/drag")
 def mouse_drag(b: DragBody):
     try:
-        pyautogui.moveTo(b.x1, b.y1, duration=0.1)
-        pyautogui.dragTo(b.x2, b.y2, duration=b.duration, button=b.button)
+        # Both ends are checked before the pointer moves at all: a drag whose end
+        # is off-screen would otherwise start, press the button and finish in a
+        # corner, which is pyautogui's abort signal (see _on_screen).
+        x1, y1 = _on_screen(b.x1, b.y1)
+        x2, y2 = _on_screen(b.x2, b.y2)
+        pyautogui.moveTo(x1, y1, duration=0.1)
+        pyautogui.dragTo(x2, y2, duration=b.duration, button=b.button)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -292,7 +526,8 @@ def mouse_drag(b: DragBody):
 @app.post("/mouse/scroll")
 def mouse_scroll(b: ScrollBody):
     try:
-        pyautogui.moveTo(b.x, b.y, duration=0.05)
+        x, y = _on_screen(b.x, b.y)
+        pyautogui.moveTo(x, y, duration=0.05)
         pyautogui.scroll(b.amount)
         return {"ok": True}
     except Exception as e:
@@ -442,6 +677,20 @@ def screen_info():
 
 LOG_DIR = Path(__file__).parent / "logs"
 
+# What one request may add to a session log or a snapshot. Far above what the
+# page sends (it flushes every 2 s, in batches it splits to fit: logBatches in
+# src/agent/backend.js holds the same two log limits, and tools/check-agent.mjs
+# fails if they differ), so these only stop a runaway or a hostile request from
+# filling the disk in one go.
+LOG_APPEND_MAX_LINES = 1000
+LOG_APPEND_MAX_BYTES = 1024 * 1024
+SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024
+
+
+def _too_large(what: str, limit: str) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": f"{what} is over the limit of {limit}; nothing was written"},
+                        status_code=413)
+
 
 class LogLines(BaseModel):
     session: str
@@ -456,10 +705,18 @@ def _log_path(session: str) -> Path:
 @app.post("/log/append")
 def log_append(b: LogLines):
     """Append log lines to this session's file, creating it on first write."""
+    if len(b.lines) > LOG_APPEND_MAX_LINES:
+        return _too_large(f"{len(b.lines)} lines", f"{LOG_APPEND_MAX_LINES} lines")
+    # Counted as written: one newline each, and "replace" for half an emoji (a
+    # line the page cut short mid-character), which would otherwise fail the
+    # whole batch here and in the write below.
+    size = sum(len(line.rstrip("\n").encode("utf-8", "replace")) + 1 for line in b.lines)
+    if size > LOG_APPEND_MAX_BYTES:
+        return _too_large(f"{size} bytes of log", f"{LOG_APPEND_MAX_BYTES} bytes")
     try:
         LOG_DIR.mkdir(exist_ok=True)
         path = _log_path(b.session)
-        with path.open("a", encoding="utf-8") as fh:
+        with path.open("a", encoding="utf-8", errors="replace") as fh:
             for line in b.lines:
                 fh.write(line.rstrip("\n") + "\n")
         return {"ok": True, "path": str(path), "bytes": path.stat().st_size}
@@ -484,6 +741,13 @@ class Snapshot(BaseModel):
 
 @app.post("/log/snapshot")
 def log_snapshot(b: Snapshot):
+    # Measured before decoding, so an oversized image is never decoded or written.
+    # Four base64 characters carry at most three bytes. The page measures the
+    # same way before it sends (snapshotBytes in src/agent/backend.js), and
+    # scales a frame down to fit rather than lose it.
+    size = len(b.png or "") * 3 // 4 + len((b.text or "").encode("utf-8", "replace"))
+    if size > SNAPSHOT_MAX_BYTES:
+        return _too_large(f"a snapshot of about {size} bytes", f"{SNAPSHOT_MAX_BYTES} bytes")
     try:
         stamp = datetime.datetime.now().strftime("%H%M%S")
         safe_session = re.sub(r"[^A-Za-z0-9_-]+", "-", b.session)[:60] or "session"
@@ -497,7 +761,7 @@ def log_snapshot(b: Snapshot):
             written.append(str(path))
         if b.text:
             path = folder / f"{stamp}-{safe_tag}.txt"
-            path.write_text(b.text, encoding="utf-8")
+            path.write_text(b.text, encoding="utf-8", errors="replace")
             written.append(str(path))
         return {"ok": True, "files": written}
     except Exception as e:
@@ -1029,7 +1293,10 @@ if __name__ == "__main__":
     print("─" * 40)
     print(f"Platform : {platform.system()}")
     print(f"Screen   : {SCREEN_W} x {SCREEN_H} px")
-    print(f"API      : http://localhost:8765")
+    print(f"API      : http://localhost:{PORT} (only for the agent page at {PAGE_ORIGINS[0]})")
+    print(f"Token    : {'from AGENT_TOKEN' if (os.environ.get('AGENT_TOKEN') or '').strip() else 'new for this start'}, "
+          f"written to {TOKEN_FILE.name}")
+    print("           A page opened before this start must be reloaded (F5).")
     print(f"DPI-aware: {'yes' if platform.system() == 'Windows' else 'n/a'}")
     print("Capabilities:")
     print(f"  gamepad  (vgamepad)  : {'ready' if GAMEPAD_AVAILABLE else 'missing — pip install vgamepad + ViGEmBus'}")
@@ -1040,4 +1307,5 @@ if __name__ == "__main__":
     print("Move mouse to TOP-LEFT corner to emergency-stop.")
     print("Press Ctrl+C to quit.")
     print()
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="warning")
+    # On the socket claimed at the top of this file, before the token was written.
+    uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[_listener])
