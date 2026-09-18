@@ -20,6 +20,7 @@ import {
   KEY_HOLD_MAX_S, GAMEPAD_HOLD_MAX_S, GAMEPAD_BUTTON_MIN_S, TYPE_TEXT_MAX_CHARS,
   limitNote, replyNote, withLimitNotes, holdKeyResult, typeTextResult,
 } from "./agent/inputLimits.js";
+import { SCREEN_RULE, withScreenRule } from "./agent/prompts.js";
 import { PROVIDERS } from "./llm/providers.js";
 import { anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote } from "./llm/requests.js";
 import { MODEL_LIST_PAUSE_MS, modelChoices, modelListMessage, listModels, checkModel } from "./llm/models.js";
@@ -40,6 +41,22 @@ function pluginName(plugin) {
 }
 
 // ── Safe env access (works in Vite AND artifact sandbox) ──────────────────────
+//
+// In practice this reads only what the key field put in _runtimeKeys, and the
+// `?.` before `env` below is what makes that true. Vite goes looking for the
+// four characters `.env` straight after `import.meta`: in a build it replaces
+// `import.meta.env.VITE_NAME` with the value, and in `npm run dev` its import
+// analysis prepends `import.meta.env = { …every VITE_ value… };` to any module
+// whose source has `import.meta.env` in it at all, whatever follows. The
+// optional chain here is not that shape, so Vite neither injects nor replaces
+// it, and a key in .env is never read. SETUP.md says so.
+//
+// Do NOT "fix" that by deleting the `?.` or writing import.meta.env.VITE_…
+// statically. The build form pastes the key into dist/assets/*.js, shipped to
+// anyone given the built page; the dev form pastes it into the module the agent
+// actually runs, where dist/ never sees it. tools/check-secrets.mjs fails on any
+// `import.meta.env` under src/, and tools/check-no-secrets.mjs fails a build
+// whose dist/ holds anything key-shaped.
 const _runtimeKeys = {};
 function getEnv(key) {
   try { const v = import.meta?.env?.[key]; if (v && !v.includes("your-key")) return v; } catch {}
@@ -138,7 +155,10 @@ async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey,
   };
 
   const doCall = async (reqSignal) => {
-    const request = { model, system: systemPrompt, messages, tools, apiKey, maxTokens };
+    // Every system prompt carries the standing rule about what is on screen
+    // (src/agent/prompts.js says why). It is added here, the one place a model
+    // request is built, so no prompt written later can go out without it.
+    const request = { model, system: withScreenRule(systemPrompt), messages, tools, apiKey, maxTokens };
 
     if (providerKey === "anthropic") {
       const { url, init } = anthropicRequest(request);
@@ -2264,7 +2284,13 @@ export default function GameAgent() {
     try {
       const frame = await grabFrame();
       const list = found.map((b, i) => `${i}: at ${b.cx},${b.cy}, ${b.w}x${b.h}px`).join("\n");
-      const sys = `You are looking at a game that has stopped responding to input.
+      // The screen rule goes in at the front rather than being appended by
+      // callAI, so "Reply with ONLY a JSON object" stays the last line: this
+      // reply is parsed as JSON. (callAI leaves a prompt that already has the
+      // rule alone.)
+      const sys = `${SCREEN_RULE}
+
+You are looking at a game that has stopped responding to input.
 The clickable controls have already been located for you — do not guess coordinates,
 only say what each one is.
 Reply with ONLY a JSON object, no other text:
@@ -3353,6 +3379,9 @@ Reply with ONLY a JSON object, no other text:
     }
 
     // Build system prompt
+    // The standing rule about on-screen text goes into both briefs below, before
+    // the JSON protocol block; callAI adds it to any prompt that has not got it
+    // already — see src/agent/prompts.js.
     // The system prompt is resent on EVERY request, so unbounded research or
     // memory text permanently eats the context window. On a 4096-token local
     // model that alone can leave no room for the screenshot. Cap both.
@@ -3378,7 +3407,7 @@ Reply with ONLY a JSON object, no other text:
     // memory, progress reporting, token-efficiency advice — is dead weight in
     // that mode, and it is resent on every request, so it is cut down to the job
     // that is actually left.
-    const solverSystemPrompt = `You are helping run the game "${gameDesc}" on the user's screen.
+    const solverBrief = `You are helping run the game "${gameDesc}" on the user's screen.
 A deterministic solver reads the board and chooses the moves. You are called only
 when it cannot act — usually to start a new game, or when the board is briefly
 unreadable.
@@ -3392,9 +3421,9 @@ Each turn, do ONE of these:
   Do not invent a control the game does not use.
 - Call signal_game_end, with outcome ${MODEL_OUTCOME_CHOICES}, if the game is clearly over and no button is visible.
 
-Say in one short sentence what you see before you act.${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
+Say in one short sentence what you see before you act.`;
 
-    const fullSystemPrompt = `You are an autonomous AI game-playing agent playing "${gameDesc}" on the user's screen.
+    const fullBrief = `You are an autonomous AI game-playing agent playing "${gameDesc}" on the user's screen.
 
 Your goal: Play as well as possible — maximize score and try to win.
 
@@ -3428,7 +3457,18 @@ COORDINATE SYSTEM:
 
 REASONING STYLE (for analyse_game_state):
 - Be concise: 1-3 sentences max
-- State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}${noToolsMode ? buildJsonProtocol(activeToolsRef.current) : ""}`;
+- State: what you see → which goal you're advancing → what action you'll take next${memCtx}${researchCtx}`;
+
+    // callAI adds the standing screen rule to whatever prompt it is given, at the
+    // end. In JSON-action mode that would put prose after the protocol block,
+    // whose last line ("Output ONE JSON object only. No arrays, no extra text,
+    // no code fences.") is deliberately the last thing a small local model
+    // reads. So the rule is put in here instead, before the protocol; callAI
+    // sees it is already there and leaves the prompt alone.
+    const brief = (text) =>
+      withScreenRule(text) + (noToolsMode ? buildJsonProtocol(activeToolsRef.current) : "");
+    const solverSystemPrompt = brief(solverBrief);
+    const fullSystemPrompt = brief(fullBrief);
 
     const systemPrompt = activePlugin ? solverSystemPrompt : fullSystemPrompt;
 
@@ -3437,7 +3477,9 @@ REASONING STYLE (for analyse_game_state):
     // shift the KV cache — it reprocesses everything and the turn stalls. This
     // only bites when the model is doing the playing; with a solver it is called
     // rarely and the prompt is already short.
-    const promptTokEst = Math.round(systemPrompt.length / 4);
+    // Measured as callAI will send it: the standing screen rule goes out with
+    // every prompt, so it is part of what the context has to hold.
+    const promptTokEst = Math.round(withScreenRule(systemPrompt).length / 4);
     addLog(`System prompt ≈ ${promptTokEst} tokens${activePlugin ? " (short form — solver is playing)" : ""}`, "info");
     if (isLocal && !activePlugin && promptTokEst > 1200) {
       addLog(`⚠ System prompt is large (≈${promptTokEst} tok) for a local model — turns may stall. Enable "Skip research phase" and/or Clear Memory to shrink it.`, "warn");
@@ -3969,7 +4011,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
 
         const analysisResp = await callAI(
           providerKey, model,
-          "You are a game session analyst. Respond with ONLY valid JSON — no markdown fences, no commentary.",
+          // Rule first, so "ONLY valid JSON" is the last line: this reply is
+          // parsed as JSON, and the transcript being reviewed holds whatever
+          // text was read off the screen.
+          `${SCREEN_RULE}\n\nYou are a game session analyst. Respond with ONLY valid JSON — no markdown fences, no commentary.`,
           [...stripAllImages(convRef.current).slice(-40), { role: "user", content: analysisPrompt }],
           [], apiKey, msg => addLog(msg, "warn"), { signal: stopCtrlRef.current.signal }
         );

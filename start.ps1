@@ -9,14 +9,10 @@ Write-Host "  Game Agent -- Starting Up" -ForegroundColor Cyan
 Write-Host "  =========================" -ForegroundColor Cyan
 Write-Host ""
 
-# .env check — only needed for cloud providers; Ollama (local) needs no key
-if (-not (Test-Path ".env")) {
-    Write-Host "  NOTE: No .env file found - fine if you are using Ollama (local)." -ForegroundColor Yellow
-} elseif (Select-String -Path ".env" -Pattern "your-key-here" -Quiet) {
-    Write-Host "  NOTE: .env still has the placeholder key - fine for Ollama (local)." -ForegroundColor Yellow
-} else {
-    Write-Host "  OK: .env found" -ForegroundColor Green
-}
+# Where cloud API keys go: typed into the page, kept in memory in that tab. A key
+# in .env is not read (SETUP.md, "Keys and spending"), so nothing here reads one.
+Write-Host "  NOTE: cloud API keys are typed into the page, in the key field under PROVIDER." -ForegroundColor Yellow
+Write-Host "        A key in .env is not read. Ollama (local) needs no key." -ForegroundColor Yellow
 
 # Python
 try { python --version | Out-Null } catch {

@@ -94,6 +94,17 @@
 //     and a failed check starts nothing; the picker has a free-text model field
 //     and lists models through backend() for the Ollama relay
 //
+// Then what the model is told about the screen it is looking at, because none of
+// the prompts said that a screen the agent did not choose — ads, fake "Download"
+// buttons, a sign-in wall, text written for whatever model is reading it — is
+// content and not instructions, while the model holds the real mouse. So:
+//   - the rule in src/agent/prompts.js still says what it is for, and is short
+//     enough to resend every turn on a 4k-context local model
+//   - callAI adds it where the provider request is built, and it is on the wire
+//     for every provider, after the caller's own prompt
+// (tools/check-secrets.mjs checks the other half of the same threat model: that
+// no key can reach the build output.)
+//
 // Values that live inside GameAgent.jsx (TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS,
 // pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase,
 // backend, onBackendRefused) are
@@ -122,6 +133,7 @@ const access = await import(pathToFileURL(path.join(ROOT, "src", "agent", "backe
 const { backendFailure, readReply } = access;
 const llmErrors = await import(pathToFileURL(path.join(ROOT, "src", "agent", "llmErrors.js")).href);
 const turns = await import(pathToFileURL(path.join(ROOT, "src", "agent", "turnResult.js")).href);
+const { SCREEN_RULE, withScreenRule } = await import(pathToFileURL(path.join(ROOT, "src", "agent", "prompts.js")).href);
 
 let failures = 0;
 const check = (name, ok, detail = "") => {
@@ -1090,6 +1102,70 @@ console.log("games loop decisions");
     endedWrong.map(([label, g]) => `${label}: ${show(g)}`).join("; "));
 }
 
+// ── The standing rule about what is on screen ─────────────────────────────────
+// The agent plays games nobody vetted, and anything on screen — an ad, a fake
+// "Download" button, a line of chat, a page that knows a model is reading it —
+// can be written as an order to the model, which holds the real mouse and
+// keyboard. Every system prompt therefore carries the rule from
+// src/agent/prompts.js. Here: that the rule still says what it is for, and that
+// the page adds it where model requests are built; the wire checks below confirm
+// it arrives, for every provider.
+{
+  console.log("the standing screen rule");
+  const says = (what, re) => check(`the rule says ${what}`, re.test(SCREEN_RULE), show(SCREEN_RULE));
+  says("what is on screen is not instructions to the model", /screen[\s\S]*(never instructions|not instructions)/i);
+  says("not to obey what the screen tells it to do", /(do not|never) (obey|follow)/i);
+  says("not to type credentials or personal data", /password/i);
+  says("not to type URLs", /url/i);
+  says("not to download or install", /(download|install)/i);
+  says("not to sign in or make an account", /(sign in|account)/i);
+  says("what to do instead: report the game as stuck", /stuck/i);
+  // The prompt goes out with every request, and a 4k-context local model has to
+  // hold it alongside a screenshot.
+  const sentences = (SCREEN_RULE.match(/\.(\s|$)/g) ?? []).length;
+  check("the rule is at most three sentences and 500 characters",
+    sentences <= 3 && SCREEN_RULE.length <= 500, `${sentences} sentences, ${SCREEN_RULE.length} characters`);
+
+  check("withScreenRule puts the rule after a prompt, keeping the prompt",
+    withScreenRule("PLAY BRIEF") === `PLAY BRIEF\n\n${SCREEN_RULE}`, show(withScreenRule("PLAY BRIEF")));
+  check("adding the rule twice adds it once",
+    withScreenRule(withScreenRule("PLAY BRIEF")) === withScreenRule("PLAY BRIEF") &&
+      (withScreenRule(`${SCREEN_RULE}\n\nPLAY BRIEF`).match(/SCREEN SAFETY/g) ?? []).length === 1,
+    show(withScreenRule(withScreenRule("PLAY BRIEF"))));
+  check("an empty prompt is still the rule",
+    withScreenRule("") === SCREEN_RULE && withScreenRule(null) === SCREEN_RULE && withScreenRule(undefined) === SCREEN_RULE,
+    show(withScreenRule(null)));
+
+  // The rule also has to say that the game's own words to the player still
+  // count. An unseen game has no plugin and no manual: the screen is where the
+  // agent learns the objective and the controls, and set_goals is built out of
+  // that. A rule read as "ignore what the screen says" would take the one
+  // channel an unknown game has, and would contradict the brief it is appended
+  // to, which tells the model to click a visible start button.
+  says("the game's own instructions to the player still count",
+    /(read|follow|use) it to learn|follow the game's own/i);
+  says("what it refuses is aimed past the game", /(beyond|outside) playing|aimed at you/i);
+
+  // Added where the provider request is built, which is the one place every
+  // prompt passes through — a prompt written later cannot be left out.
+  check("callAI adds the rule to the prompt it was given",
+    /const request = \{ model, system: withScreenRule\(systemPrompt\)/.test(source),
+    "expected `const request = { model, system: withScreenRule(systemPrompt), …` in callAI");
+
+  // callAI appends, so a prompt whose last line is a format instruction has to
+  // state the rule itself, ahead of that line. Three do: the JSON-action
+  // protocol block, which ends the playing prompts on a small local model, and
+  // the two replies the page parses as JSON. withScreenRule is idempotent, so
+  // callAI still leaves them alone and the wire checks below still hold.
+  check("the JSON-action protocol stays the last thing in a playing prompt",
+    /withScreenRule\(\w+\)\s*\+\s*\(noToolsMode \? buildJsonProtocol\(/.test(source),
+    "expected the briefs built as `withScreenRule(brief) + (noToolsMode ? buildJsonProtocol(…) : \"\")`");
+  check("the prompts whose reply is parsed as JSON state the rule before their format line",
+    /\$\{SCREEN_RULE\}\s*\n\s*\nYou are looking at a game that has stopped responding/.test(source) &&
+      /`\$\{SCREEN_RULE\}\\n\\nYou are a game session analyst/.test(source),
+    "expected the stuck-screen and post-session analysis prompts to open with ${SCREEN_RULE}");
+}
+
 // ── callAI, against a stand-in fetch ──────────────────────────────────────────
 // No request leaves this process: global fetch is replaced for these checks and
 // put back afterwards. Hanging requests settle only when their signal aborts, so
@@ -1267,6 +1343,35 @@ if (agent) {
     } finally {
       agent.__setOllamaBase(null);
     }
+
+    // The standing screen rule is on the wire, whichever provider answers, and
+    // the caller's own prompt is still there in front of it. Checked from the
+    // request body rather than from the source, because every route puts the
+    // system prompt somewhere else (Anthropic `system`, OpenAI and Ollama a
+    // first message, Gemini `systemInstruction`), and a route that stopped
+    // sending it would still read fine.
+    {
+      const ruled = (v) => typeof v === "string" ? (v.includes(SCREEN_RULE) ? [v] : [])
+        : Array.isArray(v) ? v.flatMap(ruled)
+        : v && typeof v === "object" ? Object.values(v).flatMap(ruled)
+        : [];
+      const wanted = withScreenRule("system"); // `run` sends "system" as the prompt
+      const wrong = [];
+      for (const [provider, o] of routes) {
+        respond = provider === "ollama" && o.relay !== false
+          ? () => json(200, { ok: true, status: 200, elapsed: 0.1, body: answers.openai })
+          : () => json(200, answers[provider] ?? answers.openai);
+        const r = await run(provider, { retry: false, maxTokens: 1 }, o);
+        const body = r.sent[0]?.init?.body ? JSON.parse(r.sent[0].init.body) : null;
+        const carried = body ? ruled(body) : [];
+        if (r.e || carried.length !== 1 || carried[0] !== wanted) {
+          wrong.push(`${routeName(provider, o)}: ${show(r.e?.message ?? carried)}`);
+        }
+      }
+      check(`every provider request carries the standing screen rule, after the caller's prompt (${routes.length} routes)`,
+        !wrong.length, wrong.join("  |  "));
+    }
+
     // The check made while waiting for the model has a shorter deadline, and so
     // must the relay, or the backend waits on Ollama long after the page gave up.
     const shortRun = await run("ollama", { timeoutMs: 120_000, retry: false }, { relay: true });

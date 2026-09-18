@@ -8,20 +8,13 @@ echo   Game Agent -- Starting Up
 echo   =========================
 echo.
 
-:: ── Check .env (only needed for cloud providers) ──────────────────────────────
-:: A local Ollama model needs no API key, so a missing/placeholder .env is a
-:: warning rather than a hard stop.
-if not exist ".env" (
-    echo   NOTE: No .env file found — fine if you are using Ollama ^(local^).
-    echo         For Anthropic/OpenAI/Gemini, copy .env.example to .env and add a key.
-) else (
-    findstr /c:"your-key-here" ".env" >nul 2>&1
-    if not errorlevel 1 (
-        echo   NOTE: .env still has the placeholder key — fine for Ollama ^(local^).
-    ) else (
-        echo   OK: .env found
-    )
-)
+:: ── Where cloud API keys go ───────────────────────────────────────────────────
+:: They are typed into the page and kept in memory in that tab. A key in .env is
+:: not read (SETUP.md, "Keys and spending"), so nothing here looks for one: this
+:: used to say to copy .env.example to .env, and an operator who did that got a
+:: key that never reached a request.
+echo   NOTE: cloud API keys are typed into the page, in the key field under PROVIDER.
+echo         A key in .env is not read. Ollama ^(local^) needs no key.
 
 :: ── Check Python ──────────────────────────────────────────────────────────────
 python --version >nul 2>&1
