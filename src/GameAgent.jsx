@@ -38,6 +38,9 @@ import {
 import {
   LOG_QUEUE_MAX, RECORD_QUEUE_MAX, newQueue, onScreen, logLineBatches, recordBatches, drainQueue, keepRecord, flushNotes,
 } from "./agent/logQueue.js";
+import {
+  prepareSnapshot, modelReply, snapshotText, gameEndHeading, noOpSnapshot, frameDropped, FRAME_DROPPED_WARNING,
+} from "./agent/snapshots.js";
 import { PROVIDERS } from "./llm/providers.js";
 import {
   anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote, usageTokens,
@@ -1451,6 +1454,12 @@ export default function GameAgent() {
   const readClashRef = useRef(0);              // reads running against the last one
   const snapshotsRef = useRef(0);              // frames written this game
   const gameSnapshotsRef = useRef([]);         // files written this game, for its record
+  // The frame last sent to the model and its last reply, which is what a
+  // snapshot on the model's path saves (src/agent/snapshots.js). Set each turn
+  // of play; emptied as each run starts.
+  const modelFrameRef = useRef(null);          // {data, width, height, turn, grid, crop}
+  const lastReplyRef = useRef(null);           // modelReply(): {turn, see, plan, text, actions}
+  const frameDroppedSaidRef = useRef(false);   // the backend dropped a frame: said once a run
   const scoreSourceRef = useRef(null);         // where currentScoreRef came from: "measured" or "model"
   // What this run is (src/agent/episodes.js): its commits, model and settings,
   // the game being played and the memory it was given. Set at ▶ Start.
@@ -1563,37 +1572,32 @@ export default function GameAgent() {
    * the same line. A frame plus the board as read settles it in one look, so
    * both are written to disk at the moments worth explaining: a read that
    * failed, a read that contradicted the one before it, and the end of a game.
+   * With no plugin, the moments are the model's (the games loop): the first turn
+   * of each game, the 3rd and 6th action in a row that changed nothing, a pause
+   * for a model that stopped answering, and how the game ended.
+   *
+   * The frame is `canvas` when given; else the solver's capture, when this run
+   * drew one; else the frame last sent to the model, saved as sent and tagged
+   * lowres. What a snapshot holds, and the allowance of SNAPSHOTS_PER_GAME with
+   * endings exempt, are decided in src/agent/snapshots.js.
    */
-  const snapshot = useCallback(async (tag, text) => {
-    // A failing run can fail every turn; a handful of examples explains it just
-    // as well as two hundred and does not fill the disk. How a game ended is
-    // exempt: there is one per game, it shows the most of the board, and on
-    // Expert the guesses before it would otherwise use up the allowance first.
-    const ending = tag === "game-over" || tag === "gave-up";
-    if (!ending) {
-      if (snapshotsRef.current >= 6) return;
-      snapshotsRef.current++;
-    }
-    const canvas = solverCanvasRef.current;
-    let png = null;
-    if (canvas) {
-      try {
-        const fitted = snapshotPng(canvas, text);
-        png = fitted.png;
-        if (fitted.halvings) {
-          addLog(png
-            ? `📷 The frame was too large to save whole; saving it at 1/${2 ** fitted.halvings} size.`
-            : "📷 The frame was too large to save even at 1/16 size; saving the text only.", "warn");
-        }
-      } catch { /* tainted or oversized canvas — the text alone is still useful */ }
-    }
+  const snapshot = useCallback(async (tag, text, canvas = null) => {
+    const shot = prepareSnapshot({
+      tag, text, canvas, solverCanvas: solverCanvasRef.current, modelFrame: modelFrameRef.current,
+      taken: snapshotsRef.current, encodePng: snapshotPng,
+    });
+    if (!shot) return;
+    snapshotsRef.current = shot.taken;
+    for (const warning of shot.warnings) addLog(warning, "warn");
     try {
-      const res = await backend("/log/snapshot", {
-        session: logSessionRef.current, tag, png, text: text ?? null,
-      });
+      const res = await backend("/log/snapshot", { session: logSessionRef.current, ...shot.body });
       if (res?.ok && res.files?.length) {
         gameSnapshotsRef.current.push(...res.files);
         addLog(`📷 Saved what the agent saw → ${res.files[res.files.length - 1]}`, "info");
+        if (frameDropped(shot.body, res.files) && !frameDroppedSaidRef.current) {
+          frameDroppedSaidRef.current = true;
+          addLog(FRAME_DROPPED_WARNING, "warn");
+        }
       } else if (res && !res.ok && !res.refused) {
         addLog(`📷 Snapshot not saved — ${backendFailure(res)}`, "warn");
       }
@@ -3237,6 +3241,12 @@ Reply with ONLY a JSON object, no other text:
 
     let turnMessage;
     if (sendImage) {
+      // The frame a snapshot on the model's path saves: this one, as sent,
+      // whether or not the request then gets through.
+      modelFrameRef.current = {
+        data: frame.data, width: frame.imgW, height: frame.imgH, turn: turnCountRef.current,
+        grid: !!gridEnabledRef.current, crop: !!cropRef.current?.enabled,
+      };
       turnMessage = {
         role: "user",
         content: [
@@ -3339,6 +3349,8 @@ Reply with ONLY a JSON object, no other text:
       // and pick up the score it read off the screen (no extra LLM call).
       // Whole in the log file; cut short on screen only.
       const lead = actions[0];
+      // Whole, for a snapshot's text (the games loop decides when to take one).
+      lastReplyRef.current = modelReply({ turn: turnCountRef.current, see: lead?.see, plan: lead?.plan, text, actions });
       if (lead?.see) addLog(`  👁 ${lead.see}`, "info", { screen: 224 });
       if (lead?.plan) addLog(`  🧠 ${lead.plan}`, "assistant", { screen: 224 });
       if (!lead?.see && !lead?.plan && text) addLog(text, "assistant", { screen: 300 });
@@ -3405,6 +3417,13 @@ Reply with ONLY a JSON object, no other text:
         if (c.type === "text") addLog(c.text, "assistant");
       }
       const toolUses = (resp.content ?? []).filter(c => c.type === "tool_use");
+      // Read only: the blocks go back to the provider as they came (Gemini's
+      // carry signatures it checks).
+      lastReplyRef.current = modelReply({
+        turn: turnCountRef.current,
+        text: (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n"),
+        actions: toolUses.map(tu => ({ tool: tu.name, input: tu.input })),
+      });
       const toolResults = [];
       for (const tu of toolUses) {
         if (stopRef.current) break;
@@ -3694,6 +3713,14 @@ Reply with ONLY a JSON object, no other text:
     lastActionNoOpRef.current = null;
     lastFailedMovesRef.current = new Set();
     noOpStreakRef.current = 0;
+    // A snapshot saves the solver's capture when this run drew one, else the
+    // model's frame and reply: none of those yet. An empty solver canvas keeps a
+    // run with no plugin from saving the last run's board, or the blank canvas
+    // a solver that never saw a frame (native capture) left behind.
+    modelFrameRef.current = null;
+    lastReplyRef.current = null;
+    if (solverCanvasRef.current) { solverCanvasRef.current.width = 0; solverCanvasRef.current.height = 0; }
+    frameDroppedSaidRef.current = false;
     restartPointRef.current = null;
     gameScoresRef.current = [];
     setGameScores([]);
@@ -4021,7 +4048,18 @@ REASONING STYLE (for analyse_game_state):
     //                ends as "aborted", which says the agent stopped, not how
     //                any game went.
     const session = { outage: null, abortReason: null };
-    const waitForTheModel = (outage, lastError) => waitForModel(apiKey, outage, lastError);
+
+    // With no plugin, the model plays every move, and a snapshot at each moment
+    // worth explaining saves the frame the model was last sent next to its last
+    // reply, whole (snapshot, src/agent/snapshots.js). A plugin's solver takes
+    // its own snapshots, from its own capture.
+    const modelPlays = !activePlugin;
+    const snapModel = (tag, heading) => (modelPlays ? snapshot(tag, snapshotText(heading, lastReplyRef.current)) : null);
+    const waitForTheModel = async (outage, lastError) => {
+      await snapModel("model-unreachable",
+        `The model did not answer (${lastError?.userText ?? "no answer"}). Play is paused, with the board left as it is, until it answers.`);
+      return waitForModel(apiKey, outage, lastError);
+    };
 
     // Start a new game. When the restart had to ask the model and got no answer,
     // wait for the model and try again, rather than calling the game impossible
@@ -4049,6 +4087,13 @@ REASONING STYLE (for analyse_game_state):
     } else if (useSolver) {
       addLog(`No solver plugin matches "${gameDesc}" — the model will play.`, "info");
     }
+
+    // A game's snapshot files, and its allowance of them, start here and again
+    // once each game's record is queued, not as each game's play begins: the
+    // restart between two games can pause for a model that stopped answering,
+    // and that snapshot belongs to the game it starts, in its record and count.
+    const newGameSnapshots = () => { gameSnapshotsRef.current = []; snapshotsRef.current = 0; };
+    newGameSnapshots();
 
     // A session usually starts on the board left behind by the last one, which
     // is finished. Playing it as game 1 burns a game on a board with no legal
@@ -4081,7 +4126,6 @@ REASONING STYLE (for analyse_game_state):
       if (runRef.current) runRef.current.game = gameIdx + 1;
       const gameStartedAt = Date.now();
       const turnsBeforeGame = turnCountRef.current;
-      gameSnapshotsRef.current = [];
       let stuckReason = null; // what left play with nothing to do, when something did
 
       // Reset per-game tracking
@@ -4101,10 +4145,11 @@ REASONING STYLE (for analyse_game_state):
       // every frame of the new game.
       lastBoardRef.current = null;
       readClashRef.current = 0;
-      snapshotsRef.current = 0;
       // Set by whatever ends play on this game. Left null, the game gets no
       // result unless Stop ended it (gameEnding, below).
       let gameOutcome = null;
+      let firstTurnSnapped = false; // the model's first turn of this game is saved once
+      let noOpsSnapped = 0;         // the no-op step last saved in this streak (noOpSnapshot)
 
     while (!stopRef.current) {
       // Paused, or input halted by the kill switch: wait. A halt is not a turn,
@@ -4279,9 +4324,14 @@ REASONING STYLE (for analyse_game_state):
           scoreSourceRef.current = gameEndRef.current?.scoreSource ?? "model";
           setCurrentScore(turn.finalScore);
         }
+        await snapModel("game-end", gameEndHeading({ ...turn, reason: gameEndRef.current?.reason }));
         break;
       }
       if (turn.loop !== "play") break;
+      if (!firstTurnSnapped) {
+        firstTurnSnapped = true;
+        await snapModel("first-turn", `Game ${gameIdx + 1}, first turn: the frame the model was shown, and what it made of it.`);
+      }
 
       // ── Stuck detection ──────────────────────────────────────────────────
       // Based on whether ACTIONS actually changed the screen, not on comparing
@@ -4323,7 +4373,21 @@ REASONING STYLE (for analyse_game_state):
             : `No progress after ${noOps} consecutive actions.`,
           "warn"
         );
+        await snapModel("stuck", `Stuck: ${stuckReason}. Play on this game stopped here.`);
         break;
+      }
+
+      // The 3rd and the 6th action in a row that changed nothing are saved once
+      // each, however the streak got there (noOpSnapshot): one reply can press
+      // several keys, and a turn that presses none (an analysis, a click) leaves
+      // the streak where it was. A streak that stopped play was saved as "stuck"
+      // just above.
+      const noOpShot = noOpSnapshot(noOps, noOpsSnapped);
+      noOpsSnapped = noOpShot.saved;
+      if (noOpShot.take) {
+        await snapModel(`no-op-${noOpShot.take}`, `${noOps} actions in a row changed nothing ` +
+          `(tried: ${[...lastFailedMovesRef.current].join(", ") || "n/a"}).` +
+          `${noOps === noOpShot.take ? " The model was asked to try something else." : ""}`);
       }
     }
 
@@ -4368,6 +4432,7 @@ REASONING STYLE (for analyse_game_state):
         // Nothing ended the game but ■ Stop (gameEnding records that as "ended").
         stopped: gameOutcome == null && stopRef.current,
       }));
+      newGameSnapshots();
 
       const moreToPlay = gameIdx + 1 < totalGames;
       if (!moreToPlay || stopRef.current) break;
@@ -4531,7 +4596,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
       waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState,
-      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite]);
+      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite, snapshot]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;

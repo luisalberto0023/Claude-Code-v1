@@ -20,6 +20,8 @@ The agent is tested on a separate computer that only gets code through
   the backend token the page sends and the standing screen rule on the wire,
   run records in `tools/check-episodes.mjs` (the page's and backend's commits,
   what each run, game and turn writes, the log queue, `npm run episodes`),
+  snapshots in `tools/check-snapshots.mjs` (the frame and reply a run with no
+  plugin saves, and the per-game allowance),
   model request shapes, model lists and
   the model check at Start in `tools/check-llm.mjs`, the key scanner's own test in
   `tools/check-secrets.mjs`, the web-game policy in `tools/check-site-policy.mjs`
@@ -27,7 +29,8 @@ The agent is tested on a separate computer that only gets code through
   plugin contracts, Minesweeper reader, the local Minesweeper and the reader
   reading it in `tools/check-bench.mjs`,
   simulator, then the backend routes with all input stubbed, including their
-  token, Origin and Host refusals), plus `npm run build` if `src/GameAgent.jsx`
+  token, Origin and Host refusals and the log folder's budget, which they check
+  on folders of their own), plus `npm run build` if `src/GameAgent.jsx`
   changed. `npm run build` also scans `dist/` for anything key-shaped
   (`tools/check-no-secrets.mjs`) and fails if it finds any. The backend step needs a Python with fastapi, uvicorn and pydantic: the `.venv`
   that start.bat creates on Windows, or `pip install fastapi uvicorn pydantic`

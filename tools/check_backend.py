@@ -46,7 +46,9 @@ How it stays safe, in the order it happens:
      are swapped, and its memory file, token file and config file are pointed at
      the same temp directory, so the real game-agent-memory.json, logs/ (session
      logs, snapshots, run records), .agent-token and agent-config.json are never
-     written. It is given a test token
+     written. Its log folder's budget is the default, whatever
+     AGENT_LOG_BUDGET_MB this machine sets, and the checks of the budget prune
+     folders of their own under the temp directory. It is given a test token
      (TEST_TOKEN), which every request sends unless a test leaves it off. Its
      Ollama relay is pinned to TEST_OLLAMA_BASE, an address that is never
      routed, and the one function it reaches Ollama through (_ollama_open) is
@@ -131,6 +133,7 @@ import contextlib
 import enum
 import functools
 import inspect
+import base64
 import io
 import json
 import os
@@ -544,6 +547,17 @@ def import_server(inputs, tmp):
         if hasattr(server, "_clock"):
             server._clock = clock
     server.LOG_DIR = logs  # the same folder, for a backend from before AGENT_LOG_DIR
+    # The log folder's budget comes from AGENT_LOG_BUDGET_MB on import. The checks
+    # run with the default whatever this machine sets; the budget checks swap in
+    # their own, and a folder of their own to prune.
+    if hasattr(server, "LOG_BUDGET"):
+        server.LOG_BUDGET = server.log_budget_from({})
+    # A write starts that look on a thread of its own. The checks run it inside
+    # the request, so a look started by one check never runs into the next; the
+    # check of the thread itself puts the real one back (PRUNE_START).
+    if hasattr(server, "_prune_start"):
+        PRUNE_START["real"] = server._prune_start
+        server._prune_start = lambda work: work()
     server.MEMORY_FILE = Path(tmp) / "game-agent-memory.json"
     # What the backend window says when input is halted or resumed is not
     # printed into the checks' output.
@@ -579,6 +593,7 @@ FOREGROUND = {"title": "Test Game"}
 # reserved for documentation that is never routed.
 TEST_OLLAMA_BASE = "http://192.0.2.10:11434"
 OLLAMA_OPEN = {}  # the backend's real _ollama_open, for the one check that serves its own Ollama
+PRUNE_START = {}  # the backend's real _prune_start, for the one check of the log budget's thread
 
 
 def no_ollama_in_checks(inputs):
@@ -1007,6 +1022,437 @@ def _(h):
         expect(status == 200 and reply.get("ok") is True, f"{label}: status {status}: {str(reply)[:200]}")
     written = path.read_text(encoding="utf-8").splitlines()
     expect(len(written) == max_lines + 4 and written[-1] == "next line", f"{len(written)} lines written")
+
+
+@test("POST /log/snapshot writes the model's frame as .jpg beside its text, and counts it toward the size limit")
+def _(h):
+    folder = Path(h.server.LOG_DIR) / "snapshots" / "jpeg-check"
+    shutil.rmtree(folder, ignore_errors=True)
+    jpeg = b"\xff\xd8\xff\xe0 a frame as the model was sent it \xff\xd9"
+    status, reply = h.api.post("/log/snapshot", {"session": "jpeg-check", "tag": "first-turn-lowres",
+                                                 "jpeg": base64.b64encode(jpeg).decode(), "text": "See: a board"})
+    files = [Path(p) for p in reply.get("files", [])]
+    expect(status == 200 and reply.get("ok") is True and [p.suffix for p in files] == [".jpg", ".txt"],
+           f"status {status}: {reply}")
+    expect(files[0].name.endswith("-first-turn-lowres.jpg") and files[0].read_bytes() == jpeg
+           and files[1].read_text(encoding="utf-8") == "See: a board", f"written: {files}")
+
+    limit = h.server.SNAPSHOT_MAX_BYTES
+    for label, body in (("a JPEG over the limit", {"jpeg": "A" * ((limit // 3 + 1) * 4)}),
+                        ("a PNG and a JPEG over it together", {"png": "A" * (limit // 2 // 3 * 4),
+                                                               "jpeg": "A" * (limit // 2 // 3 * 4 + 8)})):
+        status, reply = h.api.post("/log/snapshot", {"session": "jpeg-check", "tag": "big", **body})
+        expect(status == 413 and reply.get("tooLarge") is True, f"{label}: status {status}: {str(reply)[:200]}")
+    expect(sorted(p.name for p in folder.iterdir()) == sorted(p.name for p in files), f"written: {list(folder.iterdir())}")
+
+
+# ── Log folder budget ────────────────────────────────────────────────────────
+# The backend deletes the oldest sessions' files once they pass a budget. These
+# prune folders of their own under h.tmp, never the folder the other checks use,
+# and give every file the age the check needs. Sessions are named as the page
+# names a run, since nothing else is taken for one.
+
+MB = 1024 * 1024
+
+
+def run_id(day, tag="a0b1"):
+    """A session named as the page names a run (runSessionId in
+    src/agent/episodes.js): when it started, and four hex digits."""
+    return f"2026-09-{day:02d}-10-00-00-{tag}"
+
+
+def aged(path, seconds_ago, size, now):
+    """A file of `size` bytes last written `seconds_ago` before `now`."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * size)
+    os.utime(path, (now - seconds_ago, now - seconds_ago))
+    return path
+
+
+def session_files(logs, name, seconds_ago, now, log=0, snapshot=0, run=0, turns=0):
+    """The files a session leaves in `logs`, each as old as `seconds_ago` (the
+    folders too), and the ones asked for with a size of 0 left out."""
+    made = []
+    if log:
+        made.append(aged(logs / f"agent-{name}.log", seconds_ago, log, now))
+    if snapshot:
+        made.append(aged(logs / "snapshots" / name / "101010-first-turn-lowres.jpg", seconds_ago, snapshot, now))
+    if run:
+        made.append(aged(logs / "runs" / name / "run.json", seconds_ago, run, now))
+    if turns:
+        made.append(aged(logs / "turns" / f"{name}.jsonl", seconds_ago, turns, now))
+    for sub in ("snapshots", "runs"):
+        if (logs / sub / name).is_dir():
+            os.utime(logs / sub / name, (now - seconds_ago, now - seconds_ago))
+    return made
+
+
+def budget_folder(h, label):
+    logs = Path(h.tmp) / "budget" / label / "logs"
+    shutil.rmtree(logs, ignore_errors=True)
+    logs.mkdir(parents=True)
+    return logs
+
+
+def left_in(logs):
+    return sorted(p.relative_to(logs).as_posix() for p in logs.rglob("*") if p.is_file())
+
+
+@contextlib.contextmanager
+def undeletable(path):
+    """`path` cannot be deleted while the block runs. On Windows it is held open,
+    as an image viewer or a virus scanner holds a frame; elsewhere deleting it
+    fails as Windows would have it fail."""
+    path = Path(path)
+    if sys.platform == "win32":
+        with open(path, "rb"):
+            yield
+        return
+    real = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process",
+                                  str(self))
+        return real(self, *args, **kwargs)
+
+    with swapped(Path, unlink=unlink):
+        yield
+
+
+@test("The log budget is AGENT_LOG_BUDGET_MB megabytes: 2048 unless set, 0 for none, the default when it is no number")
+def _(h):
+    s = h.server
+    expect(s.LOG_BUDGET_DEFAULT_MB == 2048 and s.LOG_PRUNE_EVERY_S == 60 and s.LOG_ACTIVE_S >= 60
+           and s.LOG_RETRY_S >= s.LOG_PRUNE_EVERY_S,
+           f"default {s.LOG_BUDGET_DEFAULT_MB} MB, every {s.LOG_PRUNE_EVERY_S} s, active for {s.LOG_ACTIVE_S} s, "
+           f"retried after {s.LOG_RETRY_S} s")
+    expect(s.LOG_BUDGET == s.log_budget_from({}), f"the checks' budget is not the default: {s.LOG_BUDGET}")
+    for value, want_bytes, want_source in ((None, 2048 * MB, "default"), ("  ", 2048 * MB, "default"),
+                                           ("512", 512 * MB, "AGENT_LOG_BUDGET_MB"),
+                                           (" 0.5 ", MB // 2, "AGENT_LOG_BUDGET_MB"),
+                                           ("0", None, "AGENT_LOG_BUDGET_MB")):
+        got = s.log_budget_from({} if value is None else {"AGENT_LOG_BUDGET_MB": value})
+        expect(got.bytes == want_bytes and got.source == want_source and got.error is None, f"{value!r}: {got}")
+    for value in ("two gigs", "-5", "nan", "inf", "1e999"):
+        got = s.log_budget_from({"AGENT_LOG_BUDGET_MB": value})
+        expect(got.bytes == 2048 * MB and got.source == "default" and repr(value) in (got.error or ""),
+               f"{value!r} should fall back to the default and say why: {got}")
+    notes = {label: s.budget_note(s.log_budget_from(env)) for label, env in (
+        ("default", {}), ("set", {"AGENT_LOG_BUDGET_MB": "512"}), ("none", {"AGENT_LOG_BUDGET_MB": "0"}),
+        ("bad", {"AGENT_LOG_BUDGET_MB": "lots"}))}
+    expect("2048 MB" in notes["default"] and "AGENT_LOG_BUDGET_MB" in notes["default"]
+           and "512 MB" in notes["set"] and "No size limit" in notes["none"]
+           and "2048 MB" in notes["bad"] and "'lots'" in notes["bad"], f"banner lines: {notes}")
+
+
+@test("Pruning deletes whole sessions, oldest first, until the rest fit, and never the active session or a recent one")
+def _(h):
+    s = h.server
+    now = time.time()
+    logs = budget_folder(h, "order")
+    hour = 3600
+    live, old1, old2, recent, resumed, old4 = (run_id(day) for day in (1, 2, 3, 5, 6, 8))
+    old3 = "2026-09-04-10-00-00"  # named as the page named a run before 793ed82
+    # `live` is the oldest of all, but it is the session being written.
+    session_files(logs, live, 6 * hour, now, log=5000)
+    session_files(logs, old1, 5 * hour, now, log=1000, snapshot=3000, run=200, turns=500)   # 4700
+    session_files(logs, old2, 4 * hour, now, log=1000, snapshot=2000)                         # 3000
+    session_files(logs, old3, 3 * hour, now, log=1000)                                        # 1000
+    session_files(logs, recent, 60, now, log=1000)
+    # A session's age is its newest file: this log is older than any, but a
+    # snapshot of it was written two hours ago, after old3's.
+    session_files(logs, resumed, 7 * hour, now, log=500)
+    aged(logs / "snapshots" / resumed / "120000-game-end-lowres.txt", 2 * hour, 500, now)
+    # Not a session's files: never counted, never deleted, however old.
+    others = [aged(logs / "episodes.jsonl", 9 * hour, 50_000, now),
+              aged(logs / "review" / "p0.md", 9 * hour, 50_000, now),
+              aged(logs / "notes.txt", 9 * hour, 100, now),
+              aged(logs / "snapshots" / "stray.png", 9 * hour, 100, now),
+              aged(logs / "agent-two words.log", 9 * hour, 100, now)]
+
+    sessions = s.log_sessions(logs)
+    expect(sorted(sessions) == sorted([live, old1, old2, old3, recent, resumed]), f"sessions: {sorted(sessions)}")
+    expect(sessions[old1]["bytes"] == 4700 and len(sessions[old1]["items"]) == 4,
+           f"{old1}'s files: {sessions[old1]}")
+    expect(abs(sessions[resumed]["newest"] - (now - 2 * hour)) < 2, "a session's age is its newest file")
+
+    # 15700 bytes of sessions; within 11000, old1 alone has to go (`live` is
+    # older but kept).
+    result = s.prune_logs(logs, 11000, active=[live], now=now)
+    expect(result["removed"] == [old1] and result["before"] == 15700 and result["after"] == 11000
+           and result["freed"] == 4700 and not result["over"] and not result["errors"] and not result["failed"],
+           f"within 11000: {result}")
+    left = left_in(logs)
+    expect(not any(old1 in p for p in left), f"{old1} left behind: {left}")
+    expect(not (logs / "snapshots" / old1).exists() and not (logs / "runs" / old1).exists(),
+           f"{old1}'s folders were not deleted")
+
+    # Within 1000 nothing can be enough: every session that may go goes, oldest
+    # first, and the live and recent ones stay, over the budget.
+    result = s.prune_logs(logs, 1000, active=[live], now=now)
+    expect(result["removed"] == [old2, old3, resumed] and result["over"] and result["after"] == 6000
+           and result["protected"] == sorted([live, recent]), f"within 1000: {result}")
+    expect(left_in(logs) == sorted([f"agent-{live}.log", f"agent-{recent}.log", "episodes.jsonl", "review/p0.md",
+                                    "notes.txt", "snapshots/stray.png", "agent-two words.log"]),
+           f"left: {left_in(logs)}")
+    expect(all(p.exists() for p in others), "a file that is not a session's was deleted")
+
+    # Two hours on, `recent` is not recent any more; `live` is still the one
+    # being written.
+    result = s.prune_logs(logs, 1, active=[live], now=now + 2 * hour)
+    expect(result["removed"] == [recent] and (logs / f"agent-{live}.log").exists(), f"two hours on: {result}")
+    # The active session is the one a request names, as the routes name its files.
+    named = run_id(7)
+    session_files(logs, named, 5 * hour, now, log=100)
+    result = s.prune_logs(logs, 1, active=[live, "2026-09-07 10:00:00-a0b1"], now=now)
+    expect(result["removed"] == [] and (logs / f"agent-{named}.log").exists(), f"named as a request names it: {result}")
+
+    # No budget, or within it: nothing is touched.
+    session_files(logs, old4, 5 * hour, now, log=100)
+    for budget in (None, 10 ** 9):
+        result = s.prune_logs(logs, budget, now=now)
+        expect(result["removed"] == [] and (logs / f"agent-{old4}.log").exists(), f"budget {budget}: {result}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+
+@test("Pruning takes only what the backend wrote: another tool's runs/ and snapshots/ in the log folder survive")
+def _(h):
+    s = h.server
+    now = time.time()
+    logs = budget_folder(h, "foreign")
+    day = 24 * 3600
+    old = run_id(2)
+    session_files(logs, old, day, now, log=100, snapshot=100, run=100)
+    # AGENT_LOG_DIR set to a folder other things use too, all of it older and
+    # larger than the session: a TensorBoard run, a VM's snapshots, another
+    # tool's log and records.
+    foreign = [aged(logs / "runs" / "resnet_exp1" / "events.out.tfevents.1700000000.host", day, 3000, now),
+               aged(logs / "snapshots" / "Win11-VM" / "disk.vhdx", day, 3000, now),
+               aged(logs / "snapshots" / "notes" / "101010-first-turn-lowres.png", day, 3000, now),
+               aged(logs / "runs" / "exp1" / "run.json", day, 3000, now),
+               aged(logs / "agent-backup.log", day, 3000, now),
+               aged(logs / "turns" / "notes.jsonl", day, 3000, now),
+               # In a session's own folders, whatever the backend does not write stays.
+               aged(logs / "snapshots" / old / "photo.jpeg", day, 3000, now),
+               aged(logs / "snapshots" / old / "kept" / "101010-first-turn-lowres.png", day, 3000, now),
+               aged(logs / "runs" / old / "notes.md", day, 3000, now)]
+    sessions = s.log_sessions(logs)
+    expect(sorted(sessions) == [old] and sessions[old]["bytes"] == 300,
+           f"sessions: { {name: v['bytes'] for name, v in sessions.items()} }")
+    result = s.prune_logs(logs, 1, now=now)
+    expect(result["removed"] == [old] and result["freed"] == 300 and not result["over"] and not result["errors"],
+           f"within 1 byte: {result}")
+    expect(all(p.exists() for p in foreign), f"another tool's file was deleted: {[str(p) for p in foreign if not p.exists()]}")
+    expect(left_in(logs) == sorted(p.relative_to(logs).as_posix() for p in foreign), f"left: {left_in(logs)}")
+    expect(sorted(s.log_sessions(logs)) == [], "what is left was taken for a session")
+
+
+@test("Pruning follows no link, and deletes none")
+def _(h):
+    s = h.server
+    now = time.time()
+    logs = budget_folder(h, "links")
+    outside = Path(h.tmp) / "budget" / "outside"
+    shutil.rmtree(outside, ignore_errors=True)
+    # Named as a snapshot is, so a link followed would take it for one.
+    kept = aged(outside / "101010-first-turn-lowres.jpg", 9 * 3600, 4000, now)
+    old, junctioned, linked = run_id(2), run_id(3), run_id(4)
+    session_files(logs, old, 5 * 3600, now, log=100, snapshot=100)
+    # Named as sessions and snapshots are, and old. Symbolic links need developer
+    # mode or an administrator on Windows; a junction (a folder link) does not,
+    # so on Windows there are always two, and they are the links any user could
+    # leave there.
+    links = []
+    if sys.platform == "win32":
+        import _winapi
+        for link in (logs / "snapshots" / junctioned, logs / "snapshots" / old / "101011-guess.png"):
+            _winapi.CreateJunction(str(outside), str(link))
+            links.append(link)
+    try:
+        for link, target, folder in ((logs / "snapshots" / linked, outside, True),
+                                     (logs / f"agent-{linked}.log", kept, False),
+                                     (logs / "snapshots" / old / "101012-guess.jpg", kept, False)):
+            os.symlink(target, link, target_is_directory=folder)
+            links.append(link)
+    except (OSError, NotImplementedError):
+        pass
+    expect(links, "no link could be made to check (not Windows, and no symbolic links)")
+    sessions = s.log_sessions(logs)
+    expect(sorted(sessions) == [old] and sessions[old]["bytes"] == 200,
+           f"a link was taken for a session's: { {name: v['items'] for name, v in sessions.items()} }")
+    result = s.prune_logs(logs, 1, now=now)
+    expect(result["removed"] == [old] and kept.exists() and all(os.path.lexists(link) for link in links),
+           f"links {[str(p) for p in links]}: {result}")
+
+
+@test("Each write to the log folder starts a look at the budget, at most once a minute; a refused write does not")
+def _(h):
+    s = h.server
+    calls = []
+    with swapped(s, _keep_logs_in_budget=lambda session: calls.append(session)):
+        for path, body in (("/log/append", {"session": "w-append", "lines": ["a line"]}),
+                           ("/log/snapshot", {"session": "w-snapshot", "tag": "t", "text": "words"}),
+                           ("/episode/run", {"session": "w-run", "run": {"model": "m"}}),
+                           ("/episode/game", {"session": "w-game", "game": game_line()}),
+                           ("/episode/turns", {"session": "w-turns", "records": [{"turn": 1}]})):
+            status, reply = h.api.post(path, body)
+            expect(status == 200 and reply.get("ok") is True, f"{path}: status {status}: {reply}")
+        expect(calls == ["w-append", "w-snapshot", "w-run", "w-game", "w-turns"], f"asked for: {calls}")
+        calls.clear()
+        status, _ = h.api.post("/log/append", {"session": "w-append", "lines": ["x"] * (s.LOG_APPEND_MAX_LINES + 1)})
+        status2, _ = h.api.post("/log/snapshot", {"session": "w-snapshot", "tag": "t",
+                                                  "jpeg": "A" * ((s.SNAPSHOT_MAX_BYTES // 3 + 1) * 4)})
+        expect(status == 413 and status2 == 413 and not calls, f"a refused write pruned: {calls}")
+
+    # The real thing, on a folder of its own, with a clock the check moves on.
+    # The look runs inside the request here (import_server), so what it did is
+    # there to see when the request returns.
+    now = time.time()
+    logs = budget_folder(h, "writes")
+    live, old_a, old_b, old_c, old_d = run_id(9), run_id(1), run_id(2), run_id(3), run_id(4)
+    session_files(logs, old_a, 5 * 3600, now, log=6000)
+    session_files(logs, old_b, 4 * 3600, now, log=6000)
+    clock = {"now": 1000.0}
+    said = []
+    with swapped(s, LOG_DIR=logs, LOG_BUDGET=s.LogBudget(10000, "AGENT_LOG_BUDGET_MB", None),
+                 _last_prune=None, _prune_over_said=False, _prune_failed={},
+                 _prune_clock=lambda: clock["now"], _announce=said.append):
+        status, reply = h.api.post("/log/append", {"session": live, "lines": ["turn 1"]})
+        expect(status == 200 and reply.get("ok") is True, f"append: {status}: {reply}")
+        expect(left_in(logs) == sorted([f"agent-{live}.log", f"agent-{old_b}.log"]), f"after the first write: {left_in(logs)}")
+        expect(any("deleted 1 old session(s)" in line and old_a in line for line in said), f"said: {said}")
+
+        # Within the minute nothing is looked at again, however full it gets.
+        session_files(logs, old_c, 3 * 3600, now, log=6000)
+        clock["now"] += s.LOG_PRUNE_EVERY_S - 1
+        h.api.post("/log/append", {"session": live, "lines": ["turn 2"]})
+        expect(left_in(logs) == sorted([f"agent-{live}.log", f"agent-{old_b}.log", f"agent-{old_c}.log"]),
+               f"pruned again within the minute: {left_in(logs)}")
+        clock["now"] += 1
+        h.api.post("/log/append", {"session": live, "lines": ["turn 3"]})
+        expect(left_in(logs) == sorted([f"agent-{live}.log", f"agent-{old_c}.log"]), f"a minute later: {left_in(logs)}")
+        expect((logs / f"agent-{live}.log").read_text(encoding="utf-8").splitlines() == ["turn 1", "turn 2", "turn 3"],
+               "the run under way lost lines")
+
+        # Over the budget with nothing left that may go: said once, not every
+        # minute, with why it is kept.
+        said.clear()
+        aged(logs / f"agent-{live}.log", 0, 20000, time.time())
+        for _ in range(3):
+            clock["now"] += s.LOG_PRUNE_EVERY_S
+            h.api.post("/log/append", {"session": live, "lines": ["more"]})
+        over = [line for line in said if "over the" in line]
+        expect(len(over) == 1 and "1 session(s) written to in the last 10 minutes" in over[0]
+               and f"agent-{old_c}.log" not in left_in(logs), f"said: {said}")
+
+    # No budget (AGENT_LOG_BUDGET_MB=0): nothing is ever deleted.
+    session_files(logs, old_d, 5 * 3600, now, log=60000)
+    with swapped(s, LOG_DIR=logs, LOG_BUDGET=s.log_budget_from({"AGENT_LOG_BUDGET_MB": "0"}), _last_prune=None):
+        h.api.post("/log/append", {"session": live, "lines": ["no limit"]})
+        expect(f"agent-{old_d}.log" in left_in(logs), f"pruned with no budget: {left_in(logs)}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+
+@test("A session whose files cannot be deleted is not called deleted, is left alone a while, then tried again")
+def _(h):
+    s = h.server
+    now = time.time()
+    logs = budget_folder(h, "held")
+    held, other, live = run_id(1), run_id(2), run_id(9)
+    session_files(logs, held, 5 * 3600, now, log=1000, snapshot=3000)
+    session_files(logs, other, 4 * 3600, now, log=1000)
+    frame = logs / "snapshots" / held / "101010-first-turn-lowres.jpg"
+
+    # prune_logs itself: the files that could go went, and the session is
+    # "failed", not "removed", with only what went counted as freed.
+    with undeletable(frame):
+        result = s.prune_logs(logs, 1, active=[live], now=now)
+    expect(result["removed"] == [other] and result["failed"] == [held] and result["freed"] == 2000
+           and len(result["errors"]) == 1 and str(frame) in result["errors"][0] and result["over"],
+           f"with a frame held open: {result}")
+    expect(left_in(logs) == [f"snapshots/{held}/101010-first-turn-lowres.jpg"], f"left: {left_in(logs)}")
+    result = s.prune_logs(logs, 1, active=[live], now=now, skip=[held])
+    expect(result["removed"] == [] and result["failed"] == [] and result["skipped"] == [held] and not result["errors"],
+           f"left out: {result}")
+
+    # Through the writes: said once, left alone for LOG_RETRY_S, then tried again.
+    logs = budget_folder(h, "held-writes")
+    session_files(logs, live, 0, now, log=10)
+    session_files(logs, held, 5 * 3600, now, log=1000, snapshot=3000)
+    session_files(logs, other, 4 * 3600, now, log=1000)
+    frame = logs / "snapshots" / held / "101010-first-turn-lowres.jpg"
+    clock = {"now": 1000.0}
+    said = []
+
+    def lines(start):
+        return [line for line in said if line.startswith(start)]
+
+    with swapped(s, LOG_DIR=logs, LOG_BUDGET=s.LogBudget(1, "AGENT_LOG_BUDGET_MB", None),
+                 _last_prune=None, _prune_over_said=False, _prune_failed={},
+                 _prune_clock=lambda: clock["now"], _announce=said.append):
+        with undeletable(frame):
+            h.api.post("/log/append", {"session": live, "lines": ["turn 1"]})
+            deleted, failed = lines("Logs: deleted"), lines("Logs: could not delete")
+            over = [line for line in said if "over the" in line]
+            expect(len(deleted) == 1 and other in deleted[0] and held not in deleted[0], f"said: {said}")
+            expect(len(failed) == 1 and held in failed[0] and "10 minutes" in failed[0], f"said: {said}")
+            expect(len(over) == 1 and "1 session(s) written to in the last 10 minutes" in over[0]
+                   and "1 session(s) with files that could not be deleted" in over[0], f"said: {said}")
+            for _ in range(3):
+                clock["now"] += s.LOG_PRUNE_EVERY_S
+                h.api.post("/log/append", {"session": live, "lines": ["more"]})
+            expect(len(lines("Logs: could not delete")) == 1 and frame.exists(), f"reported again within the wait: {said}")
+            clock["now"] += s.LOG_RETRY_S
+            h.api.post("/log/append", {"session": live, "lines": ["more"]})
+            expect(len(lines("Logs: could not delete")) == 2, f"not tried again after the wait: {said}")
+        clock["now"] += s.LOG_RETRY_S
+        h.api.post("/log/append", {"session": live, "lines": ["more"]})
+        expect(not frame.exists() and not (logs / "snapshots" / held).exists()
+               and any(held in line for line in lines("Logs: deleted")[1:]), f"once let go: {said}")
+    expect(left_in(logs) == [f"agent-{live}.log"], f"left: {left_in(logs)}")
+
+
+@test("The look at the budget runs on a thread of its own: a write never waits for it")
+def _(h):
+    s = h.server
+    if "real" not in PRUNE_START:
+        raise SetupFailed("the backend has no _prune_start")
+    logs = budget_folder(h, "thread")
+    live = run_id(9)
+    entered, release = threading.Event(), threading.Event()
+    seen = {}
+
+    def slow_look(log_dir, budget, active=(), now=None, skip=()):
+        seen.update(thread=threading.current_thread().name, args=(Path(log_dir), budget, list(active)))
+        entered.set()
+        release.wait(10)
+        raise OSError("the disk went away")  # a look that fails lets go of the lock, and says why
+
+    said = []
+    with swapped(s, LOG_DIR=logs, LOG_BUDGET=s.LogBudget(1000, "AGENT_LOG_BUDGET_MB", None), _last_prune=None,
+                 _prune_start=PRUNE_START["real"], prune_logs=slow_look, _announce=said.append):
+        try:
+            started = time.monotonic()
+            status, reply = h.api.post("/log/append", {"session": live, "lines": ["turn 1"]})
+            took = time.monotonic() - started
+            expect(status == 200 and reply.get("ok") is True and took < 5, f"append took {took:.1f} s: {status}: {reply}")
+            expect(entered.wait(5), "the look never started")
+            expect(seen.get("thread") == "log-budget" and seen.get("args") == (logs, 1000, [live]), f"the look: {seen}")
+            # While it runs, a write goes straight through, and starts no second look.
+            status, _ = h.api.post("/log/append", {"session": live, "lines": ["turn 2"]})
+            expect(status == 200 and s._prune_lock.locked(), f"second write: {status}")
+        finally:
+            release.set()
+            deadline = time.monotonic() + 5
+            while s._prune_lock.locked() and time.monotonic() < deadline:
+                time.sleep(0.01)
+        expect(not s._prune_lock.locked(), "the look did not let go of its lock")
+        expect(any("could not keep the log folder within its budget" in line and "the disk went away" in line
+                   for line in said), f"said: {said}")
+    expect((logs / f"agent-{live}.log").read_text(encoding="utf-8").splitlines() == ["turn 1", "turn 2"],
+           "a write was lost")
 
 
 @test("POST /mouse/click reaches the stub, not the mouse")

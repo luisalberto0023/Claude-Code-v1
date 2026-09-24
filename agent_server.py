@@ -22,6 +22,7 @@ import ipaddress
 import os
 import secrets
 import socket
+import stat
 import subprocess
 import threading
 from pathlib import Path
@@ -1514,6 +1515,7 @@ def log_append(b: LogLines):
     size = sum(len(line.rstrip("\n").encode("utf-8", "replace")) + 1 for line in b.lines)
     if size > LOG_APPEND_MAX_BYTES:
         return _too_large(f"{size} bytes of log", f"{LOG_APPEND_MAX_BYTES} bytes")
+    _keep_logs_in_budget(b.session)
     try:
         LOG_DIR.mkdir(exist_ok=True)
         path = _log_path(b.session)
@@ -1531,12 +1533,17 @@ def log_append(b: LogLines):
 # untouched and a board that IS untouched write the same line. So when a read
 # fails or a game ends, the frame and the board as it was read are written side
 # by side under logs/snapshots/, and the pair settles it.
+#
+# A frame comes as a PNG (a capture the page drew on a canvas: the solver's, at
+# full resolution) or as a JPEG (the frame the model was sent, kept exactly as
+# sent; the page tags those "lowres"). It is written as .png or .jpg to match.
 
 
 class Snapshot(BaseModel):
     session: str
     tag: str
     png: Optional[str] = None     # base64, without the data: prefix
+    jpeg: Optional[str] = None    # base64, without the data: prefix
     text: Optional[str] = None
 
 
@@ -1546,20 +1553,21 @@ def log_snapshot(b: Snapshot):
     # Four base64 characters carry at most three bytes. The page measures the
     # same way before it sends (snapshotBytes in src/agent/backend.js), and
     # scales a frame down to fit rather than lose it.
-    size = len(b.png or "") * 3 // 4 + len((b.text or "").encode("utf-8", "replace"))
+    size = (len(b.png or "") + len(b.jpeg or "")) * 3 // 4 + len((b.text or "").encode("utf-8", "replace"))
     if size > SNAPSHOT_MAX_BYTES:
         return _too_large(f"a snapshot of about {size} bytes", f"{SNAPSHOT_MAX_BYTES} bytes")
+    _keep_logs_in_budget(b.session)
     try:
         stamp = datetime.datetime.now().strftime("%H%M%S")
-        safe_session = re.sub(r"[^A-Za-z0-9_-]+", "-", b.session)[:60] or "session"
         safe_tag = re.sub(r"[^A-Za-z0-9_-]+", "-", b.tag)[:40] or "snap"
-        folder = LOG_DIR / "snapshots" / safe_session
+        folder = LOG_DIR / "snapshots" / _safe_session(b.session)
         folder.mkdir(parents=True, exist_ok=True)
         written = []
-        if b.png:
-            path = folder / f"{stamp}-{safe_tag}.png"
-            path.write_bytes(base64.b64decode(b.png))
-            written.append(str(path))
+        for image, extension in ((b.png, "png"), (b.jpeg, "jpg")):
+            if image:
+                path = folder / f"{stamp}-{safe_tag}.{extension}"
+                path.write_bytes(base64.b64decode(image))
+                written.append(str(path))
         if b.text:
             path = folder / f"{stamp}-{safe_tag}.txt"
             path.write_text(b.text, encoding="utf-8", errors="replace")
@@ -1583,6 +1591,305 @@ def log_list():
             for p in files[:25]
         ],
     }
+
+
+# ── Log folder budget ──────────────────────────────────────────────────────────
+# Every run adds a log, turn records, a run record and snapshots, and nothing
+# ever deleted any of them: a test PC left playing for days fills its disk. So
+# the sessions' files are kept within a budget of AGENT_LOG_BUDGET_MB megabytes
+# (LOG_BUDGET_DEFAULT_MB unless it is set; 0 for no limit). At most once every
+# LOG_PRUNE_EVERY_S, a write to the log folder starts a look, on a thread of its
+# own, that adds up the sessions' files and, when they are over the budget,
+# deletes whole sessions, oldest first (by the newest file each holds), until
+# the rest fit. On its own thread because a full folder is tens of thousands of
+# files, which take seconds to add up and longer to delete, and the games loop
+# waits on a snapshot's write.
+#
+# A session's files are the ones the routes above and below write for it, and
+# only those, named as they name them:
+#   agent-<session>.log            snapshots/<session>/<HHMMSS>-<tag>.png|.jpg|.txt
+#   turns/<session>.jsonl          runs/<session>/run.json (and its .tmp while written)
+# where <session> is shaped as the page names a run (runSessionId in
+# src/agent/episodes.js, 2026-09-24-10-00-00-abcd; before 793ed82 it had no
+# four hex digits). AGENT_LOG_DIR can point at any folder, and another tool's
+# runs/ or snapshots/ there (TensorBoard's, a VM's) must never be taken for the
+# agent's: a name shaped any other way, a file the backend does not write, a
+# subfolder and a link are neither counted nor deleted, and a session's folder
+# goes only once nothing is left in it. Nor is episodes.jsonl, which holds one
+# line per game of every run (what `npm run episodes` adds up; a line can
+# outlive the snapshots it names).
+#
+# Never deleted, whatever the budget: the session the write is for, and every
+# session written to in the last LOG_ACTIVE_S. That keeps the run under way, and
+# a run that just ended whose queued lines are still arriving. A session whose
+# files could not all be deleted (held open by a viewer, read-only) is left out
+# for LOG_RETRY_S, so the backend window does not report it every minute. When
+# what is kept is over the budget, the backend window says so once, and why.
+
+LOG_BUDGET_ENV = "AGENT_LOG_BUDGET_MB"
+LOG_BUDGET_DEFAULT_MB = 2048
+LOG_PRUNE_EVERY_S = 60
+LOG_ACTIVE_S = 10 * 60
+LOG_RETRY_S = 10 * 60
+MB = 1024 * 1024
+
+
+class LogBudget(NamedTuple):
+    bytes: Optional[int]   # None: no limit
+    source: str            # "default", or LOG_BUDGET_ENV when that set it
+    error: Optional[str]   # why LOG_BUDGET_ENV was not used, when it was set but unusable
+
+
+def log_budget_from(environ) -> LogBudget:
+    """The budget from the environment. A value that is not a number of
+    megabytes falls back to the default, and says why."""
+    default = LogBudget(LOG_BUDGET_DEFAULT_MB * MB, "default", None)
+    value = (environ.get(LOG_BUDGET_ENV) or "").strip()
+    if not value:
+        return default
+    try:
+        mb = float(value)
+    except ValueError:
+        mb = float("nan")
+    if not math.isfinite(mb) or mb < 0:
+        return default._replace(error=f"{LOG_BUDGET_ENV}={value!r} is not a number of megabytes (0 for no limit)")
+    if mb == 0:
+        return LogBudget(None, LOG_BUDGET_ENV, None)
+    return LogBudget(max(1, int(mb * MB)), LOG_BUDGET_ENV, None)
+
+
+def budget_note(budget: LogBudget) -> str:
+    """The banner's words for the budget."""
+    if budget.bytes is None:
+        return f"No size limit ({LOG_BUDGET_ENV}=0): old runs' files are never deleted."
+    size = f"{budget.bytes / MB:g} MB"
+    if budget.error:
+        return f"Kept within {size}: {budget.error}, so the default is used."
+    if budget.source == LOG_BUDGET_ENV:
+        return f"Kept within {size} (from {LOG_BUDGET_ENV}): past it, the oldest runs' files are deleted."
+    return f"Kept within {size}: past it, the oldest runs' files are deleted ({LOG_BUDGET_ENV} sets it)."
+
+
+LOG_BUDGET = log_budget_from(os.environ)
+
+# A run's name as the page makes it (runSessionId), which _safe_session leaves
+# as it is, or as it was before 793ed82. ASCII digits only.
+_SESSION_ID = r"[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}(?:-[0-9a-f]{4})?"
+_SESSION_NAME = re.compile(rf"^{_SESSION_ID}$")
+_SESSION_LOG = re.compile(rf"^agent-({_SESSION_ID})\.log$")
+_SESSION_TURNS = re.compile(rf"^({_SESSION_ID})\.jsonl$")
+# The files the backend writes into a session's folders: /log/snapshot's
+# <HHMMSS>-<tag> frames and texts, and /episode/run's run.json with the
+# temporary file replace_file writes it through.
+_SESSION_FOLDERS = (("snapshots", re.compile(r"^[0-9]{6}-[A-Za-z0-9_-]+\.(?:png|jpg|txt)$")),
+                    ("runs", re.compile(r"^run\.json(?:\.[0-9]+\.tmp)?$")))
+
+
+def _entries(folder) -> list:
+    try:
+        with os.scandir(folder) as found:
+            return list(found)
+    except OSError:
+        return []
+
+
+# What a link is on Windows: a symbolic link, or a junction (a folder link any
+# user can make). DirEntry.is_junction only exists from Python 3.12, and the
+# test PC's .venv is whatever Python start.bat found, so the reparse tag is read
+# instead. On Windows the directory listing carries it, so a folder of tens of
+# thousands of snapshots is not looked at file by file. Other reparse points (a
+# OneDrive placeholder, say) are ordinary files and folders here.
+_LINK_TAGS = (getattr(stat, "IO_REPARSE_TAG_SYMLINK", 0xA000000C),
+              getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003))
+
+
+def _entry_stat(entry):
+    """lstat for a directory entry, or None for a link or something that cannot
+    be read: neither is counted, followed or deleted."""
+    try:
+        if entry.is_symlink():
+            return None
+        st = entry.stat(follow_symlinks=False)
+    except OSError:
+        return None
+    return None if getattr(st, "st_reparse_tag", 0) in _LINK_TAGS else st
+
+
+def log_sessions(log_dir: Path) -> Dict[str, Dict[str, Any]]:
+    """Every session's files in the log folder, the ones the backend wrote and
+    nothing else: {session: {"items": [(path, bytes)], "folders": [path],
+    "bytes": total, "newest": mtime}}. "folders" are the session's snapshots/
+    and runs/ folders, removed once empty."""
+    sessions: Dict[str, Dict[str, Any]] = {}
+
+    def session(name: str) -> Dict[str, Any]:
+        return sessions.setdefault(name, {"items": [], "folders": [], "bytes": 0, "newest": 0.0})
+
+    def add(name: str, entry) -> bool:
+        st = _entry_stat(entry)
+        if st is None or not stat.S_ISREG(st.st_mode):
+            return False
+        s = session(name)
+        s["items"].append((Path(entry.path), st.st_size))
+        s["bytes"] += st.st_size
+        s["newest"] = max(s["newest"], st.st_mtime)
+        return True
+
+    for folder, pattern in ((log_dir, _SESSION_LOG), (log_dir / "turns", _SESSION_TURNS)):
+        for e in _entries(folder):
+            match = pattern.match(e.name)
+            if match:
+                add(match.group(1), e)
+    for sub, written in _SESSION_FOLDERS:
+        for e in _entries(log_dir / sub):
+            st = _entry_stat(e) if _SESSION_NAME.match(e.name) else None
+            if st is None or not stat.S_ISDIR(st.st_mode):
+                continue
+            found = [add(e.name, f) for f in _entries(e.path) if written.match(f.name)]
+            if any(found):
+                session(e.name)["folders"].append(Path(e.path))
+    return sessions
+
+
+def prune_plan(sessions: Dict[str, Dict[str, Any]], budget: Optional[int], protected) -> List[str]:
+    """The sessions to delete, oldest first, for the rest to fit in `budget`
+    bytes. A protected session is never one of them, so the rest may still not
+    fit."""
+    total = sum(s["bytes"] for s in sessions.values())
+    if budget is None or total <= budget:
+        return []
+    doomed = []
+    for name, s in sorted(sessions.items(), key=lambda kv: (kv[1]["newest"], kv[0])):
+        if total <= budget:
+            break
+        if name in protected:
+            continue
+        doomed.append(name)
+        total -= s["bytes"]
+    return doomed
+
+
+def prune_logs(log_dir: Path, budget: Optional[int], active=(), now: Optional[float] = None,
+               skip=()) -> Dict[str, Any]:
+    """Delete the oldest sessions' files in `log_dir` until the sessions fit in
+    `budget` bytes, never a session named in `active` or written to within
+    LOG_ACTIVE_S of `now` (time.time() when not given), nor one in `skip`.
+    Returns what it did: {budget, before, after, removed: [sessions whose files
+    all went], failed: [sessions with files that could not be deleted], freed,
+    protected: [active or recent sessions], skipped: [sessions in `skip`],
+    errors: [text], over}."""
+    now = time.time() if now is None else now
+    sessions = log_sessions(Path(log_dir))
+    protected = {_safe_session(name) for name in active} | {
+        name for name, s in sessions.items() if now - s["newest"] < LOG_ACTIVE_S}
+    skipped = {name for name in skip if name in sessions} - protected
+    before = sum(s["bytes"] for s in sessions.values())
+    removed, failed, freed, errors = [], [], 0, []
+    for name in prune_plan(sessions, budget, protected | skipped):
+        whole = True
+        for path, size in sessions[name]["items"]:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                errors.append(f"{path}: {e}")
+                whole = False
+                continue
+            freed += size
+        for folder in sessions[name]["folders"]:
+            try:
+                folder.rmdir()  # an empty folder only: whatever else is in it stays, and so does the folder
+            except OSError:
+                pass
+        (removed if whole else failed).append(name)
+    after = before - freed
+    return {"budget": budget, "before": before, "after": after, "removed": removed, "failed": failed,
+            "freed": freed, "protected": sorted(n for n in protected if n in sessions),
+            "skipped": sorted(skipped), "errors": errors,
+            "over": budget is not None and after > budget}
+
+
+_prune_lock = threading.Lock()   # held for the whole look, by the thread doing it
+_prune_clock = time.monotonic
+_last_prune: Optional[float] = None
+_prune_over_said = False  # the "over budget, and all of it kept" line is said once
+_prune_failed: Dict[str, float] = {}  # session: when its files could not all be deleted (_prune_clock)
+
+
+def _prune_in_thread(work) -> None:
+    threading.Thread(target=work, name="log-budget", daemon=True).start()
+
+
+_prune_start = _prune_in_thread  # the checks run the look in the request instead
+
+
+def _keep_logs_in_budget(session: str) -> bool:
+    """Called by every route that writes into the log folder, before it writes,
+    with the session it writes for. At most once every LOG_PRUNE_EVERY_S, starts
+    a look at the budget (_prune_now) on a thread of its own, and returns at
+    once: the write never waits for it, and never fails because of it. Returns
+    whether it started one."""
+    global _last_prune
+    budget, log_dir = LOG_BUDGET.bytes, LOG_DIR
+    if budget is None:
+        return False
+    if not _prune_lock.acquire(blocking=False):
+        return False  # a look is under way
+    started = False
+    try:
+        now = _prune_clock()
+        if _last_prune is None or now - _last_prune >= LOG_PRUNE_EVERY_S:
+            _last_prune = now
+            _prune_start(lambda: _prune_now(log_dir, budget, session, now))
+            started = True
+    except Exception as e:
+        _announce(f"Logs: could not keep the log folder within its budget ({e}).")
+    finally:
+        if not started:
+            _prune_lock.release()
+    return started
+
+
+def _prune_now(log_dir: Path, budget: int, session: str, now: float) -> None:
+    """One look at the budget, and what the backend window says about it. Runs
+    holding _prune_lock, and lets go of it when done."""
+    global _prune_over_said
+    try:
+        for name, when in list(_prune_failed.items()):
+            if now - when >= LOG_RETRY_S:
+                del _prune_failed[name]
+        result = prune_logs(log_dir, budget, active=[session], skip=list(_prune_failed))
+        for name in result["removed"]:
+            _prune_failed.pop(name, None)
+        for name in result["failed"]:
+            _prune_failed[name] = now
+
+        def names(sessions):
+            return ", ".join(sessions[:3]) + (f" and {len(sessions) - 3} more" if len(sessions) > 3 else "")
+
+        budget_mb = f"{budget / MB:g} MB"
+        if result["removed"]:
+            _announce(f"Logs: deleted {len(result['removed'])} old session(s) ({result['freed'] / MB:.1f} MB: "
+                      f"{names(result['removed'])}) to keep the log folder within {budget_mb}.")
+        if result["failed"]:
+            _announce(f"Logs: could not delete every file of {len(result['failed'])} old session(s) "
+                      f"({names(result['failed'])}), first {result['errors'][0]}. They are left alone for "
+                      f"{LOG_RETRY_S // 60} minutes, then tried again.")
+        if result["over"] and not _prune_over_said:
+            kept = []
+            if result["protected"]:
+                kept.append(f"{len(result['protected'])} session(s) written to in the last {LOG_ACTIVE_S // 60} minutes")
+            held = result["failed"] + result["skipped"]
+            if held:
+                kept.append(f"{len(held)} session(s) with files that could not be deleted")
+            _announce(f"Logs: {result['after'] / MB:.1f} MB of sessions are left, over the {budget_mb} budget, "
+                      f"and are kept: {', and '.join(kept) or 'nothing more could be deleted'}.")
+        _prune_over_said = result["over"]
+    except Exception as e:
+        _announce(f"Logs: could not keep the log folder within its budget ({e}).")
+    finally:
+        _prune_lock.release()
 
 
 # ── Memory storage ─────────────────────────────────────────────────────────────
@@ -1999,6 +2306,7 @@ def episode_run(b: RunRecordBody):
     size = len(text.encode("utf-8"))
     if size > EPISODE_RECORD_MAX_BYTES:
         return _too_large(f"a run record of {size} bytes", f"{EPISODE_RECORD_MAX_BYTES} bytes")
+    _keep_logs_in_budget(b.session)
     try:
         path = _run_file(b.session)
         with _records_lock:
@@ -2023,6 +2331,7 @@ def episode_game(b: GameRecordBody):
     size = len(line.encode("utf-8", "replace"))
     if size > EPISODE_RECORD_MAX_BYTES:
         return _too_large(f"a game record of {size} bytes", f"{EPISODE_RECORD_MAX_BYTES} bytes")
+    _keep_logs_in_budget(b.session)
     try:
         path = _episodes_file()
         _append_lines(path, [line])
@@ -2043,6 +2352,7 @@ def episode_turns(b: TurnRecordsBody):
     size = sum(len(line.encode("utf-8", "replace")) + 1 for line in lines)
     if size > TURN_RECORDS_MAX_BYTES:
         return _too_large(f"{size} bytes of turn records", f"{TURN_RECORDS_MAX_BYTES} bytes")
+    _keep_logs_in_budget(b.session)
     try:
         path = _turns_file(b.session)
         _append_lines(path, lines)
@@ -2756,6 +3066,7 @@ if __name__ == "__main__":
     print(f"Platform : {platform.system()}")
     print(f"Screen   : {SCREEN_W} x {SCREEN_H} px")
     print(f"Logs     : {LOG_DIR}" + (f" (from {LOG_DIR_ENV})" if (os.environ.get(LOG_DIR_ENV) or "").strip() else ""))
+    print(f"           {budget_note(LOG_BUDGET)}")
     print(f"API      : http://localhost:{PORT} (only for the agent page at {PAGE_ORIGINS[0]})")
     print(f"Token    : {'from AGENT_TOKEN' if (os.environ.get('AGENT_TOKEN') or '').strip() else 'new for this start'}, "
           f"written to {TOKEN_FILE.name}")

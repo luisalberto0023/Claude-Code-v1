@@ -449,10 +449,32 @@ beside another.
   | `logs/runs/<session>/run.json` | What the run was: both commits, provider, model, control scheme, JSON-action mode, frame width, image cap, turn window, timing profile with its confirm delay, plugin or none, game, games requested, and `sitePolicy` (the answers given before the game's first run, or the local bench page it played) |
   | `logs/episodes.jsonl` | One line per game played, for every run, in one file: outcome, turns, duration, score and where it came from (`measured` by the agent itself, the `model`'s word, or `none`), why it was stuck, snapshot files, a short hash of the memory it played with, and `stopped` when **■ Stop** ended it |
   | `logs/turns/<session>.jsonl` | One line per turn: where its time went (`capture_ms`, `llm_ms`, `backend_ms`, `confirm_ms`, `pace_ms`, and `other_ms` for the rest), tokens in, out and cached where the provider reports them, inputs sent, whether the screen changed, and a reply the page could not use (`schemaViolation`) |
+  | `logs/snapshots/<session>/` | Frames next to what the agent made of them, as `<time>-<tag>.png` or `.jpg` plus a `.txt`. With a plugin, the solver's full-resolution capture when a board read fails or clashes, on a guess, and when the game ends (`game-over`, `gave-up`), as before. With **no plugin**, the frame last sent to the model, saved as sent (a `.jpg` at the width the model got, with its crop and click grid, tagged `lowres`) at: the first turn of each game (`first-turn`), the 3rd and 6th action in a row that changed nothing (`no-op-3`, `no-op-6`), each pause for a model that stopped answering (`model-unreachable`), play stopping as stuck (`stuck`) and the model ending the game (`game-end`). The `.txt` holds the model's last reply whole: `See:`, `Plan:`, its text and every action with its input, and a `Frame (lowres): ...` line saying which turn the frame was sent with. At most 6 a game; how a game ended is always saved |
 
   A session given up (`aborted`) writes no game line: the game did not finish, the
   agent did. A turn the model did not answer is still a turn line, with `result`
   `transport-error`.
+- **The folder is kept within 2048 MB.** Nothing used to delete old runs, so a
+  test PC left playing for days filled its disk. Now, at most once a minute, a
+  write to the log folder starts a look (in the background, so play never waits
+  for it) that adds up the runs' files and, past the budget, deletes whole
+  runs, oldest first, until the rest fit. A run's files are only the ones the
+  backend writes, named as it names them: `agent-<session>.log`,
+  `snapshots\<session>\<time>-<tag>.png`/`.jpg`/`.txt`, `runs\<session>\run.json`
+  and `turns\<session>.jsonl`, where `<session>` is a run's name such as
+  `2026-09-24-10-00-00-abcd`. A run's folder goes once it is empty. Nothing else
+  is counted or deleted: not a folder or file named any other way, not anything
+  else put in a run's folder, not a link, and never `logs/episodes.jsonl` (so a
+  game line there can name snapshots that are gone). It never deletes the run
+  being written, or any run written to in the last 10 minutes. The backend
+  window says what it deleted:
+  `Logs: deleted 3 old session(s) (412.6 MB: ...) to keep the log folder within 2048 MB.`
+  A run with a file that could not be deleted (open in an image viewer, say) is
+  reported once with `Logs: could not delete every file of ...`, left alone for
+  10 minutes, then tried again.
+  Set `AGENT_LOG_BUDGET_MB` before `start.bat` for another size (`AGENT_LOG_BUDGET_MB=500`),
+  or `0` for no limit; the banner's line under `Logs     :` says which applies.
+  **💾 Save log** or copy a run's files elsewhere to keep them for good.
 - **Adding it up:** `npm run episodes` prints, for each commit, provider, model,
   game and plugin: games, how many were won, lost, stuck and ended, how many
   **■ Stop** cut short (`stopped`), mean turns and mean score (over the games that
@@ -473,7 +495,10 @@ beside another.
   starting `~\` for your home folder); the banner's `Logs     :` line says where.
   `npm run episodes` reads the same variable the same way.
   Git ignores only `logs/`, so pick a folder under `logs\` or outside the project
-  folder, never one git would pick up.
+  folder, never one git would pick up. Give the agent a folder of its own (a new,
+  empty one such as `D:\agent-logs`), not a drive or a folder other things use:
+  old runs' files are deleted from it (see above). Only files named as the
+  backend names them are ever deleted, but keep nothing else there.
 - **Writes that fail are sent again.** While the backend is not taking writes
   (busy, or restarting), the page keeps up to 5000 log lines and 2000 records and
   sends them once it answers, where it used to drop them without a word. Past
@@ -577,6 +602,14 @@ alone, and carries on by itself once the model answers again.
   The HUD **Status** reads `paused: model unreachable` and **Model** counts down
   to the next check (15 s, 30 s, 60 s, then every 120 s). The board does not
   change, no `Game 1 finished` line appears, and nothing clicks New Game.
+- **Pass, the frame (no plugin):** between `Model request failed after ...` and
+  `⏸ Paused` the log shows
+  `📷 Saved what the agent saw → ...-model-unreachable-lowres.txt`, and
+  `logs\snapshots\<session>\` holds that `.txt` and a `.jpg` of the same name: the
+  frame the failed request carried. The `.txt` starts
+  `The model did not answer (...). Play is paused, ...`. A `.txt` with no `.jpg`
+  and a `📷 The backend did not save the frame ...` line mean the backend window
+  runs code from before this change: restart `start.bat`.
 - Start Ollama again. **Pass:** at the next check the log shows
   `▶ The model is answering again — resuming play.` and play continues on the
   same board.
@@ -970,6 +1003,54 @@ and the agent tab reloaded. None of it needs minesweeper.online open.
   red line, `Solver test not run: the URL field ("https://minesweeper.online/") points at minesweeper.online ...`,
   and no `── Solver diagnostic` lines. Clear the **URL** field.
 
+### ✅ Test 17 — A game with no plugin leaves frames, and the log folder stays within its budget
+A run with no plugin used to leave no frame at all, only log lines. See the
+`logs/snapshots/<session>/` row and **The folder is kept within 2048 MB** under
+**Which code ran, and what each run records**. This needs the backend restarted
+(close the backend window and the `start.bat` window, run `start.bat`) and the
+agent tab reloaded.
+- **Banner:** under `Logs     : ...\game-agent\logs` the backend window says
+  `Kept within 2048 MB: past it, the oldest runs' files are deleted (AGENT_LOG_BUDGET_MB sets it).`
+- **Frames with no plugin:** game name `Minesweeper`, **URL**
+  `http://localhost:5173/bench/minesweeper/?seed=42`, ADVANCED **Use built-in
+  solver when available** off, **Share Screen** → the Minesweeper window,
+  **▶ Start**, and let it play five or six turns, then **■ Stop**. **Pass:** the
+  log shows `📷 Saved what the agent saw → ...-first-turn-lowres.txt` after the
+  first turn, and `logs\snapshots\<session>\` (the session is the word after
+  `RUN` on the log's first line) holds `<time>-first-turn-lowres.jpg` and `.txt`. The `.jpg` is the
+  board as the model saw it, with the red click grid if the grid is on; the
+  `.txt` starts `Game 1, first turn: ...`, then `The model's last reply (turn 1):`
+  with its `See:`/`Plan:` or its text, its actions, and ends with a
+  `Frame (lowres): the ...×... JPEG sent to the model with turn 1 ...` line.
+  **Record** whether the model's description in the `.txt` matches the frame.
+- **Actions that change nothing:** only key presses that change nothing are
+  counted for now (clicks are a later change), so this uses 2048. Do Test 0 with
+  **Use built-in solver when available** on and let the game end, leaving the
+  `Game over!` board up. Turn the solver off and **▶ Start** again on that board:
+  every arrow key now changes nothing. **Pass:**
+  `No progress for 3 actions — asking model to change approach.` is followed by a
+  `📷 Saved ... no-op-3-lowres.txt` line (and `no-op-6` if it gets that far), each
+  once however many turns the streak stays there, and
+  a run that ends `No moves available ...` or `No progress after ...` saves a
+  `stuck-lowres` pair. If the model calls `signal_game_end` instead, a
+  `game-end-lowres` pair, whose `.txt` starts `The model ended the game: ...`.
+  If it clicks **Try again** and plays on, that is fine: **■ Stop** after a few turns.
+- **The budget:** close the backend window and the `start.bat` window. Open a
+  Command Prompt in the project folder and run `set AGENT_LOG_BUDGET_MB=1`, then
+  `start.bat`. **Pass:** the banner says `Kept within 1 MB (from AGENT_LOG_BUDGET_MB): ...`. Reload the tab,
+  **▶ Start** any run and **■ Stop** it after a turn or two. If `logs\` held runs
+  more than 10 minutes old (from the tests above), the backend window prints
+  `Logs: deleted N old session(s) (... MB: ...) to keep the log folder within 1 MB.`
+  within a minute, and their `agent-<session>.log`, `snapshots\<session>\`,
+  `runs\<session>\` and `turns\<session>.jsonl` are gone, while this run's files,
+  `logs\episodes.jsonl` and `logs\review\` (if present) are all still there.
+  A `Logs: ... MB of sessions are left, over the 1 MB budget, and are kept: ... written to in the last 10 minutes`
+  line may follow once; at 1 MB that is expected, since the runs of the last 10
+  minutes are kept whatever their size.
+  **Copy anything worth keeping out of `logs\` first.** Then close that backend
+  window and the Command Prompt, and run `start.bat` normally: the banner is back
+  to 2048 MB.
+
 ---
 
 ## 5. What to watch in the log
@@ -987,6 +1068,12 @@ and the agent tab reloaded. None of it needs minesweeper.online open.
 | `Backend online — Windows 1920×1080` | The page reached the backend with its token. The screen size now comes from `/screen/info`; `/health` answers anyone and says only `ok`, whether input is halted and which kill-switch hotkeys are registered |
 | `⛔ The backend refused this page's token. ...` (and a red box with **Reload page**) | The backend was restarted after this tab loaded, so the tab's token is old. Reload the tab. A running session pauses; a session using the Ollama relay is given up (`Session given up: the backend refused to relay the request to Ollama ...`) |
 | `📷 The frame was too large to save whole; saving it at 1/2 size.` | A snapshot frame was over the backend's 8 MB limit as a PNG (a large, busy screen) and was saved smaller rather than not at all |
+| `📷 Saved what the agent saw → ...\snapshots\<session>\<time>-first-turn-lowres.txt` (also `no-op-3-lowres`, `no-op-6-lowres`, `model-unreachable-lowres`, `stuck-lowres`, `game-end-lowres`) | With no plugin: the frame the model was last sent (a `.jpg`, as sent) and its last reply whole (the `.txt`) were saved at that moment. See the `logs/snapshots/<session>/` row under **Which code ran, and what each run records**. At most 6 a game, endings always |
+| `📷 The model's frame was too large to save; saving the text only.` | The frame sent to the model was over the backend's 8 MB limit (it should never be: it is at most 1280 px wide). The `.txt` is still saved |
+| `📷 The backend did not save the frame, only its text: it runs code from before this change. ...` | Said once a run. The backend window was not restarted after the pull, so it writes each snapshot's `.txt` but drops the model's `.jpg`. Close the backend and `start.bat` windows and run `start.bat` again |
+| Backend banner, under `Logs     :`, `Kept within 2048 MB: past it, the oldest runs' files are deleted (AGENT_LOG_BUDGET_MB sets it).` | The log folder's budget. `(from AGENT_LOG_BUDGET_MB)` when that variable set it; `No size limit` with `AGENT_LOG_BUDGET_MB=0` |
+| Backend window `Logs: deleted N old session(s) (X MB: <sessions>) to keep the log folder within 2048 MB.` | Old runs' log, snapshots, run record and turn records were deleted, oldest first. Only files the backend wrote, named as it names them; never the run under way, a run written to in the last 10 minutes, `logs/episodes.jsonl`, or anything else in the folder |
+| Backend window `Logs: could not delete every file of N old session(s) (<sessions>), first <file>: <error>. They are left alone for 10 minutes, then tried again.` | A file of an old run is open in another program (an image viewer, a virus scanner) or read-only. The rest of that run's files were deleted. Close the program; the run is tried again after 10 minutes, and this line comes back only if it fails again |
 | `Game N finished — won` / `Session complete — outcome: won` | A win. Outcomes are always one of `won`, `lost`, `stuck`, `ended`, `aborted`; `win` no longer appears. The backend reads an old `win` count in the memory file as `won` straight away, and the file itself is rewritten without `win` the next time a session saves to it |
 | `● Minesweeper ready` (ADVANCED, next to "Use built-in solver") | The solver that matches the game name, by its own name (it said `2048 ready` for every game before) |
 | `Reported a win the solver never measured (highest tile ...) — recording as ended.` | While the 2048 solver was playing, the model claimed a win but no 2048 tile was built; the game is recorded as `ended`, not `won`. This check existed before but could never fire. It applies only to solvers that track tiles (2048), not to Minesweeper |
@@ -1079,6 +1166,10 @@ and the agent tab reloaded. None of it needs minesweeper.online open.
 | An old tab (opened before this update was pulled) shows errors on every action | It predates the token and never sends one. Reload it |
 | `start.bat` window: `error when starting dev server: Error: Vite 5.4.x is older than 5.4.12 and does not check the Host header ...` (and the backend window closes) | The Node packages were installed before Vite could keep the page's token from other sites, and `start.bat` installs them only when `node_modules` is missing. Run `npm install` in the project folder, then `start.bat` again |
 | `📷 Snapshot not saved — ...` | The backend refused or failed the write (the reason follows). Snapshots are only for troubleshooting; play is not affected |
+| A run with no plugin leaves `.txt` files in `logs\snapshots\<session>\` but no `.jpg` | The backend window runs code from before this change and drops the frame (the log says `📷 The backend did not save the frame ...` once a run): restart `start.bat`. If the `.txt` ends `No frame: nothing had been captured yet.`, capture was not running when it was saved |
+| An older run's log or snapshots are gone from `logs\` | The log folder's budget deleted them (the backend window said `Logs: deleted ...`). Copy runs worth keeping out of `logs\`, or set `AGENT_LOG_BUDGET_MB` higher (or `0`) before `start.bat` |
+| Backend window `Logs: X MB of sessions are left, over the ... budget, and are kept: N session(s) written to in the last 10 minutes, and M session(s) with files that could not be deleted.` | Said once. What is left may not go: runs written to in the last 10 minutes, and runs with a file that could not be deleted (the `could not delete every file` line names them). Raise `AGENT_LOG_BUDGET_MB`; the older runs go first once these age |
+| Banner `Kept within 2048 MB: AGENT_LOG_BUDGET_MB='...' is not a number of megabytes (0 for no limit), so the default is used.` | Fix the variable (a number such as `500`, or `0`), close the backend and `start.bat` windows, and run `start.bat` again |
 | `Memory not saved — outcome: Input should be ...` | The page sent an outcome name the backend does not accept, which is a bug. Run `npm run check` (it compares the two lists) and report the log line |
 | `Memory not saved — no reply from the backend (HTTP 500, empty); check that the backend window is running. game-agent-memory.json was not updated.` | The backend was down when the session ended (the page and Vite were still up), so that session is not in memory. Re-run `start.bat`; later sessions save normally |
 | `Memory not saved — Failed to fetch` | Vite itself was gone (the `npm run dev` window closed) while the page stayed open. Re-run `start.bat` and reload the page |
@@ -1172,5 +1263,11 @@ and the agent tab reloaded. None of it needs minesweeper.online open.
 - **Other machines on your network:** the Ollama relay sends requests only to the
   Ollama server the backend started with (see **Ollama on another PC**), never to
   an address a request names, and does not follow redirects.
+- **Disk:** the log folder is kept within 2048 MB (`AGENT_LOG_BUDGET_MB`): past
+  it, old runs' files are deleted, oldest first, never the run under way, and
+  only files the backend wrote (give `AGENT_LOG_DIR` a folder of its own). Each
+  request is capped too (a snapshot at 8 MB, a batch of log lines at 1 MB), so an
+  unattended run cannot fill the disk. Snapshots hold what was on screen, which
+  can be personal if the wrong window was shared: keep `logs\` private.
 - The agent controls your real mouse/keyboard/gamepad — keep the game in focus and
   don't leave it unattended on anything that can take destructive actions.

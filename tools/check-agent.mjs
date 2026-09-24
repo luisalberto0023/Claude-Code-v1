@@ -1813,7 +1813,12 @@ if (agent) {
   once("a game's line lists its snapshots and says whether only ■ Stop ended it",
     /queueRecord\("game", gameRecord\(\{[\s\S]{0,1200}?snapshots: gameSnapshotsRef\.current,[\s\S]{0,200}?stopped: gameOutcome == null && stopRef\.current,?\s*\}\)\);/g);
   once("each saved snapshot goes into its game's list", /if \(res\?\.ok && res\.files\?\.length\) \{\s*gameSnapshotsRef\.current\.push\(\.\.\.res\.files\);/g);
-  once("the list starts empty for each game", /const turnsBeforeGame = turnCountRef\.current;\s*gameSnapshotsRef\.current = \[\];/g);
+  // Before the games loop, and again as soon as a game is recorded, so the
+  // restart between two games puts its snapshots in the game it starts.
+  once("the list starts empty for each game",
+    /const newGameSnapshots = \(\) => \{\s*gameSnapshotsRef\.current = \[\];\s*snapshotsRef\.current = 0;\s*\};\s*newGameSnapshots\(\);/g);
+  once("and empties again once the game before is recorded",
+    /stopped: gameOutcome == null && stopRef\.current,?\s*\}\)\);\s*newGameSnapshots\(\);/g);
   once("the flush sends log lines and records through the bounded queue, putting back what did not get through",
     /await drainQueue\(logQueueRef\.current, \{ plan: logLineBatches, send, max: LOG_QUEUE_MAX \}\);\s*const \w+ = await drainQueue\(\s*recordQueueRef\.current,\s*\{ plan: recordBatches, send, max: RECORD_QUEUE_MAX, keep: keepRecord \}\s*\);/g);
   const cut = [...code.matchAll(/addLog\(`[^`]*\$\{(?:lead\.see|lead\.plan|text|toolInput\.analysis)\.slice\(/g)].map(m => context(m.index));
@@ -1946,7 +1951,7 @@ if (agent) {
   const turnsPlayed = [...code.matchAll(/\bagentTurn\(/g)].length;
   check("agentTurn is called in one place only", turnsPlayed === 1, `found ${turnsPlayed}`);
   wiring("every turn of play is settled by settleModelCall, and only its decision ends play",
-    /const (\w+) = await agentTurn\([^;]*\);\s*const (\w+) = await settleModelCall\(\1, session,[^;]*\);\s*if \(\2\.loop === "retry"\) continue;\s*if \(\2\.loop === "end-game"\) \{\s*gameOutcome = \2\.outcome;[\s\S]{0,300}?break;\s*\}\s*if \(\2\.loop !== "play"\) break;/g);
+    /const (\w+) = await agentTurn\([^;]*\);\s*const (\w+) = await settleModelCall\(\1, session,[^;]*\);\s*if \(\2\.loop === "retry"\) continue;\s*if \(\2\.loop === "end-game"\) \{\s*gameOutcome = \2\.outcome;[\s\S]{0,500}?break;\s*\}\s*if \(\2\.loop !== "play"\) break;/g);
 
   // A restart that asked the model and got no answer is settled the same way.
   const restarts = [...code.matchAll(/\battemptRestart\(/g)].length;
