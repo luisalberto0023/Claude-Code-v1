@@ -22,6 +22,7 @@
 
 import { normalizeOutcome } from "./outcomes.js";
 import { sitePolicyLabel } from "./sitePolicy.js";
+import { CHANGE_DETECTORS, detectorOf } from "./changeDetection.js";
 
 // ── Versions ──────────────────────────────────────────────────────────────────
 
@@ -147,9 +148,12 @@ export function memoryHash(memoryText) {
 //   plugin         the plugin's short name, or null when the model plays
 //   sitePolicy     why this game may be played unattended: {kind: "local-bench",
 //                  url} or {kind: "acknowledged", …} (src/agent/sitePolicy.js)
+//   changeDetection  "motion" or "legacy": which detector decided whether an
+//                  action changed the screen (src/agent/changeDetection.js), as
+//                  set at ▶ Start; a switch during the run is in its log
 export const RUN_FIELDS = Object.freeze([
   "session", "startedAt", "page", "provider", "model", "controlScheme", "jsonMode", "captureSource",
-  "frameWidth", "frameQuality", "imageCap", "windowTurns", "strategyInterval", "grid", "crop", "timing",
+  "frameWidth", "frameQuality", "imageCap", "windowTurns", "strategyInterval", "grid", "crop", "changeDetection", "timing",
   "pauseToThink", "plugin", "useSolver", "skipResearch", "maxTokens", "gameDesc", "gameKey",
   "gamesRequested", "ollama", "sitePolicy",
 ]);
@@ -169,6 +173,9 @@ export function runHeader(run) {
     run?.jsonMode ? "JSON actions" : "tool calls",
     `frame ${run?.frameWidth ?? "?"}px, ${run?.imageCap ?? "?"} image${run?.imageCap === 1 ? "" : "s"}, ${run?.windowTurns ?? "?"}-turn window`,
     `timing ${t.label ?? t.profile ?? "?"} (confirm ${t.confirmDelay ?? "?"} ms, pace ${t.actionPace ?? "?"} ms)`,
+    // Which detector judged whether each action changed the screen: the motion
+    // map, or the legacy hash it replaced (src/agent/changeDetection.js).
+    `change detection ${run?.changeDetection ? CHANGE_DETECTORS[detectorOf(run.changeDetection)] : "?"}`,
     run?.plugin ? `plugin ${run.plugin}` : "no plugin",
     `"${run?.gameDesc ?? ""}", ${run?.gamesRequested ?? 1} game${run?.gamesRequested === 1 ? "" : "s"}`,
     sitePolicyLabel(run?.sitePolicy),

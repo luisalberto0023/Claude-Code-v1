@@ -417,7 +417,7 @@ beside another.
   tracked files` when there are some). The page reads its own commit from git each
   time the tab is loaded. At **▶ Start** the first line of the log is the RUN line:
   ```
-  RUN 2026-09-24-10-05-33-8f3a — page 842fa64, backend 842fa64 · gemini gemini-3.8-flash · 🌐 Browser · KB/Mouse · tool calls · frame 1280px, 2 images, 20-turn window · timing Puzzle (confirm 2000 ms, pace 500 ms) · plugin 2048 · "2048", 1 game · acknowledged 2026-09-24: single-player, not signed in, results not posted to public rankings, terms checked 2026-09-20
+  RUN 2026-09-24-10-05-33-8f3a — page 842fa64, backend 842fa64 · gemini gemini-3.8-flash · 🌐 Browser · KB/Mouse · tool calls · frame 1280px, 2 images, 20-turn window · timing Puzzle (confirm 2000 ms, pace 500 ms) · change detection motion map · plugin 2048 · "2048", 1 game · acknowledged 2026-09-24: single-player, not signed in, results not posted to public rankings, terms checked 2026-09-20
   ```
   The first part is the run's session name, which also names its files below.
   The last part says why the game may be played at all (see **Which games the
@@ -446,7 +446,7 @@ beside another.
   | File | Holds |
   |------|-------|
   | `logs/agent-<session>.log` | The log, as before, now one file per run (it was one per page load). A model's reply is whole here; only the on-screen log cuts a long line short |
-  | `logs/runs/<session>/run.json` | What the run was: both commits, provider, model, control scheme, JSON-action mode, frame width, image cap, turn window, timing profile with its confirm delay, plugin or none, game, games requested, and `sitePolicy` (the answers given before the game's first run, or the local bench page it played) |
+  | `logs/runs/<session>/run.json` | What the run was: both commits, provider, model, control scheme, JSON-action mode, frame width, image cap, turn window, timing profile with its confirm delay, `changeDetection` (`motion` or `legacy`, see **How the agent tells whether an action did anything**), plugin or none, game, games requested, and `sitePolicy` (the answers given before the game's first run, or the local bench page it played) |
   | `logs/episodes.jsonl` | One line per game played, for every run, in one file: outcome, turns, duration, score and where it came from (`measured` by the agent itself, the `model`'s word, or `none`), why it was stuck, snapshot files, a short hash of the memory it played with, and `stopped` when **■ Stop** ended it |
   | `logs/turns/<session>.jsonl` | One line per turn: where its time went (`capture_ms`, `llm_ms`, `backend_ms`, `confirm_ms`, `pace_ms`, and `other_ms` for the rest), tokens in, out and cached where the provider reports them, inputs sent, whether the screen changed, and a reply the page could not use (`schemaViolation`) |
   | `logs/snapshots/<session>/` | Frames next to what the agent made of them, as `<time>-<tag>.png` or `.jpg` plus a `.txt`. With a plugin, the solver's full-resolution capture when a board read fails or clashes, on a guess, and when the game ends (`game-over`, `gave-up`), as before. With **no plugin**, the frame last sent to the model, saved as sent (a `.jpg` at the width the model got, with its crop and click grid, tagged `lowres`) at: the first turn of each game (`first-turn`), the 3rd and 6th action in a row that changed nothing (`no-op-3`, `no-op-6`), each pause for a model that stopped answering (`model-unreachable`), play stopping as stuck (`stuck`) and the model ending the game (`game-end`). The `.txt` holds the model's last reply whole: `See:`, `Plan:`, its text and every action with its input, and a `Frame (lowres): ...` line saying which turn the frame was sent with. At most 6 a game; how a game ended is always saved |
@@ -508,6 +508,74 @@ beside another.
   A write the backend fails on outright (a server error, five flushes in a row)
   is dropped instead, with a `📒 Run records not written (...): ..., 5 times in a
   row.` line, so it cannot hold back everything queued after it.
+
+### How the agent tells whether an action did anything
+After every click, key press or gamepad input the agent watches the screen for up
+to the timing profile's confirm delay. What it sees decides whether the model is
+told its move `changed` the screen, whether a run of moves that did nothing ends
+the game as stuck, whether the next turn's screenshot is skipped as unchanged,
+and whether a restart worked.
+
+- **The motion map (the default).** Each look shrinks the frame (the one the
+  model is sent: cropped, without the click grid) to a 64×36 grid of grey levels,
+  every pixel counted. A click counts as having done something when the screen
+  changed within about three grid cells of where it landed (about 60 px of a
+  1280-wide frame), or when at least 2% of the screen changed anywhere else (a
+  dialog opening mid-screen). A key, typing, a scroll or the gamepad counts a
+  change anywhere. A restart counts only when at least 2% of the screen changed.
+  It used to be one number for the whole screen (an 8×8 grid of brightness,
+  against 2.0), which could not see one Minesweeper square open: every correct
+  click on a board read as a move that did nothing.
+- **The pointer goes first.** Before a click, a drag or a scroll, the agent moves
+  the pointer onto the target, waits until the screen there holds still (about
+  0.2 s, at most 0.6 s: a hover highlight fading in), takes its "before" look,
+  and only then clicks, without moving it again. A drag then takes the pointer
+  back to where it started and waits the same way, until the screen at both its
+  ends holds still (a piece snapping back too), before it is judged: the share
+  shows the pointer a frame or two late, so a look taken at once still had it on
+  the drag's end, and a drag that did nothing read as `changed`. A screen share
+  that draws the pointer (not every browser leaves it out) would otherwise show
+  the pointer arriving on the target as the click's effect, right where it is
+  looked for: every click, even one on a square already open, read as
+  `changed`. That wait counts toward the turn's `confirm_ms`, so clicks take
+  about 0.2 s longer than before (a drag about 0.4 s), and the move is one more
+  input in the turn's `actions` in `logs/turns/<session>.jsonl`.
+- **DirectX capture (dxcam) on a still screen.** The backend sends no frame when
+  nothing on the monitor has changed since the last one it sent (a pointer move
+  alone makes one), so on a still game most looks get none. The agent then
+  counts the screen as the one it last saw, for the same capture (window, crop):
+  nothing changed, so that is the screen. A missing look is never taken as the
+  "before" look either, which would answer every click `Screen unchanged`
+  whatever it did.
+- **What moves on its own is measured first.** Before the model's first turn in
+  each game (never, in a game a solver plays to the end), before anything is sent
+  to it, the agent waits for the screen to settle (at most 2 s) and takes two
+  frames 1.1 s apart. A clock, a blinking cursor or an animation that moved
+  between them must then move further to count, and more so for a key, whose
+  effect can be anywhere: a clock's next tick lights other digits than the tick
+  it was measured on. An animation that keeps moving elsewhere on screen never
+  counts as a click's effect. The log says what it found, once a game:
+  `Change detection for game 1 (decided by the motion map): noise floor from 2 idle frames 1.1 s apart: nothing moved on its own, ...`
+  or `... 12 of 2304 cells moved on their own (740,87 72×51); a change there counts only past 2.5× that movement, ...`
+  (the box is where, in the frame's pixels). A click is judged where it landed,
+  so a clock elsewhere never makes a dead click look alive.
+- **The old measure is still worked out, and logged next to it.** For every
+  action the log file (not the screen) gets a line with both verdicts:
+  ```
+  Change after click at 595,408 (150 ms, 3 looks): motion map CHANGED — 7 cells changed at the target, peak 20.2, bbox 575,379 44×52 | legacy hash no change — dist 0.04, needs over 2.0 | decided by the motion map (they disagree: only the motion map saw a change)
+  ```
+  The wait stops when the chosen measure decides; if the other has not seen a
+  change by then, it gets one more look 150 ms later, so a move still sliding in
+  is not counted as one it missed. Each turn's image skip gets a
+  `Turn N screen since the last turn: ...` line. A run ends with one line on screen:
+  `Change detection this run (decided by the motion map): 142 actions judged; both detectors agreed on 97, only the motion map saw a change on 44 actions, only the legacy hash on 1 action. ...`
+- **Going back.** ADVANCED → **Change detection** → `legacy hash` makes the old
+  measure decide again, from the next action (the log says so), with no code
+  change; both are still logged. The RUN line (`change detection motion map`)
+  and `run.json` (`changeDetection`) say which one a run started with.
+- **Cheaper looks.** The looks after each action no longer make a JPEG of the
+  frame (every 150 ms, with the click grid on, they did), and the frame is read
+  once per look instead of 64 times. Only the frame sent to the model is encoded.
 
 ---
 
@@ -577,6 +645,14 @@ Confirm nothing broke. This should behave exactly like before.
 - **Pass:** "● region set" appears; **▶ Start** runs without you sharing a screen,
   and the agent sees the game. (Use the crop **Preview** to eyeball the captured
   region.)
+- **Pass, change detection:** on a still game (the local Minesweeper of Test 18
+  in its own window, solver off, is one), the game's
+  `Change detection for game 1 ...` line gives a noise floor (not `no noise
+  floor`), clicks that open squares are answered `Screen changed`, and a click on
+  a square already open `Screen unchanged`. Repeat with ADVANCED **Change
+  detection** → `legacy hash`: a click that opens a large area is still
+  `Screen changed`. Report any `Change after click ...` line in the log file
+  that says `no frame to compare`.
 
 ### ✅ Test 7 — Pause-to-think (single-player native only)
 > ⚠️ **Never** use this on online/multiplayer or anti-cheat games — it uses DLL
@@ -1053,11 +1129,51 @@ agent tab reloaded.
 
 ---
 
+### ✅ Test 18 — An action's effect is seen where it happened
+The motion map should see what the old measure missed: one Minesweeper square
+opening. See **How the agent tells whether an action did anything**. As after
+any pull, restart `start.bat` and reload the agent tab (the backend code is
+unchanged, but the RUN line compares the two commits).
+- **Setup:** open `http://localhost:5173/bench/minesweeper/?seed=42` in its own
+  browser window. Game name `Minesweeper`, the same **URL**, ADVANCED **Use
+  built-in solver when available** off, **Change detection** `motion map`,
+  **Share Screen** → **Entire Screen** (clicks are sent in screen coordinates, so
+  a window share puts them in the wrong place; see Test 1), then ADVANCED **Crop
+  to game area (HUD mask)** with **Preview** until the board fills the preview
+  (Test 3). **▶ Start** and let the model play ten or more turns, then **■ Stop**.
+- **Pass:** after the RUN line (which says `change detection motion map`), a line
+  `Change detection for game 1 (decided by the motion map): noise floor from 2 idle frames 1.1 s apart: ...`
+  appears before the first turn. If it says cells moved on their own, the box it
+  gives should be the timer (top right), not the board. A click that opened
+  squares is answered `Clicked ... Screen changed (dist ...)` in the model's tool
+  result (JSON-action mode shows it as `↳ Clicked ...`); a click on a square
+  already open, `unchanged`. Watch the pointer: before each click it moves onto
+  the square and rests there a moment, then clicks. The run ends with a
+  `Change detection this run (...)` line.
+- **Record:** from `logs\agent-<session>.log`, the `Change after ...` lines
+  where the two disagree (`they disagree`), with the model's click and what the
+  board showed. On this board the motion map should see every click that opened
+  something and the legacy hash almost none. A `Change after` line that says
+  `motion map no change` for a click that did open a square, or `CHANGED` for
+  one that did nothing, is the finding to report.
+- **Keys (2048):** repeat with game `2048` (solver off) for a dozen moves.
+  **Record** the tally line. A move that slid tiles should be `CHANGED` by both;
+  one against a wall, `no change` by both.
+- **Back to the old measure:** during a run, set **Change detection** to
+  `legacy hash`. **Pass:** `Change detection switched to the legacy hash from the next action.`,
+  and later `Change after` lines end `decided by the legacy hash`.
+
+---
+
 ## 5. What to watch in the log
 
 | Log line | Confirms |
 |----------|----------|
-| `[Screen unchanged — image omitted ...]` | A1 image-skip |
+| `[Screen unchanged — image omitted ...]` | A1 image-skip: by default the motion map saw nothing change since the last turn (the log file's `Turn N screen since the last turn: ...` line says both detectors' verdicts) |
+| `Change detection for game N (decided by the motion map): noise floor from 2 idle frames 1.1 s apart: ...` | Before the model's first turn in each game (not in a game the solver plays): what moved on its own while nothing was sent. `nothing moved on its own` on a still game (`... beyond the whole view's flicker of N` when the capture itself flickers). `N of 2304 cells moved on their own (x,y w×h)`: a clock or an animation, there; a change there must be larger to count. `(the screen was still moving after 2 s, ...)`: a real-time game, whose own movement is taken as its noise. See **How the agent tells whether an action did anything** |
+| `Change after <action> (...): motion map ... \| legacy hash ... \| decided by the ...` (log file only) | Each action's wait for the screen to change, judged by both the motion map and the old 8×8 hash, and which one decided. `(they disagree: ...)` marks where they differ |
+| `Change detection this run (decided by the ...): N actions judged; both detectors agreed on ...` | The run's tally of the two. Many `only the motion map saw a change` on a click game is expected (the old measure could not see one square open); many `only the legacy hash` is worth reporting |
+| `Change detection switched to the legacy hash from the next action.` | ADVANCED **Change detection** was changed during a run |
 | `Tactical turn N (text-only)` | B2 slow loop |
 | `→ click_grid(...)` | Discrete-grid clicking |
 | `→ gamepad_button(...)` / `gamepad_stick` | Gamepad output |
@@ -1165,6 +1281,9 @@ agent tab reloaded.
 | Backend window: `Could not set up the page's token: ...` | `AGENT_TOKEN` is set but is not 32 to 256 letters, digits, `-` or `_`; or `.agent-token` cannot be written in the project folder (read-only folder, antivirus). Fix or clear `AGENT_TOKEN` and start again |
 | An old tab (opened before this update was pulled) shows errors on every action | It predates the token and never sends one. Reload it |
 | `start.bat` window: `error when starting dev server: Error: Vite 5.4.x is older than 5.4.12 and does not check the Host header ...` (and the backend window closes) | The Node packages were installed before Vite could keep the page's token from other sites, and `start.bat` installs them only when `node_modules` is missing. Run `npm install` in the project folder, then `start.bat` again |
+| Every click, even one that opened squares, is answered `Screen unchanged` | Look at the `Change after click at ...` lines in the log file: `only away from the target changed` means the change was found but not near where the click landed, so the clicks land somewhere other than where the model aimed (a scaled screen or a window share, see Test 1). `nothing moved past the noise` after the game's line said cells `moved on their own` over the board means the game was still animating when it was calibrated: report it with the log. Setting ADVANCED **Change detection** to `legacy hash` brings back the old measure meanwhile |
+| A click on a square already open, or on nothing, is answered `Screen changed` | Look at its `Change after click at ...` line. `N cells changed at the target` with a small bbox where the click landed: the pointer or a hover highlight was still changing when the "before" look was taken (it waits at most 0.6 s). Say which game, and whether the pointer shows in the frames the model gets (a `.jpg` under `logs\snapshots\<session>\`). `N% of the view changed away from the target`: something else on screen changed meanwhile |
+| Moves that did nothing are answered `Screen changed`, so a blocked game is never called stuck | Something on screen moves by itself and was not moving while the game was calibrated (an advert, a clock that only starts with play). Crop to the game area (ADVANCED **Crop to game area (HUD mask)**) so the frame holds the game alone, and report the `Change after` lines |
 | `📷 Snapshot not saved — ...` | The backend refused or failed the write (the reason follows). Snapshots are only for troubleshooting; play is not affected |
 | A run with no plugin leaves `.txt` files in `logs\snapshots\<session>\` but no `.jpg` | The backend window runs code from before this change and drops the frame (the log says `📷 The backend did not save the frame ...` once a run): restart `start.bat`. If the `.txt` ends `No frame: nothing had been captured yet.`, capture was not running when it was saved |
 | An older run's log or snapshots are gone from `logs\` | The log folder's budget deleted them (the backend window said `Logs: deleted ...`). Copy runs worth keeping out of `logs\`, or set `AGENT_LOG_BUDGET_MB` higher (or `0`) before `start.bat` |

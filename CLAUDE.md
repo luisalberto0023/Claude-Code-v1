@@ -22,6 +22,9 @@ The agent is tested on a separate computer that only gets code through
   what each run, game and turn writes, the log queue, `npm run episodes`),
   snapshots in `tools/check-snapshots.mjs` (the frame and reply a run with no
   plugin saves, and the per-game allowance),
+  change detection in `tools/check-motion.mjs` (the motion map on the real
+  captures in `tools/frames`, the legacy hash beside it, and every wait after
+  an action judged where it acted),
   model request shapes, model lists and
   the model check at Start in `tools/check-llm.mjs`, the key scanner's own test in
   `tools/check-secrets.mjs`, the web-game policy in `tools/check-site-policy.mjs`

@@ -2,6 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import game2048 from "./plugins/game2048.js";
 import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
+import { motionMap, legacyHash, pixelsOf } from "./vision/motion.js";
+import {
+  CHANGE_DETECTORS, DEFAULT_DETECTOR, detectorOf, LEGACY_THRESHOLD, LEGACY_RESTART_THRESHOLD, CALIBRATION_GAP_MS,
+  CALIBRATION_SETTLE_MS, changeAction, judgeLooks, watchForChange, calibrate, settleLook, changeLine, turnLine, calibrationLine,
+  newTally, tallyChange, tallyLine,
+} from "./agent/changeDetection.js";
 import { MODEL_OUTCOMES, MODEL_OUTCOME_CHOICES, normalizeOutcome } from "./agent/outcomes.js";
 import {
   backendFailure, readReply, pageToken, backendHeaders, accessRefusal, snapshotBytes, SNAPSHOT_MAX_BYTES,
@@ -406,7 +412,10 @@ const decisionBtn = (colour) => ({
   fontFamily: "inherit", fontWeight: 600,
 });
 
-function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
+// `encode: false` leaves the frame on the canvas without making a JPEG of it
+// (no `data`): what a look for change detection needs, or a capture that is
+// cropped and encoded afterwards.
+function captureFrame(videoEl, canvasEl, scaleRef, maxW = null, { encode = true } = {}) {
   if (!videoEl || !canvasEl || videoEl.readyState < 2) return null;
   const realW = videoEl.videoWidth;
   const realH = videoEl.videoHeight;
@@ -425,10 +434,9 @@ function captureFrame(videoEl, canvasEl, scaleRef, maxW = null) {
   ctx.drawImage(videoEl, 0, 0, imgW, imgH);
   scaleRef.current = { imgW, imgH, realW, realH, scale: realW / imgW, offsetX: 0, offsetY: 0 };
 
-  return {
-    data: canvasEl.toDataURL("image/jpeg", FRAME_QUALITY).split(",")[1],
-    imgW, imgH, realW, realH,
-  };
+  const frame = { imgW, imgH, realW, realH };
+  if (encode) frame.data = canvasEl.toDataURL("image/jpeg", FRAME_QUALITY).split(",")[1];
+  return frame;
 }
 
 // A canvas as a base64 PNG small enough for /log/snapshot, which refuses more
@@ -470,33 +478,56 @@ async function drawDataURLToCanvas(dataURL, canvasEl) {
   return { imgW, imgH };
 }
 
-// ── Perceptual hash (8×8 grid) ────────────────────────────────────────────────
-function frameHash(canvasEl) {
-  if (!canvasEl || !canvasEl.width) return new Float32Array(64);
-  const ctx = canvasEl.getContext("2d");
-  const w = canvasEl.width, h = canvasEl.height;
-  const cellW = Math.max(1, Math.floor(w / 8));
-  const cellH = Math.max(1, Math.floor(h / 8));
-  const hash = new Float32Array(64);
-  for (let gy = 0; gy < 8; gy++) {
-    for (let gx = 0; gx < 8; gx++) {
-      const data = ctx.getImageData(gx * cellW, gy * cellH, cellW, cellH).data;
-      let sum = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        sum += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-      }
-      hash[gy * 8 + gx] = data.length > 0 ? sum / (data.length / 4) : 0;
-    }
-  }
-  return hash;
+// ── A look at the screen, for change detection ────────────────────────────────
+// What the frame on the canvas is to the two change detectors
+// (src/agent/changeDetection.js): its motion map (src/vision/motion.js) and the
+// legacy 8×8 hash, both from ONE read of its pixels. The legacy hash used to
+// read the canvas 64 times per look, one getImageData per cell. Null when the
+// canvas holds no frame.
+function lookAt(canvasEl) {
+  const pixels = pixelsOf(canvasEl);
+  if (!pixels) return null;
+  const frame = { data: pixels.data, width: pixels.width, height: pixels.height };
+  return { map: motionMap(frame), hash: legacyHash(frame) };
 }
 
-function hashDist(a, b) {
-  if (!a || !b) return 0;
-  let sum = 0;
-  for (let i = 0; i < 64; i++) sum += (a[i] - b[i]) ** 2;
-  return Math.sqrt(sum / 64);
+// The last look taken, with `key`, the capture it was taken with (source,
+// native region, crop). Native capture (the backend's dxcam) sends no frame when
+// nothing on the monitor has changed since the last one it sent, and a pointer
+// move alone makes one, so on a still screen most looks get none: the second
+// look of a click's baseline, a key's baseline, calibration's idle frames. The
+// screen is then the one last seen, and its look stands in. Without it every
+// click, live or dead, read as unchanged by both detectors. (The canvas used to
+// stand in, hashed again, but it may carry the click grid by now.) Only drawFrame
+// asks the backend for frames, for captureNow and lookNow, and both keep theirs.
+let _lastLook = null;
+function keepLook(look, key = "") {
+  if (look) _lastLook = { look, key };
+  return look;
 }
+// A look at the frame drawFrame drew on canvasEl (`drawn`), kept as the last one;
+// or, when it drew none, the last look if the capture is native and is still the
+// one it was taken with. A browser share that gives no frame has none to give,
+// and says nothing about the screen.
+function lookFrom(drawn, canvasEl, { key = "", native = false } = {}) {
+  if (drawn) return keepLook(lookAt(canvasEl), key);
+  return native && _lastLook?.key === key ? _lastLook.look : null;
+}
+
+// Which detector decides whether an action changed the screen: "motion" (the
+// motion map, the default) or "legacy" (the 8×8 hash). The page's Change
+// detection setting sets it, and it is read at every look, so a switch during a
+// run applies from the next action.
+let _changeDetector = DEFAULT_DETECTOR;
+function setChangeDetector(v) { _changeDetector = detectorOf(v); }
+// The noise floor taken at the start of the game being played (calibrate), or
+// null before one is taken: then every cell counts past MIN_DELTA.
+let _changeNoise = null;
+function setChangeNoise(noise) { _changeNoise = noise ?? null; }
+// The page registers this to hear how each action's wait for a change was
+// judged, by both detectors, for the log file and the run's tally.
+let _onChangeJudged = null;
+function onChangeJudged(listener) { _onChangeJudged = listener; }
 
 // ── Click grid overlay ────────────────────────────────────────────────────────
 // NitroGen finding: predicting a discrete grid cell beats regressing raw
@@ -620,49 +651,46 @@ function parseGridCell(cell, cols = GRID_COLS, rows = GRID_ROWS) {
 }
 
 // ── Wait for screen change ────────────────────────────────────────────────────
-// `grab` is an async function that refreshes the canvas with the current frame
-// (works for both browser screen-share and backend native capture).
-// Snapshot the screen hash. Call this BEFORE performing an action so the
-// comparison has a true "before" state.
-async function snapshotHash(grab, canvasEl) {
-  await grab();
-  return frameHash(canvasEl);
+// `look` grabs the screen and returns a look ({map, hash}, lookAt): the page's
+// lookNow, which works for browser screen-share and backend native capture
+// alike, and makes no JPEG (a poll needs pixels, not a picture for the model).
+// Take the baseline with this BEFORE the action, so the comparison has a true
+// "before" state.
+async function snapshotHash(look) {
+  return look();
+}
+
+// The screen at `at` (a point or a list, in the frame's pixels) let settle once
+// the page has moved the pointer there (settleLook), with this game's noise
+// floor. During a turn of play this counts toward the turn's confirm time.
+async function settleAt(look, at) {
+  return inTurnPhase("confirm", () => settleLook(look, { at, noise: _changeNoise }));
+}
+
+// The baseline for a pointer action, taken once the page has moved the pointer
+// onto its target `at` and the screen there has held still: the pointer, and a
+// hover highlight under it, are then in the baseline as in every look after the
+// action.
+async function settledBaseline(look, at) {
+  return (await settleAt(look, at)).look;
 }
 
 // `baseline` MUST be captured before the action. Fast games finish animating
 // during the action's own round trip, so grabbing the baseline afterwards
 // measures post-move vs post-move and always reports "unchanged".
+// `how` is {maxMs, action, threshold}: action from changeAction (where it
+// acted, so a click is judged near where it landed) and threshold the legacy
+// hash's. Both detectors judge every look; the chosen one decides
+// (src/agent/changeDetection.js), and the listener hears both for the log.
 // During a turn of play, the wait (its frame grabs included) is the turn's
 // confirm time, and whether the screen changed is noted for its record.
-async function waitChange(grab, canvasEl, maxMs, threshold, baseline) {
+async function waitChange(look, baseline, how = {}) {
   return inTurnPhase("confirm", async () => {
-    const seen = await watchForChange(grab, canvasEl, maxMs, threshold, baseline);
+    const seen = await watchForChange(look, baseline, { ...how, noise: _changeNoise, detector: _changeDetector });
     noteTurn({ changed: !!seen.changed });
+    _onChangeJudged?.(seen, how.action ?? null);
     return seen;
   });
-}
-
-async function watchForChange(grab, canvasEl, maxMs = 2000, threshold = 2.0, baseline = null) {
-  const t0 = Date.now();
-  if (!baseline) {
-    await grab();
-    baseline = frameHash(canvasEl);
-  }
-  let maxDist = 0; // largest movement seen, even if under threshold
-  // Check immediately: the change may already have happened.
-  await grab();
-  let dist = hashDist(baseline, frameHash(canvasEl));
-  if (dist > maxDist) maxDist = dist;
-  if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
-
-  while (Date.now() - t0 < maxMs) {
-    await new Promise(r => setTimeout(r, 150));
-    await grab();
-    dist = hashDist(baseline, frameHash(canvasEl));
-    if (dist > maxDist) maxDist = dist;
-    if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
-  }
-  return { changed: false, dist: maxDist, elapsed: maxMs };
 }
 
 // The timing profile's pause after an action (actionPace), which is the turn's
@@ -1310,6 +1338,10 @@ export default function GameAgent() {
   const [previewSrc, setPreviewSrc] = useState(null);
   const [strategyInterval, setStrategyInterval] = useState(1); // B2: vision every N turns (1 = every turn)
   const [noToolsMode, setNoToolsMode] = useState(false); // JSON-action mode for small local models
+  // How the agent tells whether an action changed the screen: "motion" (the
+  // motion map, the default) or "legacy" (the 8×8 hash it replaced), so a run can
+  // go back to the old one without a code change (src/agent/changeDetection.js).
+  const [changeDetector, setChangeDetectorState] = useState(DEFAULT_DETECTOR);
   // Screenshot width sent to LOCAL models. Vision/prompt-processing time scales
   // with pixel count, so this is the main lever for getting each request to
   // finish before the connection times out.
@@ -1416,14 +1448,13 @@ export default function GameAgent() {
   // ■ Stop's request to halt input, until the run has ended and the halt is lifted.
   const stopHaltRef = useRef(null);
   const pauseRef = useRef(false);
-  const stuckRingRef = useRef([]);
   const stuckTriggerRef = useRef(0);
   const turnCountRef = useRef(0);
   const tokenRef = useRef({ input: 0, output: 0 });
   const currentScoreRef = useRef(null);
   const goalsRef = useRef([]);
   const currentGoalIndexRef = useRef(0);
-  const lastTurnHashRef = useRef(null);
+  const lastTurnLookRef = useRef(null);          // the screen at the last turn, for the image skip
   const backendHealthRef = useRef(0);
   const backendRefusedRef = useRef(null); // backendRefused, readable without a render
   const streamRef = useRef(null);
@@ -1431,6 +1462,7 @@ export default function GameAgent() {
   const gameEndRef = useRef(null); // set by signal_game_end tool
   const activeToolsRef = useRef(buildActiveTools("browser-kbm")); // tools for the chosen scheme
   const captureSourceRef = useRef("browser"); // "browser" | "native"
+  const nativeRegionRef = useRef(null); // the native capture region the backend confirmed (JSON), for the last look's key
   const pauseToThinkRef = useRef(false);
   const attachedRef = useRef(false);
   const gridEnabledRef = useRef(true);
@@ -1441,6 +1473,7 @@ export default function GameAgent() {
   const lastActionNoOpRef = useRef(null);      // description of the last no-op move
   const lastFailedMovesRef = useRef(new Set()); // moves that did nothing on this board
   const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
+  const changeTallyRef = useRef(newTally());   // this run's actions, and where the two change detectors disagreed
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
   const gameBestTileRef = useRef(0);           // highest tile merged this game
@@ -1509,10 +1542,11 @@ export default function GameAgent() {
   //
   // `screen` cuts a long line short on screen only: the file, and Save log, get
   // it whole. A model's reply is logged that way, so the file keeps what the
-  // model actually said.
-  const addLog = useCallback((text, type = "info", { screen = null } = {}) => {
+  // model actually said. `fileOnly` keeps a line off the screen altogether: the
+  // two change detectors' verdicts on every action are for reading afterwards.
+  const addLog = useCallback((text, type = "info", { screen = null, fileOnly = false } = {}) => {
     const stamp = ts();
-    setLog(l => [...l.slice(-300), { id: uid(), ts: stamp, text: onScreen(text, screen), type }]);
+    if (!fileOnly) setLog(l => [...l.slice(-300), { id: uid(), ts: stamp, text: onScreen(text, screen), type }]);
     const line = `[${stamp}] ${type === "info" ? "" : type.toUpperCase() + ": "}${text}`;
     fullLogRef.current.push(line);
     // Each line goes to the file of the run it was logged in.
@@ -1607,6 +1641,18 @@ export default function GameAgent() {
   const addAction = useCallback((name, args, result) => {
     setActions(a => [...a.slice(-60), { id: uid(), ts: ts(), name, args, result }]);
   }, []);
+
+  // How each action's wait for a change was judged, by the motion map and the
+  // legacy hash side by side (src/agent/changeDetection.js): one line in the log
+  // file per action, off the screen, and counted toward the run's closing tally.
+  useEffect(() => {
+    onChangeJudged((seen, action) => {
+      const line = changeLine(seen, action);
+      if (line) addLog(line, "info", { fileOnly: true });
+      tallyChange(changeTallyRef.current, seen);
+    });
+    return () => onChangeJudged(null);
+  }, [addLog]);
 
   // The backend turned this page away: say so once, and what to do, instead of
   // letting every click fail on its own. Cleared when a check gets through again.
@@ -1812,6 +1858,7 @@ export default function GameAgent() {
   useEffect(() => { setOllamaBase(ollamaHost); }, [ollamaHost]);
   useEffect(() => { setOllamaViaBackend(ollamaViaBackend); }, [ollamaViaBackend]);
   useEffect(() => { noToolsRef.current = noToolsMode; }, [noToolsMode]);
+  useEffect(() => { setChangeDetector(changeDetector); }, [changeDetector]);
   // Local models have tiny context windows — send smaller screenshots to fit.
   useEffect(() => { setMaxFrameW(providerKey === "ollama" ? localImageWidth : 1280); }, [providerKey, localImageWidth]);
   // Local models: exactly ONE screenshot in context (2+ crashes the runner)
@@ -1947,7 +1994,11 @@ export default function GameAgent() {
   }, []);
 
   // ── Unified frame grab (browser screen-share OR backend native capture) ──────
-  const captureNow = useCallback(async () => {
+  // The frame on canvasRef as the model gets it, cropped and scaled, but no more:
+  // no click grid and no JPEG made here. Returns {base, mutated}, mutated when
+  // the canvas no longer matches the backend's own JPEG (native capture), or
+  // null when there is no frame.
+  const drawFrame = useCallback(async () => {
     let base;
     if (captureSourceRef.current === "native") {
       const r = await backend("/capture/frame");
@@ -1966,8 +2017,11 @@ export default function GameAgent() {
       // When cropping, capture at FULL resolution and downscale after the crop.
       // Cropping an already-shrunk frame compounds the reduction (a 384px frame
       // cropped to the board became ~142px — too small to read).
+      // No JPEG yet: one is made below only for a frame the model gets. This
+      // used to encode a JPEG of every capture, at up to 4096 px wide when
+      // cropping, and again after the crop.
       const cropping = !!cropRef.current?.enabled;
-      base = captureFrame(videoRef.current, canvasRef.current, scaleRef, cropping ? 4096 : null);
+      base = captureFrame(videoRef.current, canvasRef.current, scaleRef, cropping ? 4096 : null, { encode: false });
       if (!base) return null;
     }
 
@@ -1989,19 +2043,44 @@ export default function GameAgent() {
         realW: scaleRef.current.realW, realH: scaleRef.current.realH,
       };
     }
+    return { base, mutated };
+  }, []);
+
+  // A frame for the model: drawFrame's, with the click grid drawn on and made a
+  // JPEG (`data`), plus `look`, the same frame to the change detectors, taken
+  // before the grid goes on: the grid is for the model, not part of the game.
+  // The capture a look is taken with, for the last look (lookFrom): a look from
+  // another source, native region or crop is not this screen.
+  const captureKey = useCallback(() => ({
+    native: captureSourceRef.current === "native",
+    key: `${captureSourceRef.current}|${nativeRegionRef.current ?? ""}|${JSON.stringify(cropRef.current ?? null)}`,
+  }), []);
+
+  const captureNow = useCallback(async () => {
+    const drawn = await drawFrame();
+    if (!drawn) return null;
+    let { base, mutated } = drawn;
+    const look = keepLook(lookAt(canvasRef.current), captureKey().key);
     // ... then the labeled click-grid on top of the (possibly cropped) frame.
     if (gridEnabledRef.current && canvasRef.current?.width) {
       drawGrid(canvasRef.current);
       mutated = true;
     }
-    if (mutated && canvasRef.current?.width) {
+    if ((mutated || !base.data) && canvasRef.current?.width) {
       base = { ...base, data: canvasRef.current.toDataURL("image/jpeg", FRAME_QUALITY).split(",")[1] };
     }
-    return base;
-  }, []);
+    return { ...base, look };
+  }, [drawFrame, captureKey]);
   // During a turn of play, a grab (with its crop, grid and encoding) is the
   // turn's capture time; inside the confirm wait it counts toward that instead.
   const grabFrame = useCallback(() => inTurnPhase("capture", captureNow), [captureNow]);
+  // A look at the screen for change detection alone ({map, hash}, or null): the
+  // frame drawn and read once, with no grid and no JPEG. The waits after each
+  // action look every 150 ms, and used to encode a JPEG each time. When native
+  // capture sends no frame because nothing changed, the last look stands in.
+  const lookNow = useCallback(
+    () => inTurnPhase("capture", async () => lookFrom(await drawFrame(), canvasRef.current, captureKey())),
+    [drawFrame, captureKey]);
 
 
   // Grab one frame and show it (with crop + grid applied) so margins can be tuned.
@@ -2030,8 +2109,10 @@ export default function GameAgent() {
 
   const selectNativeWindow = useCallback(async (title) => {
     setSelectedWindowTitle(title);
-    if (!title) { setNativeRegionSet(false); return; }
+    if (!title) { nativeRegionRef.current = null; setNativeRegionSet(false); return; }
     const r = await backend("/capture/select", { title });
+    // A new region is a new screen: the last look (lookFrom) no longer stands in.
+    nativeRegionRef.current = r.ok ? JSON.stringify(r.region) : null;
     if (r.ok) {
       setNativeRegionSet(true);
       addLog(`Capture region set to "${title}" (${r.region.width}×${r.region.height}).`, "success");
@@ -2061,7 +2142,10 @@ export default function GameAgent() {
   }, [addLog]);
 
   // ── executeTool ──────────────────────────────────────────────────────────────
-  const executeTool = useCallback(async (toolName, toolInput, toolId) => {
+  // `onBaseline` hears the baseline a click took with the pointer on its target
+  // (hoverFirst): a restart the model clicks is verified from it, not from a
+  // look taken before the pointer moved.
+  const executeTool = useCallback(async (toolName, toolInput, toolId, { onBaseline = null } = {}) => {
     const timing = getTiming();
 
     const scaled = (x, y) => {
@@ -2094,6 +2178,21 @@ export default function GameAgent() {
       return markHalted(toolResult(haltedToolText(res)));
     };
 
+    // A pointer action moves the pointer onto its target (screen x, y) FIRST,
+    // takes its baseline there once the screen has held still, and only then
+    // clicks, scrolls or drags, without moving it again. A capture that draws the
+    // pointer (not every browser honours cursor: "never", see startCapture)
+    // would otherwise show the pointer arriving on the target as the click's
+    // effect, and so would a hover highlight under it: that is exactly where a
+    // click's effect is looked for, and the pointer is the size of a square, so
+    // every click, dead or not, read as changed. `at` is the target in the
+    // frame's pixels. Returns {base}, or {halted: reply} when the move met a halt.
+    const hoverFirst = async (x, y, at) => {
+      const moved = await backend("/mouse/move", { x, y, duration: timing.mouseSpeed });
+      if (isHaltReply(moved)) return { halted: moved };
+      return { base: await settledBaseline(lookNow, at) };
+    };
+
     // ── Screen observation ───────────────────────────────────────────────────
     if (toolName === "observe_screen" || toolName === "read_screen_text") {
       const frame = await grabFrame();
@@ -2120,15 +2219,18 @@ export default function GameAgent() {
 
     if (toolName === "click") {
       const { x, y } = scaled(toolInput.x, toolInput.y);
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const hovered = await hoverFirst(x, y, { x: Number(toolInput.x), y: Number(toolInput.y) });
+      if (hovered.halted) return halted(hovered.halted);
+      const __base = hovered.base;
+      onBaseline?.(__base);
       const res = await backend("/mouse/click", {
         x, y,
         button: toolInput.button ?? "left",
         clicks: toolInput.clicks ?? 1,
-        move_duration: timing.mouseSpeed,
+        move_duration: 0,              // already there (hoverFirst)
       });
       if (isHaltReply(res)) return halted(res);
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("click", toolInput) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       await pace(timing.actionPace);
@@ -2149,15 +2251,18 @@ export default function GameAgent() {
       const imgX = Math.round((parsed.col + clamp01(toolInput.dx, 0.5)) * cw);
       const imgY = Math.round((parsed.row + clamp01(toolInput.dy, 0.5)) * ch);
       const { x, y } = scaled(imgX, imgY);
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const hovered = await hoverFirst(x, y, { x: imgX, y: imgY });
+      if (hovered.halted) return halted(hovered.halted);
+      const __base = hovered.base;
+      onBaseline?.(__base);
       const res = await backend("/mouse/click", {
         x, y,
         button: toolInput.button ?? "left",
         clicks: toolInput.clicks ?? 1,
-        move_duration: timing.mouseSpeed,
+        move_duration: 0,              // already there (hoverFirst)
       });
       if (isHaltReply(res)) return halted(res);
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("click_grid", toolInput, { x: imgX, y: imgY }) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
       await pace(timing.actionPace);
@@ -2169,10 +2274,26 @@ export default function GameAgent() {
     if (toolName === "drag") {
       const s1 = scaled(toolInput.x1, toolInput.y1);
       const s2 = scaled(toolInput.x2, toolInput.y2);
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const ends = [{ x: Number(toolInput.x1), y: Number(toolInput.y1) }, { x: Number(toolInput.x2), y: Number(toolInput.y2) }];
+      // The baseline with the pointer on the drag's start (hoverFirst), and the
+      // pointer taken back there once the button is up, so that the pointer
+      // left on the end is not read as the drag's effect.
+      const hovered = await hoverFirst(s1.x, s1.y, ends[0]);
+      if (hovered.halted) return halted(hovered.halted);
+      const __base = hovered.base;
       const res = await backend("/mouse/drag", { x1: s1.x, y1: s1.y, x2: s2.x, y2: s2.y, duration: timing.mouseSpeed * 2, button: toolInput.button ?? "left" });
       if (isHaltReply(res)) return halted(res);
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const back = await backend("/mouse/move", { x: s1.x, y: s1.y, duration: 0 });
+      if (isHaltReply(back)) return halted(back);
+      // ...and judged only once the share shows it back. It shows the pointer a
+      // frame or two late (settleLook), so a look taken at once can still have it
+      // on the end and gone from the start, and a drag that did nothing read as
+      // changed at both. Both ends settle first (a piece snapping back too), and
+      // the wait gets the confirm time left. Its baseline is still the one from
+      // before the drag, so a piece that moved still shows.
+      const settling = Date.now();
+      await settleAt(lookNow, ends);
+      const confirm = await waitChange(lookNow, __base, { maxMs: Math.max(0, timing.confirmDelay - (Date.now() - settling)), action: changeAction("drag", toolInput) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       await pace(timing.actionPace);
@@ -2181,10 +2302,12 @@ export default function GameAgent() {
 
     if (toolName === "scroll") {
       const { x, y } = scaled(toolInput.x, toolInput.y);
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const hovered = await hoverFirst(x, y, { x: Number(toolInput.x), y: Number(toolInput.y) });
+      if (hovered.halted) return halted(hovered.halted);
+      const __base = hovered.base;
       const res = await backend("/mouse/scroll", { x, y, amount: toolInput.amount });
       if (isHaltReply(res)) return halted(res);
-      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1000), undefined, __base);
+      await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1000), action: changeAction("scroll", toolInput) });
       addAction(toolName, toolInput, res);
       await pace(timing.actionPace);
       return toolResult(res.ok ? "Scrolled." : `Error: ${res.error}`);
@@ -2192,7 +2315,7 @@ export default function GameAgent() {
 
     // ── Keyboard actions ─────────────────────────────────────────────────────
     if (toolName === "press_key") {
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const __base = await snapshotHash(lookNow);
       const res = await backend("/keyboard/press", { key: toolInput.key });
       if (isHaltReply(res)) return halted(res);
       if (!res.ok) {
@@ -2201,7 +2324,7 @@ export default function GameAgent() {
         // Synthetic keys land on whatever window has OS focus — surface it.
         addLog(`   key "${toolInput.key}" [${res.method ?? "?"}] → focused: "${res.focus}"`, "info");
       }
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("press_key", toolInput) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       // Track no-op moves so the next turn can tell the model not to repeat them
@@ -2221,10 +2344,10 @@ export default function GameAgent() {
     }
 
     if (toolName === "hold_key") {
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const __base = await snapshotHash(lookNow);
       const res = await backend("/keyboard/hold", { key: toolInput.key, duration: toolInput.duration });
       if (isHaltReply(res)) return halted(res);
-      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
+      await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1500), action: changeAction("hold_key", toolInput) });
       addAction(toolName, toolInput, res);
       logLimit(toolName, res);
       await pace(timing.actionPace);
@@ -2232,10 +2355,10 @@ export default function GameAgent() {
     }
 
     if (toolName === "type_text") {
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const __base = await snapshotHash(lookNow);
       const res = await backend("/keyboard/type", { text: toolInput.text, interval: timing.typingInterval });
       if (isHaltReply(res)) return halted(res);
-      await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
+      await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1500), action: changeAction("type_text", toolInput) });
       addAction(toolName, toolInput, res);
       logLimit(toolName, res);
       await pace(timing.actionPace);
@@ -2244,10 +2367,10 @@ export default function GameAgent() {
 
     // ── Gamepad actions ──────────────────────────────────────────────────────
     if (toolName === "gamepad_button") {
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const __base = await snapshotHash(lookNow);
       const res = await backend("/gamepad/button", { button: toolInput.button, hold: toolInput.hold ?? 0.08 });
       if (isHaltReply(res)) return halted(res);
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("gamepad_button", toolInput) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
@@ -2258,14 +2381,14 @@ export default function GameAgent() {
     }
 
     if (toolName === "gamepad_stick") {
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const __base = await snapshotHash(lookNow);
       const res = await backend("/gamepad/stick", {
         stick: toolInput.stick ?? "left",
         x: toolInput.x ?? 0, y: toolInput.y ?? 0,
         duration: toolInput.duration ?? 0,
       });
       if (isHaltReply(res)) return halted(res);
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("gamepad_stick", toolInput) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
@@ -2276,14 +2399,14 @@ export default function GameAgent() {
     }
 
     if (toolName === "gamepad_trigger") {
-      const __base = await snapshotHash(grabFrame, canvasRef.current);
+      const __base = await snapshotHash(lookNow);
       const res = await backend("/gamepad/trigger", {
         trigger: toolInput.trigger ?? "right",
         value: toolInput.value ?? 1,
         duration: toolInput.duration ?? 0.1,
       });
       if (isHaltReply(res)) return halted(res);
-      const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+      const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("gamepad_trigger", toolInput) });
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
@@ -2328,26 +2451,31 @@ export default function GameAgent() {
         const t = a.tool;
         const inp = a.input ?? {};
         let r;
-        // Baseline before this step's action, not after it
-        const __base = await snapshotHash(grabFrame, canvasRef.current);
-
-        if (t === "press_key") {
-          r = await backend("/keyboard/press", { key: inp.key });
-        } else if (t === "type_text") {
-          r = await backend("/keyboard/type", { text: inp.text, interval: timing.typingInterval });
-        } else if (t === "click") {
+        let __base;
+        if (t === "click") {
+          // The baseline with the pointer already on the target (hoverFirst).
           const s = scaled(inp.x, inp.y);
-          r = await backend("/mouse/click", {
+          const hovered = await hoverFirst(s.x, s.y, { x: Number(inp.x), y: Number(inp.y) });
+          __base = hovered.base ?? null;
+          r = hovered.halted ?? await backend("/mouse/click", {
             x: s.x, y: s.y,
             button: inp.button ?? "left",
             clicks: inp.clicks ?? 1,
-            move_duration: timing.mouseSpeed,
+            move_duration: 0,          // already there (hoverFirst)
           });
-        } else if (t === "gamepad_button") {
-          r = await backend("/gamepad/button", { button: inp.button, hold: inp.hold ?? 0.08 });
         } else {
-          summary.push(`${executed + 1}: unsupported tool "${t}" — skipped`);
-          continue;
+          // Baseline before this step's action, not after it
+          __base = await snapshotHash(lookNow);
+          if (t === "press_key") {
+            r = await backend("/keyboard/press", { key: inp.key });
+          } else if (t === "type_text") {
+            r = await backend("/keyboard/type", { text: inp.text, interval: timing.typingInterval });
+          } else if (t === "gamepad_button") {
+            r = await backend("/gamepad/button", { button: inp.button, hold: inp.hold ?? 0.08 });
+          } else {
+            summary.push(`${executed + 1}: unsupported tool "${t}" — skipped`);
+            continue;
+          }
         }
         // Input halted (the kill switch): not a step that changed nothing, and
         // the rest of the sequence is not sent.
@@ -2357,7 +2485,7 @@ export default function GameAgent() {
           break;
         }
 
-        const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
+        const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction(t, inp) });
         executed++;
         lastConfirmInfo = confirm;
         addAction(`seq.${t}`, inp, { ok: r?.ok ?? false, ...confirm });
@@ -2463,7 +2591,7 @@ export default function GameAgent() {
     }
 
     return toolResult(`Unknown tool: ${toolName}`);
-  }, [gameDesc, getTiming, addLog, addAction, grabFrame]);
+  }, [gameDesc, getTiming, addLog, addAction, grabFrame, lookNow]);
 
   // ── Solver turn ─────────────────────────────────────────────────────────────
   // Read the real board from pixels, pick a move by search, press the key, then
@@ -2928,6 +3056,19 @@ Reply with ONLY a JSON object, no other text:
     return { ok: true, key: moveId, changed, reason: move.reason, board: state.board, state };
   }, [getTiming, addLog, addAction, readScoresFromScreen, noteBestTile, snapshot]);
 
+  // ── The noise floor for change detection ─────────────────────────────────────
+  // Taken at the start of each game from two idle frames, once the screen has
+  // settled (src/agent/changeDetection.js), and used by every look until the
+  // next game's. Nothing is sent to the game meanwhile, and ■ Stop ends it.
+  const calibrateChange = useCallback(async (game) => {
+    const taken = await calibrate(lookNow, { stopped: () => stopRef.current });
+    if (stopRef.current) return;
+    setChangeNoise(taken.noise);
+    addLog(calibrationLine(taken.noise, {
+      detector: _changeDetector, game, still: taken.still, gapMs: CALIBRATION_GAP_MS, settleMs: CALIBRATION_SETTLE_MS,
+    }), "info");
+  }, [lookNow, addLog]);
+
   // ── Measuring turns ──────────────────────────────────────────────────────────
   // Every turn of play, the solver's and the model's, is timed by phase and
   // written as one line to logs/turns/<session>.jsonl (src/agent/turnClock.js
@@ -2962,9 +3103,27 @@ Reply with ONLY a JSON object, no other text:
   // games loop waits for the model or gives the session up accordingly.
   const attemptRestart = useCallback(async (systemPrompt, apiKey) => {
     const timing = getTiming();
+    // A new game shows as a new screen: at least NEW_SCREEN_FRAC of the view
+    // changed by the motion map (a button's hover state is not enough), or, by
+    // the legacy hash, more than its 3.0 for a restart.
     const verify = async (base) => {
-      const c = await waitChange(grabFrame, canvasRef.current, Math.max(timing.confirmDelay, 2500), 3.0, base);
+      const c = await waitChange(lookNow, base, {
+        maxMs: Math.max(timing.confirmDelay, 2500), threshold: LEGACY_RESTART_THRESHOLD, action: changeAction("restart"),
+      });
       return c.changed;
+    };
+    // A restart click at screen (x, y), made as the model's clicks are
+    // (hoverFirst in executeTool): the pointer onto the button first, the
+    // baseline there once it has held still, then the click. A big button's hover
+    // highlight could otherwise pass for the new screen. Returns {base, res}.
+    const clickToRestart = async (x, y) => {
+      const moved = await sendWhenLive("/mouse/move", { x, y, duration: timing.mouseSpeed });
+      if (moved.stopped) return { base: null, res: moved };
+      const s = scaleRef.current;
+      const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
+      const base = await settledBaseline(lookNow, { x: (x - (s.offsetX ?? 0)) / sc, y: (y - (s.offsetY ?? 0)) / sc });
+      const res = await sendWhenLive("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: 0 });
+      return { base, res };
     };
 
     // 0) If a plugin can find the restart control by colour, use that — no model
@@ -3003,8 +3162,7 @@ Reply with ONLY a JSON object, no other text:
         const x = Math.round((s.offsetX ?? 0) + pt.x * sc);
         const y = Math.round((s.offsetY ?? 0) + pt.y * sc);
         addLog(`Restarting — clicking the ${pt.kind ?? "restart"} button at image ${pt.x},${pt.y} (screen ${x},${y}).`, "info");
-        const base = await snapshotHash(grabFrame, canvasRef.current);
-        const res = await sendWhenLive("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+        const { base, res } = await clickToRestart(x, y);
         if (res.stopped) return { ok: false };
         if (!res.ok) { addLog(`Click failed: ${res.error}`, "warn"); break; }
 
@@ -3028,8 +3186,7 @@ Reply with ONLY a JSON object, no other text:
     if (restartPointRef.current) {
       const { x, y } = restartPointRef.current;
       addLog("Restarting — clicking remembered New Game button…", "info");
-      const base = await snapshotHash(grabFrame, canvasRef.current);
-      const res = await sendWhenLive("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+      const { base, res } = await clickToRestart(x, y);
       if (res.stopped) return { ok: false };
       if (res.ok && await verify(base)) {
         addLog("✓ New game started.", "success");
@@ -3092,9 +3249,11 @@ Reply with ONLY a JSON object, no other text:
           continue;
         }
 
-        const base = await snapshotHash(grabFrame, canvasRef.current);
+        // The click takes its own baseline with the pointer on the button
+        // (hoverFirst), and the restart is verified from that one.
+        let base = await snapshotHash(lookNow);
         addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input)})`, "tool", { screen: 64 + String(clickAct.tool).length });
-        const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`);
+        const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`, { onBaseline: b => (base = b) });
         // The click met a halt (a hotkey pressed while the model was asked), so
         // it was never sent: that is not an attempt that failed, and three of them
         // must not end the session. The top of the loop waits for Resume, and the
@@ -3122,7 +3281,7 @@ Reply with ONLY a JSON object, no other text:
       gridEnabledRef.current = savedGrid;
     }
     return { ok: false };
-  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog, useSolver, gameDesc, sendWhenLive, waitWhileHalted]);
+  }, [getTiming, grabFrame, lookNow, executeTool, providerKey, model, addLog, useSolver, gameDesc, sendWhenLive, waitWhileHalted]);
 
   // ── Solver diagnostics ──────────────────────────────────────────────────────
   // Tile palettes differ between 2048 clones, so rather than guessing colours,
@@ -3216,16 +3375,24 @@ Reply with ONLY a JSON object, no other text:
     // Pause-to-think: freeze the game while we capture + reason (no-op unless enabled)
     await setGameSpeed(0);
 
-    // Always grab a frame for hashing / stuck-detection (local, no token cost)
+    // Always grab a frame for change detection (local, no token cost)
     const frame = await grabFrame();
-    const currentHash = frame ? frameHash(canvasRef.current) : null;
-    const distFromLast = (currentHash && lastTurnHashRef.current) ? hashDist(lastTurnHashRef.current, currentHash) : 999;
+    const currentLook = frame?.look ?? null;
+    // The screen now against the screen at the last turn, by both detectors,
+    // anywhere in the view; the chosen one decides (src/agent/changeDetection.js).
+    // The old 8×8 hash could not see one opened Minesweeper square, so after a
+    // click that worked, the next turn skipped the very image that showed it.
+    const sinceLast = (currentLook && lastTurnLookRef.current)
+      ? judgeLooks(lastTurnLookRef.current, currentLook,
+          { noise: _changeNoise, detector: _changeDetector, action: changeAction("turn"), threshold: LEGACY_THRESHOLD })
+      : null;
     // A1: even on a strategy turn, skip the image if the screen is unchanged.
     // But never skip right after a no-op action: the model needs to SEE the
     // board again to pick a different move, otherwise it repeats the failed one.
     const lastNoOp = lastActionNoOpRef.current;
-    const a1Skip = turnCountRef.current > 1 && distFromLast < 2.0 && !lastNoOp;
+    const a1Skip = turnCountRef.current > 1 && !!sinceLast && !sinceLast.changed && !lastNoOp;
     const sendImage = !!frame && isStrategyTurn && !a1Skip;
+    if (sinceLast) addLog(turnLine(sinceLast, { turn: turnCountRef.current, skipped: a1Skip }), "info", { fileOnly: true });
     noteTurn({ image: sendImage });
 
     // Mode-appropriate nudge: small models must be pushed to ACT, not just analyse.
@@ -3271,8 +3438,8 @@ Reply with ONLY a JSON object, no other text:
       addLog(`Tactical turn ${turnCountRef.current} (text-only)`, "info");
     }
     convRef.current.push(turnMessage);
-    const previousHash = lastTurnHashRef.current;
-    lastTurnHashRef.current = currentHash;
+    const previousLook = lastTurnLookRef.current;
+    lastTurnLookRef.current = currentLook;
 
     let resp;
     const __t0 = Date.now();
@@ -3292,7 +3459,7 @@ Reply with ONLY a JSON object, no other text:
       // make sure the next try looks at the screen afresh rather than skipping
       // the image as "unchanged" against a frame the model never received.
       convRef.current = convRef.current.filter(m => m !== turnMessage);
-      lastTurnHashRef.current = previousHash;
+      lastTurnLookRef.current = previousLook;
       forceStrategyRef.current = forced || isStrategyTurn;
       turnCountRef.current--;
       const verdict = e.verdict ?? classifyLlmError(e, providerKey);
@@ -3326,10 +3493,6 @@ Reply with ONLY a JSON object, no other text:
       setPaused(true);
       addLog(`⚠️ Token cap reached: ${totalTokens.toLocaleString()} / ${maxTokens.toLocaleString()}. Auto-paused. Resume to continue.`, "warn");
     }
-
-    // Update stuck ring
-    const hash = frameHash(canvasRef.current);
-    stuckRingRef.current = [...stuckRingRef.current.slice(-6), hash];
 
     // A call to a tool this run did not offer (one the model made up, or one of
     // another control scheme) is run as before, and noted in the turn's record.
@@ -3702,17 +3865,20 @@ Reply with ONLY a JSON object, no other text:
     gameEndRef.current = null;
     convRef.current = [];
     checkpointRef.current = null;
-    stuckRingRef.current = [];
     stuckTriggerRef.current = 0;
     turnCountRef.current = 0;
     tokenRef.current = { input: 0, output: 0 };
     currentScoreRef.current = null;
     goalsRef.current = [];
     currentGoalIndexRef.current = 0;
-    lastTurnHashRef.current = null;
+    lastTurnLookRef.current = null;
     lastActionNoOpRef.current = null;
     lastFailedMovesRef.current = new Set();
     noOpStreakRef.current = 0;
+    // No noise floor until the first game takes its own (calibrateChange), and a
+    // fresh count of how the two change detectors compare.
+    setChangeNoise(null);
+    changeTallyRef.current = newTally();
     // A snapshot saves the solver's capture when this run drew one, else the
     // model's frame and reply: none of those yet. An empty solver canvas keeps a
     // run with no plugin from saving the last run's board, or the blank canvas
@@ -3741,6 +3907,7 @@ Reply with ONLY a JSON object, no other text:
       jsonMode: noToolsMode, captureSource: nativeMode ? "native" : "browser",
       frameWidth: MAX_FRAME_W, frameQuality: FRAME_QUALITY, imageCap: MAX_IMAGES, windowTurns: WINDOW_TURNS,
       strategyInterval: strategyIntervalRef.current, grid: gridEnabled, crop: !!cropRef.current?.enabled,
+      changeDetection: detectorOf(changeDetector),
       timing: { profile: timingProfile, label: TIMING_PROFILES[timingProfile]?.label ?? timingProfile, ...getTiming() },
       pauseToThink: pauseActive, plugin: runPlugin ? pluginName(runPlugin) : null, useSolver, skipResearch, maxTokens,
       gameDesc, gameKey: slugify(gameDesc), gamesRequested: Math.max(1, gamesPerSession || 1),
@@ -4151,6 +4318,14 @@ REASONING STYLE (for analyse_game_state):
       let firstTurnSnapped = false; // the model's first turn of this game is saved once
       let noOpsSnapped = 0;         // the no-op step last saved in this streak (noOpSnapshot)
 
+      // This game's noise floor for change detection, from idle frames taken
+      // before anything is sent to it: what moves there on its own (a clock, an
+      // animation) must move further to count as an action's effect. Taken
+      // before the model's first turn of the game, which with a solver may be
+      // never: the solver reads the board itself and does not wait for changes.
+      setChangeNoise(null);
+      let changeCalibrated = false;
+
     while (!stopRef.current) {
       // Paused, or input halted by the kill switch: wait. A halt is not a turn,
       // a no-op or an error, so nothing about the game is counted meanwhile.
@@ -4309,6 +4484,13 @@ REASONING STYLE (for analyse_game_state):
         }
       }
 
+      if (!changeCalibrated) {
+        changeCalibrated = true;
+        await calibrateChange(gameIdx + 1);
+        // Paused or halted while it looked: wait here, as at the top of the loop.
+        while ((pauseRef.current || haltedRef.current) && !stopRef.current) await new Promise(r => setTimeout(r, 500));
+        if (stopRef.current) break;
+      }
       const turnStarted = Date.now();
       const result = await agentTurn(systemPrompt, apiKey);
       const turn = await settleModelCall(result, session, Date.now() - turnStarted, waitForTheModel);
@@ -4453,10 +4635,15 @@ REASONING STYLE (for analyse_game_state):
       currentScoreRef.current = null;
       scoreSourceRef.current = null;
       setCurrentScore(null);
-      lastTurnHashRef.current = null;
+      lastTurnLookRef.current = null;
       forceStrategyRef.current = true;
       activePlugin?.resetGrid?.();
     }
+
+    // How the two change detectors compared on this run's actions. The log file
+    // has both verdicts on every action, as "Change after ..." lines.
+    const changeTally = tallyLine(changeTallyRef.current, _changeDetector);
+    if (changeTally) addLog(changeTally, "info");
 
     if (session.abortReason) {
       finalOutcome = "aborted";
@@ -4596,7 +4783,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
       waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState,
-      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite, snapshot]);
+      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite, snapshot, changeDetector, calibrateChange]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -5084,6 +5271,25 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
               </label>
               <div style={{ fontSize: 9, color: C.dim, margin: "-2px 0 0 22px" }}>
                 Draws a labeled A1-style grid on screenshots and enables the click_grid tool for reliable mouse targeting. Turn off for pure-keyboard games.
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: C.textDim, display: "block", marginBottom: 2 }}>
+                  Change detection
+                </label>
+                <select value={changeDetector} aria-label="Change detection"
+                  onChange={e => {
+                    const next = detectorOf(e.target.value);
+                    setChangeDetectorState(next);
+                    if (running) addLog(`Change detection switched to the ${CHANGE_DETECTORS[next]} from the next action.`, "warn");
+                  }}
+                  style={inputStyle()}>
+                  {Object.entries(CHANGE_DETECTORS).map(([id, label]) => (
+                    <option key={id} value={id}>{label}</option>
+                  ))}
+                </select>
+                <div style={{ fontSize: 9, color: C.dim, marginTop: 2 }}>
+                  How the agent tells whether an action did anything. The motion map looks for a change where a click landed, and anywhere after a key, against what moves on its own (measured at the start of each game). The legacy hash is the old whole-screen measure, which misses small changes such as one Minesweeper square. The log file gets both for every action either way.
+                </div>
               </div>
 
               {/* HUD crop */}

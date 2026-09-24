@@ -848,8 +848,15 @@ console.log("kill switch");
   check("a solver move that met a halt is neither a failure nor a blocked move, and the loop goes round",
     /if \(isHaltReply\(res\)\) return \{ halted: true, reason: "input halted" \};\s*if \(!res\.ok\) \{/.test(code) && /if \(sr\.halted\) continue;/.test(code),
     "solverTurn or the games loop does not handle { halted }");
+  // The restart's two clicks (a button a plugin found, the remembered one) go
+  // through clickToRestart, which moves the pointer there and clicks, both
+  // waiting out a halt.
+  const restartClick = between("const clickToRestart = async (x, y) => {", "\n    };");
   check("the loop's own clicks (a restart button, a decision's option) wait out a halt instead of failing",
-    [...code.matchAll(/sendWhenLive\("\/mouse\/click"/g)].length === 3, `found ${[...code.matchAll(/sendWhenLive\("\/mouse\/click"/g)].length}, wanted 3`);
+    [...code.matchAll(/sendWhenLive\("\/mouse\/click"/g)].length === 2
+      && /sendWhenLive\("\/mouse\/move"/.test(restartClick) && /sendWhenLive\("\/mouse\/click"/.test(restartClick)
+      && [...code.matchAll(/await clickToRestart\(x, y\)/g)].length === 2,
+    `found ${[...code.matchAll(/sendWhenLive\("\/mouse\/click"/g)].length} sendWhenLive clicks, wanted 2 (clickToRestart's and a decision's option)`);
   check("▶ Start does not begin while someone halted input", /const haltProblem = haltStartProblem\(/.test(between("const startAgent = useCallback(", "stopRef.current = false;")),
     "no haltStartProblem before the run's reset");
   // startingRef is what keeps a second click on ▶ Start out. Let down while the
