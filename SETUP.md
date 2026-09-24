@@ -61,7 +61,10 @@ pauses the run instead of ending the game (against a stand-in, so no provider is
 called and no key is needed), checks what each model request looks like, the
 model list and the model check at Start (stand-ins too), checks that the rule
 about on-screen text goes out with every prompt and that the build's key scanner
-still catches a planted key, runs the plugin and
+still catches a planted key, checks the run records (the commit the page and the
+backend report, what each run, game and turn writes, that a log batch the
+backend did not take is sent again, and `npm run episodes` on a sample file),
+runs the plugin and
 Minesweeper checks, checks that the page sends the backend's token (see Launch),
 and starts the backend on a spare port with every mouse,
 keyboard, gamepad and capture call replaced by a recorder, so it never moves
@@ -324,6 +327,80 @@ tab (a browser extension, say) can read the key. The key field says so.
 - Each **▶ Start** with a cloud provider spends one one-token request to check
   the model, and the **Token budget cap** in ADVANCED pauses the run once it has
   spent that many tokens (`⚠️ Token cap reached: ... Auto-paused.`).
+
+### Which code ran, and what each run records
+Every run now says which code played it, and writes each game and each turn in a
+form that can be added up across runs, so one commit, model or game can be set
+beside another.
+
+- **The commit.** The backend window's banner has a `Commit   :` line, such as
+  `842fa64 on claude/review-game-agent-DGtPg` (with `, with uncommitted changes to
+  tracked files` when there are some). The page reads its own commit from git each
+  time the tab is loaded. At **▶ Start** the first line of the log is the RUN line:
+  ```
+  RUN 2026-09-24-10-05-33-8f3a — page 842fa64, backend 842fa64 · gemini gemini-3.8-flash · 🌐 Browser · KB/Mouse · tool calls · frame 1280px, 2 images, 20-turn window · timing Puzzle (confirm 2000 ms, pace 500 ms) · plugin 2048 · "2048", 1 game
+  ```
+  The first part is the run's session name, which also names its files below.
+- **An open tab keeps its code until it is reloaded.** The dev server no longer
+  swaps changed files into a tab that is already open (it used to, even in the
+  middle of a run, while the tab went on naming the commit it was loaded with).
+  After a pull, or an edit, reload the tab (F5) to run the new page.
+- **A mismatch is an error.** When the page and the backend run different
+  commits, a red `⚠ VERSION MISMATCH: this page is at ... but the backend runs ...`
+  line follows. That is what a `git pull` without restarting `start.bat` looks
+  like: the dev server serves the pulled files at once, so a reloaded tab runs the
+  new page while the backend window keeps the code it started with. Close the
+  backend window and the `start.bat` window, run `start.bat`, and reload the tab.
+  The run still plays; its records carry both commits, so a summary keeps it apart.
+  A tab not reloaded since the pull still runs the old page, as old as the
+  backend: that run is the old commit on both sides, and its records say so.
+- **Same commit, different changes.** When both run the same commit but tracked
+  files were changed on one side only (edited after the backend started, or put
+  back since), a yellow `⚠ The page and the backend are both at ..., but ...` line
+  follows instead: one of them may run code the other has not. Restart
+  `start.bat` and reload the tab.
+- **The files**, all under `logs/` in the project folder (git ignores it):
+
+  | File | Holds |
+  |------|-------|
+  | `logs/agent-<session>.log` | The log, as before, now one file per run (it was one per page load). A model's reply is whole here; only the on-screen log cuts a long line short |
+  | `logs/runs/<session>/run.json` | What the run was: both commits, provider, model, control scheme, JSON-action mode, frame width, image cap, turn window, timing profile with its confirm delay, plugin or none, game, games requested |
+  | `logs/episodes.jsonl` | One line per game played, for every run, in one file: outcome, turns, duration, score and where it came from (`measured` by the agent itself, the `model`'s word, or `none`), why it was stuck, snapshot files, a short hash of the memory it played with, and `stopped` when **■ Stop** ended it |
+  | `logs/turns/<session>.jsonl` | One line per turn: where its time went (`capture_ms`, `llm_ms`, `backend_ms`, `confirm_ms`, `pace_ms`, and `other_ms` for the rest), tokens in, out and cached where the provider reports them, inputs sent, whether the screen changed, and a reply the page could not use (`schemaViolation`) |
+
+  A session given up (`aborted`) writes no game line: the game did not finish, the
+  agent did. A turn the model did not answer is still a turn line, with `result`
+  `transport-error`.
+- **Adding it up:** `npm run episodes` prints, for each commit, provider, model,
+  game and plugin: games, how many were won, lost, stuck and ended, how many
+  **■ Stop** cut short (`stopped`), mean turns and mean score (over the games that
+  have one, with how many that is). The `plugin` column is the plugin whose solver
+  played, or `none` when the model played alone, so a solver's games and the
+  model's own are never averaged together; the `none` rows are the ones that say
+  how the agent does on a game it has no plugin for. Games **■ Stop** cut short are
+  left out of the won/lost/stuck/ended counts and of both means, since a game
+  stopped after five turns says nothing of how a game goes. The `aborted` column
+  stays at 0 for now, since a session given up writes no game line.
+  `npm run episodes -- --by model` (or `--by commit,game,plugin`, any of the five)
+  groups differently, and `--json` gives the same for scripts. A commit shown as
+  `abc1234+` had uncommitted changes; `abc1234/def5678` means the backend ran
+  another commit than the page, and `abc1234/abc1234+` the same commit with
+  changes the page did not have.
+- **Somewhere else:** set `AGENT_LOG_DIR` before running `start.bat` to write all of
+  this elsewhere (a path relative to the project folder, a full one, or one
+  starting `~\` for your home folder); the banner's `Logs     :` line says where.
+  `npm run episodes` reads the same variable the same way.
+  Git ignores only `logs/`, so pick a folder under `logs\` or outside the project
+  folder, never one git would pick up.
+- **Writes that fail are sent again.** While the backend is not taking writes
+  (busy, or restarting), the page keeps up to 5000 log lines and 2000 records and
+  sends them once it answers, where it used to drop them without a word. Past
+  that, the oldest go first (turn lines before game lines), and the log says how
+  many. A backend restarted with a new token needs the tab reloaded, which ends
+  what the tab was keeping: **💾 Save log** first, if the file must be complete.
+  A write the backend fails on outright (a server error, five flushes in a row)
+  is dropped instead, with a `📒 Run records not written (...): ..., 5 times in a
+  row.` line, so it cannot hold back everything queued after it.
 
 ---
 
@@ -699,6 +776,56 @@ Launch. This needs the backend restarted: close the backend window and the
   **Pass:** the Console shows `"ok":false` and `... is the operator's kill switch ...`,
   no red box appears, and the backend window prints no `Input HALTED` line.
 
+### ✅ Test 15 — Every run says which code played it, and each game and turn is recorded
+No log used to say which commit, provider, model or settings a run had, a game's
+result was a line of text, and only the model's reply was timed. See **Which code
+ran, and what each run records** under Launch. This needs the backend restarted:
+close the backend window and the `start.bat` window, run `start.bat`, and reload
+the agent tab.
+- **Banner:** the backend window shows `Commit   : <hash> on claude/review-game-agent-DGtPg`
+  and `Logs     : ...\game-agent\logs`. **Pass:** `<hash>` is the first 7
+  characters of what `git log -1 --oneline` prints, and there is no `, with
+  uncommitted changes` (on the test PC nothing should be edited by hand).
+- **A plugin run:** do Test 0 with **Use built-in solver when available** on and
+  **Games per session** = `2`, and let both games finish (or **■ Stop** during the
+  second). **Pass:** the log's first line is `RUN <session> — page <hash>, backend <hash> · ... · plugin 2048 · "2048", 2 games`
+  with the same `<hash>` twice, and no `VERSION MISMATCH` line. Then in the
+  project folder:
+  - `logs\runs\<session>\run.json` exists, with `"provider"`, `"model"`,
+    `"gamesRequested": 2` and a `"backend"` block holding the same commit;
+  - `logs\episodes.jsonl` has one new line per game, with `"plugin":"2048"`,
+    `"scoreSource":"measured"`, an `"outcome"` and `"turns"`; a game ■ Stop ended
+    has `"stopped":true`;
+  - `logs\turns\<session>.jsonl` has a line per move with `"kind":"plugin"` and
+    `"actions":1` or more.
+- **A run with no plugin:** turn **Use built-in solver when available** off and run
+  the same page for five or six turns, then **■ Stop**. **Pass:** the RUN line says
+  `no plugin`; the turns file has lines with `"kind":"model"`, an `llm_ms` in the
+  thousands, `tokens_in` and `tokens_out` (`tokens_cached` may be `null`), and a
+  `confirm_ms` of up to the timing profile's confirm delay for each action (less
+  when the screen changed sooner).
+  **Record** a typical turn's `llm_ms`, `confirm_ms` and `pace_ms`: they say
+  where a slow turn's time goes.
+- **The whole reply is in the file:** with **Small-model mode (JSON actions)** on
+  (Ollama), look for a `👁` or `🧠` line that ends in `…` on screen (a long one;
+  there may be none in a short run). **Pass:** the same line in
+  `logs\agent-<session>.log` goes on past where the screen cut it.
+- **Adding it up:** run `npm run episodes` in the project folder. **Pass:** it
+  prints `N games in ...\logs\episodes.jsonl` and, under this commit, two rows for
+  `2048`: one with plugin `2048` holding the games of the plugin run, and one
+  with plugin `none` holding the run with no plugin. The game **■ Stop** ended
+  there counts under `stopped` (`1`), not under `ended`, and its turns and score
+  are not in that row's means (`—` when it is the row's only game).
+- **A mismatch:** the next time you pull an update, before restarting `start.bat`
+  and before reloading, press **▶ Start** in the tab that was already open, then
+  **■ Stop**. **Pass:** its RUN line names the old commit for both the page and the
+  backend, with no `VERSION MISMATCH` line (the open tab still runs the page it
+  loaded, and the `npm run dev` window printed no `hmr update` line during the
+  pull). Now reload the tab and press **▶ Start**. **Pass:** a red `⚠ VERSION
+  MISMATCH: this page is at <new> but the backend runs <old>` line under the RUN
+  line. Press **■ Stop**, restart `start.bat`, reload, and start again: the line
+  is gone.
+
 ---
 
 ## 5. What to watch in the log
@@ -749,6 +876,15 @@ Launch. This needs the backend restarted: close the backend window and the
 | Backend window `Input HALTED by ■ Stop on the agent page: ...`, later `Input resumed.` | **■ Stop** halted the input already sent (a hold or typing under way ends within 0.1 s), and lifted its own halt once the run ended. No red box: it lifts itself |
 | `↳ Not done. The operator halted all input (the kill switch): ...` (JSON-action mode; otherwise only in the model's tool result) | The model's action met the halt. It is not counted as a move that changed nothing |
 | `■ Stop did not reach the backend's kill switch (...): input already sent runs to its end.` | The backend is down, or still runs code from before this change (restart `start.bat`). The run still stops between actions |
+| `RUN <session> — page <commit>, backend <commit> · <provider> <model> · ...` (first line of a run) | Which code played the run, with which model and settings; the same is in `logs/runs/<session>/run.json`. `+changes` after a commit: tracked files were edited since it. See **Which code ran, and what each run records** |
+| `⚠ VERSION MISMATCH: this page is at ... but the backend runs ...` | The page and the backend run different commits: usually a pull without restarting `start.bat`. Restart it and reload the tab |
+| `⚠ The page and the backend are both at ..., but the page has uncommitted changes the backend did not start with ...` (or `... the backend started with uncommitted changes the page no longer has ...`) | Same commit, but tracked files were edited (or put back) after the backend started, so one side may run other code. Restart `start.bat` and reload the tab. On the test PC nothing should be edited by hand |
+| `⚠ The backend did not say which commit it runs (...): it is older than this page, or not answering. ...` | The backend window still runs code from before this change (`Not Found`), or is down. Restart `start.bat` |
+| `This page does not know its commit (...)` / `The backend could not read its commit (...)` | Neither git nor the checkout's `.git` folder could tell (the reason follows). The run plays; its records say `unknown` |
+| Backend banner `Commit   : <commit> on <branch>` and `Logs     : <folder>` | The commit the backend started with, and where it writes logs, snapshots and run records (`from AGENT_LOG_DIR` when that variable is set) |
+| `⚠ N log lines were dropped from the log file while the backend was not taking them ...` | The backend did not take writes for a long time, and the page's queue filled. **💾 Save log** still has every line |
+| `📒 N run records (turns first) were dropped while the backend was not taking them ...` | The same for game and turn records: the turn lines went first |
+| `📒 Run records not written (/episode/...): ...` | The backend refused a record; the reason follows. With `Not Found` the backend is older than this page: restart `start.bat` |
 | `⚠ The reply was cut off at the output cap (16,384 tokens) before the model acted, most likely spent thinking: this turn may do nothing.` | The model used the whole output cap (thinking counts toward it) before it called a tool, so the turn did nothing. Now and then is harmless. On most turns, report it with the provider and model. With Ollama it reads `... at the model's length limit ...` |
 
 ---
@@ -803,6 +939,9 @@ Launch. This needs the backend restarted: close the backend window and the
 | A chord does nothing while the game has focus (no `Input HALTED` in the backend window), but works over Notepad | The game turns hotkeys off while it has focus (see **Where a chord may not work**). Press **Alt+Tab** to reach the agent tab and click **■ Stop**, which halts input as well. Note the game's name, and plan on **■ Stop** for it |
 | Every action fails with `input is halted by ...` (`Test FAILED: input is halted ...`) | Input is halted. Click **Resume** in the red box. With no red box it is a halt **■ Stop** left behind (its tab was closed before the run ended): the page lifts it within a few seconds, and **▶ Start** lifts it too |
 | The red box stays after **Resume**, with `Resume failed — ...` | The backend did not answer (window closed or restarted). Run `start.bat` if needed and reload the tab: a restarted backend starts with input not halted |
+| `⚠ VERSION MISMATCH ...` at every **▶ Start**, even after restarting `start.bat` | Something else still runs old code: another backend window (check the taskbar), or the tab was not reloaded. Close every backend and `start.bat` window, run `start.bat` once, and reload the tab |
+| `npm run episodes` says `No games recorded yet: ... does not exist` | No game has finished since this update (an aborted session writes none), the backend window runs code from before it, or `AGENT_LOG_DIR` points somewhere else for the backend than for this command |
+| The banner says `Commit   : unknown (git: ...; ... names no commit)` | Neither git nor the `.git` folder could say which commit this is (a copy of the folder without `.git`, say). The agent runs, but its records say `unknown`. Use a `git clone` of the repository |
 | `npm run build` ends with `FAIL  dist holds N values shaped like an API key` | The build output has something key-shaped in it. Do not commit or publish `dist/`. The usual cause is source that reads `import.meta.env.VITE_..._API_KEY`, which makes Vite paste the key in; keys belong in the page's key field. Delete `dist/`, fix the source, and rotate the key if it was a real one. `node tools/check-no-secrets.mjs <folder>` scans any folder the same way |
 
 ---

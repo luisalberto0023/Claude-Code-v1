@@ -268,6 +268,8 @@ export function fromOpenAI(resp) {
     usage: {
       input_tokens: resp.usage?.prompt_tokens ?? 0,
       output_tokens: resp.usage?.completion_tokens ?? 0,
+      // Of the prompt tokens, those OpenAI served from its cache; Ollama says nothing.
+      ...cachedInput(resp.usage?.prompt_tokens_details?.cached_tokens),
     },
   };
 }
@@ -300,8 +302,39 @@ export function fromGemini(resp) {
       input_tokens: resp.usageMetadata?.promptTokenCount ?? 0,
       // Thinking is billed as output, so the token budget counts it too.
       output_tokens: (resp.usageMetadata?.candidatesTokenCount ?? 0) + (resp.usageMetadata?.thoughtsTokenCount ?? 0),
+      // Of the prompt tokens, those Gemini served from its cache, when it says.
+      ...cachedInput(resp.usageMetadata?.cachedContentTokenCount),
     },
   };
+}
+
+// cached_input_tokens only when the provider reported it: a reply that says
+// nothing about its cache is not a reply that used none.
+function cachedInput(value) {
+  return Number.isFinite(value) ? { cached_input_tokens: value } : {};
+}
+
+/**
+ * A reply's tokens as the turn records keep them (src/agent/turnClock.js), or
+ * null when the reply carried no usage: {in, out, cached}.
+ *   in      every prompt token. Anthropic counts those it read from or wrote to
+ *           its prompt cache apart from input_tokens; the others include them.
+ *   out     the reply's, thinking included (fromGemini adds it; OpenAI's
+ *           completion_tokens already has it).
+ *   cached  the prompt tokens served from the provider's cache, where it says
+ *           (null where it does not, as with Ollama).
+ */
+export function usageTokens(provider, usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const n = v => (Number.isFinite(v) ? v : null);
+  const input = n(usage.input_tokens);
+  const output = n(usage.output_tokens);
+  if (provider === "anthropic") {
+    const read = n(usage.cache_read_input_tokens);
+    const written = n(usage.cache_creation_input_tokens);
+    return { in: input == null ? null : input + (read ?? 0) + (written ?? 0), out: output, cached: read };
+  }
+  return { in: input, out: output, cached: n(usage.cached_input_tokens) };
 }
 
 /**

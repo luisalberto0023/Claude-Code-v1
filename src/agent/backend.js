@@ -20,18 +20,25 @@
  * Vite's proxy then answers the page itself with HTTP 500 and an empty body, and
  * parsing that used to surface as "Unexpected end of JSON input", which names
  * neither the backend nor what to do about it.
+ *
+ * A server error with a body that is not JSON is the backend's own server
+ * answering for a route that failed on this request (uvicorn's "Internal Server
+ * Error"), not a backend that is down: it is marked `crashed`, since the same
+ * request will most likely fail the same way again (logQueue.js reads it).
  */
 export function readReply(status, text) {
   const body = typeof text === "string" ? text.trim() : "";
   if (body) {
     try { return JSON.parse(body); } catch { /* not JSON: said below */ }
   }
-  return {
-    ok: false,
-    error: body
-      ? `the backend replied HTTP ${status}: ${body.length > 120 ? `${body.slice(0, 120)}…` : body}`
-      : `no reply from the backend (HTTP ${status}, empty); check that the backend window is running`,
-  };
+  if (body) {
+    return {
+      ok: false,
+      error: `the backend replied HTTP ${status}: ${body.length > 120 ? `${body.slice(0, 120)}…` : body}`,
+      ...(status >= 500 ? { crashed: true } : {}),
+    };
+  }
+  return { ok: false, error: `no reply from the backend (HTTP ${status}, empty); check that the backend window is running` };
 }
 
 /**

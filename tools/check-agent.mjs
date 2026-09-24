@@ -220,7 +220,7 @@ let agent = null;
 try {
   await build({
     stdin: {
-      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, setOllamaBase as __setOllamaBase, backend as __backend, onBackendRefused as __onBackendRefused, onInputHalted as __onInputHalted };\n`,
+      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, setOllamaBase as __setOllamaBase, backend as __backend, onBackendRefused as __onBackendRefused, onInputHalted as __onInputHalted, beginTurn as __beginTurn, endTurn as __endTurn };\n`,
       resolveDir: path.join(ROOT, "src"),
       sourcefile: "GameAgent.jsx",
       loader: "jsx",
@@ -233,7 +233,7 @@ try {
   const detail = e?.errors?.length
     ? e.errors.map(x => `${x.location?.line ?? ""} ${x.text}`).join("; ")
     : (e?.stack ?? String(e));
-  check("GameAgent.jsx bundles and exposes TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS, pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase, backend and onBackendRefused", false, detail);
+  check("GameAgent.jsx bundles and exposes TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS, pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase, backend, onBackendRefused, onInputHalted, beginTurn and endTurn", false, detail);
 } finally {
   fs.rmSync(bundlePath, { force: true });
 }
@@ -1683,9 +1683,140 @@ if (agent) {
       agent.__onInputHalted(null);
       delete globalThis.__AGENT_TOKEN__;
     }
+
+    // ── The turn being measured: what callAI and backend() add to it ───────────
+    // Only the model's reply used to be timed, so a slow turn could not be put
+    // down to the model, the backend or the page's own waiting. callAI and
+    // backend() now add their time, the tokens a reply reports and the inputs
+    // the backend confirmed to the turn the games loop is measuring
+    // (src/agent/turnClock.js, checked on its own in tools/check-episodes.mjs).
+    console.log("turn records");
+    const clock = await import(pathToFileURL(path.join(ROOT, "src", "agent", "turnClock.js")).href);
+    const after = (ms, reply) => new Promise(r => realSetTimeout(r, ms)).then(reply);
+    const measured = async (work) => {
+      const turn = clock.startTurn({ kind: "model", turn: 1, game: 1 });
+      agent.__beginTurn(turn);
+      try { await work(); } finally { agent.__endTurn(turn); }
+      return turn.finish({ kind: "action" });
+    };
+    const withUsage = {
+      anthropic: { ...answers.anthropic, usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 30, cache_creation_input_tokens: 5 } },
+      openai: { ...answers.openai, usage: { prompt_tokens: 135, completion_tokens: 20, prompt_tokens_details: { cached_tokens: 30 } } },
+      gemini: { ...answers.gemini, usageMetadata: { promptTokenCount: 135, candidatesTokenCount: 12, thoughtsTokenCount: 8, cachedContentTokenCount: 30 } },
+    };
+    const tokenRecords = {};
+    for (const provider of Object.keys(withUsage)) {
+      respond = () => after(30, () => json(200, withUsage[provider]));
+      tokenRecords[provider] = await measured(() => run(provider, { retry: false }));
+    }
+    const wrongTokens = Object.entries(tokenRecords)
+      .filter(([, r]) => !(r.tokens_in === 135 && r.tokens_out === 20 && r.tokens_cached === 30 && r.llm_ms >= 25 && r.backend_ms === 0))
+      .map(([p, r]) => `${p}: ${show(r)}`);
+    check("during a turn, callAI's wait is the turn's llm time, and the tokens in, out and cached are the turn's, for every cloud provider",
+      !wrongTokens.length, wrongTokens.join("  |  "));
+    globalThis.__AGENT_TOKEN__ = token;
+    try {
+      respond = () => json(200, { ok: true, status: 200, elapsed: 0.1,
+        body: { choices: [{ message: { content: "OK" }, finish_reason: "stop" }], usage: { prompt_tokens: 50, completion_tokens: 5 } } });
+      const relayed = await measured(() => run("ollama", { retry: false }, { relay: true }));
+      check("the Ollama relay's round trip is llm time, not backend time, and no cache is claimed where Ollama reports none",
+        relayed.tokens_in === 50 && relayed.tokens_out === 5 && relayed.tokens_cached === null && relayed.backend_ms === 0 && relayed.actions === 0,
+        show(relayed));
+
+      const inputs = await measured(async () => {
+        respond = () => after(20, () => json(200, { ok: true }));
+        await agent.__backend("/mouse/click", { x: 1, y: 2 });
+        await agent.__backend("/keyboard/press", { key: "a" });
+        respond = () => json(200, { ok: false, error: "(1, 2) is off the screen" });
+        await agent.__backend("/mouse/click", { x: 1, y: 2 });
+        respond = () => json(423, { ok: false, halted: true, error: "input is halted" });
+        await agent.__backend("/keyboard/press", { key: "a" });
+      });
+      check("during a turn, an input request's round trip is backend time, and only an input the backend confirmed is an action",
+        inputs.actions === 2 && inputs.backend_ms >= 35 && inputs.llm_ms === 0, show(inputs));
+      const other = await measured(async () => {
+        respond = () => after(30, () => json(200, { halted: false, reasons: [] }));
+        await agent.__backend("/session/state");
+        respond = () => after(10, () => json(200, { ok: true }));
+        await agent.__backend("/log/append", { session: "s", lines: ["x"] });
+      });
+      check("requests that send no input to the game are neither backend time nor actions",
+        other.backend_ms === 0 && other.actions === 0 && other.other_ms >= 35, show(other));
+      respond = () => json(200, { ok: true });
+      const outside = await agent.__backend("/mouse/click", { x: 1, y: 2 });
+      check("outside a turn, backend() works as before and records nothing", outside.ok === true);
+    } finally {
+      delete globalThis.__AGENT_TOKEN__;
+    }
   } finally {
     globalThis.fetch = realFetch;
   }
+}
+
+// ── Where each turn's records come from ───────────────────────────────────────
+// The records' shapes are checked in tools/check-episodes.mjs. What is read here
+// is that the games loop feeds them: every turn of play is measured, the page
+// times its own waiting, a run is stamped with both commits before it plays,
+// each game with a result gets one line, and the flush neither drops a batch
+// the backend did not take nor sends a model's reply cut short.
+{
+  console.log("run records");
+  const once = (name, pattern, want = 1) => {
+    const found = [...code.matchAll(pattern)].length;
+    check(name, found === want, found ? `found ${found}, wanted ${want} — has the page changed shape?` : "not found — has the page changed shape?");
+  };
+  once("every solver turn is measured, as a plugin turn",
+    /const solverTurn = useCallback\(\s*\(plugin\) => measureTurn\("plugin", \(\) => playSolverTurn\(plugin\)\)/g);
+  once("every model turn of play is measured, as a model turn",
+    /const agentTurn = useCallback\(\s*\(systemPrompt, apiKey\) => measureTurn\("model", \(\) => playModelTurn\(systemPrompt, apiKey\)\)/g);
+  once("the solver's turn is played only through that measure", /\bplaySolverTurn\(/g);
+  once("the model's turn is played only through that measure", /\bplayModelTurn\(/g);
+  once("a measured turn is queued as a turn record however it ends",
+    /beginTurn\((\w+)\);[\s\S]{0,200}?\} finally \{\s*endTurn\(\1\);\s*queueRecord\("turn", \1\.finish\(\w+\)\);\s*\}/g);
+  once("every frame grab is the turn's capture time", /const grabFrame = useCallback\(\(\) => inTurnPhase\("capture", captureNow\), \[captureNow\]\);/g);
+  once("the wait for the screen to change is the turn's confirm time, and says whether it did",
+    /async function waitChange\([^)]*\) \{\s*return inTurnPhase\("confirm", async \(\) => \{\s*const (\w+) = await watchForChange\([^)]*\);\s*noteTurn\(\{ changed: !!\1\.changed \}\);/g);
+  const rawPace = [...code.matchAll(/setTimeout\(\w+, timing\.actionPace\)/g)].map(m => context(m.index));
+  check("the timing profile's pause after an action is always the turn's pace time (no bare setTimeout left)",
+    !rawPace.length && /async function pace\(ms\) \{[\s\S]{0,120}?inTurnPhase\("pace",/.test(code), rawPace.join("  |  ") || "pace() not found");
+  check("▶ Start logs the RUN line and writes run.json, with both commits, once the log is cleared and before memory is loaded",
+    /setLog\(\[\]\);[\s\S]{0,300}?await stampRun\(\w+\);[\s\S]{0,1500}?await loadMemory\(/.test(code)
+      && /const (\w+) = readVersion\(\w+\);\s*const (\w+) = \{ \.\.\.\w+, page: PAGE_VERSION, backend: \1 \};[\s\S]{0,200}?addLog\(runHeader\(\2\)[\s\S]{0,200}?versionProblem\(PAGE_VERSION, \1,[\s\S]{0,200}?queueRecord\("run", runRecord\(\2\)\);/.test(code),
+    "stampRun is not where it should be — has startAgent changed shape?");
+  // Logged before the run had its own session, these went to the last run's
+  // log file, and setLog([]) cleared them off the screen.
+  once("the control scheme and a pause-to-think left off are said after the RUN line, in the run's own log",
+    /await stampRun\(\w+\);\s*if \(pauseDropped\) addLog\("Pause-to-think is on but no game is attached[^"]*", "warn"\);\s*addLog\(`Control scheme: /g);
+  once("...and nowhere else", /Control scheme: /g);
+  once("a game's line is queued once, only for a game that got a result, after the session's outcome is set",
+    /finalOutcome = (\w+)\.outcome;[\s\S]{0,200}?queueRecord\("game", gameRecord\(\{\s*run: runRef\.current,\s*game: \w+ \+ 1,\s*outcome: \1\.outcome,/g);
+  once("game lines are written in that one place only", /queueRecord\("game"/g);
+  // What fills a game's line besides its outcome. Each is set somewhere else in
+  // the loop, where an edit could quietly leave every score "model", every game
+  // not stopped and no snapshots, with the records' own checks still passing.
+  const scoreSets = [...code.matchAll(/currentScoreRef\.current = ([^;]+);(?:\s*scoreSourceRef\.current = ([^;]+);)?/g)]
+    .map(m => ({ value: m[1].trim(), source: m[2]?.trim() ?? null, at: context(m.index) }));
+  const unsourced = scoreSets.filter(s => s.value !== "null" && !s.source);
+  const measured = scoreSets.filter(s => /solverScoreRef|screenScoreRef|\.scoreOf\(/.test(s.value));
+  const said = scoreSets.filter(s => /toolInput\.score/.test(s.value));
+  const misattributed = [...measured.filter(s => s.source !== "\"measured\""), ...said.filter(s => s.source !== "\"model\"")];
+  check("every score the loop keeps says where it came from: the solver's and the plugin's measured, the model's its own word",
+    scoreSets.length >= 5 && !unsourced.length && measured.length >= 2 && said.length >= 1 && !misattributed.length,
+    [...unsourced.map(s => `no source: ${s.at}`), ...misattributed.map(s => `${s.source}: ${s.at}`)].join("  |  ")
+      || `found ${scoreSets.length} scores, ${measured.length} measured, ${said.length} reported — has the page changed shape?`);
+  once("a game's end the solver measured has its score marked measured",
+    /end\.finalScore = measured;\s*\}\s*if \(measured != null\) end\.scoreSource = "measured";/g);
+  once("a game's line lists its snapshots and says whether only ■ Stop ended it",
+    /queueRecord\("game", gameRecord\(\{[\s\S]{0,1200}?snapshots: gameSnapshotsRef\.current,[\s\S]{0,200}?stopped: gameOutcome == null && stopRef\.current,?\s*\}\)\);/g);
+  once("each saved snapshot goes into its game's list", /if \(res\?\.ok && res\.files\?\.length\) \{\s*gameSnapshotsRef\.current\.push\(\.\.\.res\.files\);/g);
+  once("the list starts empty for each game", /const turnsBeforeGame = turnCountRef\.current;\s*gameSnapshotsRef\.current = \[\];/g);
+  once("the flush sends log lines and records through the bounded queue, putting back what did not get through",
+    /await drainQueue\(logQueueRef\.current, \{ plan: logLineBatches, send, max: LOG_QUEUE_MAX \}\);\s*const \w+ = await drainQueue\(\s*recordQueueRef\.current,\s*\{ plan: recordBatches, send, max: RECORD_QUEUE_MAX, keep: keepRecord \}\s*\);/g);
+  const cut = [...code.matchAll(/addLog\(`[^`]*\$\{(?:lead\.see|lead\.plan|text|toolInput\.analysis)\.slice\(/g)].map(m => context(m.index));
+  const whole = ["lead.see", "lead.plan", "toolInput.analysis"]
+    .filter(v => !new RegExp(`addLog\\(\`[^\`]*\\$\\{${v.replace(".", "\\.")}\\}\`, "\\w+", \\{ screen: \\d+ \\}\\)`).test(code));
+  check("the model's see, plan and reasoning reach the log file whole, cut short on screen only",
+    !cut.length && !whole.length, [...cut, ...whole.map(v => `${v} is not logged whole`)].join("  |  "));
 }
 
 // Every request to the backend must carry the token, and only backend() adds

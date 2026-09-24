@@ -40,11 +40,13 @@ How it stays safe, in the order it happens:
      so on Windows either one failing to import fails the run: the backend
      could not start there. Only elsewhere (a headless Linux session) does a
      stand-in module take the place of one that will not import.
-  5. agent_server is imported, its SendInput scan-code sender and the sleep and
-     clock its holds keep time with are swapped, and
-     its log directory, memory file, token file and config file are pointed at
-     a temp directory so the real game-agent-memory.json, logs/, .agent-token
-     and agent-config.json are never written. It is given a test token
+  5. agent_server is imported with AGENT_LOG_DIR set to a temp directory (the
+     run fails before serving anything if its LOG_DIR did not follow it), its
+     SendInput scan-code sender and the sleep and clock its holds keep time with
+     are swapped, and its memory file, token file and config file are pointed at
+     the same temp directory, so the real game-agent-memory.json, logs/ (session
+     logs, snapshots, run records), .agent-token and agent-config.json are never
+     written. It is given a test token
      (TEST_TOKEN), which every request sends unless a test leaves it off. Its
      Ollama relay is pinned to TEST_OLLAMA_BASE, an address that is never
      routed, and the one function it reaches Ollama through (_ollama_open) is
@@ -135,6 +137,7 @@ import os
 import secrets
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -144,6 +147,7 @@ import types
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import get_args
 
 os.environ["AGENT_TEST"] = "1"
 sys.dont_write_bytecode = True  # keep __pycache__ out of the checkout
@@ -516,7 +520,17 @@ def import_server(inputs, tmp):
     install_pyautogui(inputs)
     install_pyperclip(inputs)
 
+    # The backend's log folder (session logs, snapshots, run records) comes from
+    # AGENT_LOG_DIR when it is set, read on import. Checked below, before anything
+    # is served: a backend that ignored it would write into the real logs/.
+    logs = Path(tmp) / "logs"
+    os.environ["AGENT_LOG_DIR"] = str(logs)
+
     import agent_server as server
+
+    if hasattr(server, "LOG_DIR_ENV") and Path(server.LOG_DIR) != logs:
+        raise SetupFailed(f"agent_server did not take its log folder from AGENT_LOG_DIR: it would write to "
+                          f"{server.LOG_DIR} (nothing was served)")
 
     if hasattr(server, "_send_scan"):
         server._send_scan = inputs.stub("sendinput.scan")
@@ -529,7 +543,7 @@ def import_server(inputs, tmp):
         server._wait = clock.wait
         if hasattr(server, "_clock"):
             server._clock = clock
-    server.LOG_DIR = Path(tmp) / "logs"
+    server.LOG_DIR = logs  # the same folder, for a backend from before AGENT_LOG_DIR
     server.MEMORY_FILE = Path(tmp) / "game-agent-memory.json"
     # What the backend window says when input is halted or resumed is not
     # printed into the checks' output.
@@ -749,11 +763,13 @@ def refused_before_running(h, status, body, want, label):
     expect(not h.inputs.calls, f"{label}: input reached: {h.inputs.names()}")
 
 
-@test("GET /health answers without the token, and says only ok, whether input is halted and the kill-switch hotkeys")
+@test("GET /health answers without the token, and says only ok, whether input is halted, the kill-switch hotkeys and the commit")
 def _(h):
     status, body = h.api.get("/health", headers={TOKEN: None})
     # No hotkey is registered while the checks run (AGENT_TEST=1).
-    expect(status == 200 and body == {"status": "ok", "halted": False, "hotkeys": []}, f"status {status}: {body}")
+    expect(status == 200 and body == {"status": "ok", "halted": False, "hotkeys": [],
+                                      "commit": h.server.VERSION["commit"], "dirty": h.server.VERSION["dirty"]},
+           f"status {status}: {body}")
 
 
 @test("Every route but GET /health refuses a request without the token, before it runs")
@@ -1438,6 +1454,7 @@ INPUT_BODIES = {
 NOT_INPUT_ROUTES = {
     "/session/halt", "/session/resume",    # the kill switch itself
     "/log/append", "/log/snapshot",        # files under logs/
+    "/episode/run", "/episode/game", "/episode/turns",  # run records, under logs/ too
     "/memory/{game_key}",                  # game-agent-memory.json (POST and DELETE)
     "/llm/ollama", "/config/ollama-base",  # the model relay, and its server for the next start
     "/capture/select",                     # which screen region is captured; no window is moved or focused
@@ -1772,7 +1789,8 @@ def _(h):
         expect(s.HOTKEYS == {"registered": ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"], "problems": []}, f"HOTKEYS: {s.HOTKEYS}")
         expect(state["halted"] is True and state["reasons"] == ["hotkey"] and state["by"] == "Ctrl+Alt+Pause", f"after the chord: {state}")
         status, body = h.api.get("/health", headers={TOKEN: None})
-        expect(body == {"status": "ok", "halted": True, "hotkeys": ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"]}, f"/health: {body}")
+        expect(body == {"status": "ok", "halted": True, "hotkeys": ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"],
+                        "commit": s.VERSION["commit"], "dirty": s.VERSION["dirty"]}, f"/health: {body}")
         s.resume_input()
 
         # A chord another program holds is reported, and the other still works.
@@ -1919,6 +1937,253 @@ def _(h):
     h.server._fold_legacy_outcomes(again)
     expect(again == saved, f"a second fold changed the data: {again} vs {saved}")
     expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
+# ── Which code this is, and the run records ──────────────────────────────────
+# No log said which commit wrote it, and the test PC can run a backend from
+# before its last pull. The backend now reads its commit at startup and stamps
+# it on everything it writes about a run: run.json, one line per game in
+# episodes.jsonl and one line per turn in turns/<session>.jsonl, all under the
+# log folder, which AGENT_LOG_DIR moves (here, into h.tmp).
+
+class FakeGit:
+    """subprocess.run as git would answer `git status --porcelain=v2 --branch`,
+    recording what it was asked."""
+    def __init__(self, stdout="", returncode=0, stderr="", raises=None):
+        self.stdout, self.returncode, self.stderr, self.raises = stdout, returncode, stderr, raises
+        self.asked = []
+
+    def __call__(self, args, **kwargs):
+        self.asked.append((list(args), kwargs))
+        if self.raises is not None:
+            raise self.raises
+        return types.SimpleNamespace(stdout=self.stdout, stderr=self.stderr, returncode=self.returncode)
+
+
+COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def git_status(branch="main", dirty=False, oid=COMMIT):
+    lines = [f"# branch.oid {oid}", f"# branch.head {branch}", "# branch.upstream origin/main", "# branch.ab +0 -0"]
+    if dirty:
+        lines.append("1 .M N... 100644 100644 100644 aaaa bbbb agent_server.py")
+    return "\n".join(lines) + "\n"
+
+
+def checkout(h, name, head, loose=None, packed=None):
+    """A folder with only a .git in it: HEAD, and a branch as a loose ref file
+    or a line in packed-refs."""
+    root = Path(h.tmp) / name
+    shutil.rmtree(root, ignore_errors=True)
+    (root / ".git" / "refs" / "heads").mkdir(parents=True)
+    (root / ".git" / "HEAD").write_text(head + "\n", encoding="utf-8")
+    for ref, commit in (loose or {}).items():
+        (root / ".git" / ref).parent.mkdir(parents=True, exist_ok=True)
+        (root / ".git" / ref).write_text(commit + "\n", encoding="utf-8")
+    if packed:
+        (root / ".git" / "packed-refs").write_text(
+            "# pack-refs with: peeled fully-peeled sorted\n" + "".join(f"{c} {r}\n" for r, c in packed.items()),
+            encoding="utf-8")
+    return root
+
+
+@test("The backend reads its commit once at startup and says it on GET /version and /health")
+def _(h):
+    v = h.server.VERSION
+    status, body = h.api.get("/version")
+    expect(status == 200 and body == {**v, "startedAt": h.server.STARTED_AT}, f"GET /version: status {status}: {body}")
+    expect(set(v) == {"commit", "commitFull", "dirty", "branch", "source", "error"}, f"VERSION: {v}")
+    if v["commit"]:
+        expect(len(v["commit"]) == 7 and v["commitFull"].startswith(v["commit"]) and v["error"] is None, f"VERSION: {v}")
+    # On a machine with git, the commit is this checkout's.
+    git = shutil.which("git")
+    if git:
+        head = subprocess.run([git, "rev-parse", "HEAD"], cwd=str(ROOT), capture_output=True, text=True, timeout=10)
+        if head.returncode == 0:
+            expect(v["commitFull"] == head.stdout.strip(), f"VERSION {v['commitFull']}, git says {head.stdout.strip()}")
+    status, body = h.api.get("/health", headers={TOKEN: None})
+    expect(body.get("commit") == v["commit"] and body.get("dirty") == v["dirty"], f"GET /health: {body}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+
+@test("read_version reads git's status, falls back to .git's own files, and never raises")
+def _(h):
+    s = h.server
+    fake = FakeGit(git_status("claude/x"))
+    v = s.read_version(Path(h.tmp), run=fake)
+    expect(v == {"commit": COMMIT[:7], "commitFull": COMMIT, "dirty": False, "branch": "claude/x", "source": "git",
+                 "error": None}, f"clean: {v}")
+    args, kwargs = fake.asked[0]
+    expect(args[:3] == ["git", "--no-optional-locks", "status"] and "--untracked-files=no" in args
+           and kwargs.get("cwd") == str(Path(h.tmp)) and kwargs.get("timeout"), f"asked: {fake.asked}")
+    expect(s.read_version(Path(h.tmp), run=FakeGit(git_status(dirty=True)))["dirty"] is True, "a changed tracked file is not dirty")
+    expect(s.read_version(Path(h.tmp), run=FakeGit(git_status(branch="(detached)")))["branch"] is None, "detached HEAD")
+
+    # git cannot run, or cannot tell: the commit comes from .git's own files.
+    other = "fedcba9876543210fedcba9876543210fedcba98"
+    loose = checkout(h, "loose", "ref: refs/heads/main", loose={"refs/heads/main": other})
+    packed = checkout(h, "packed", "ref: refs/heads/feature/y", packed={"refs/heads/feature/y": other})
+    detached = checkout(h, "detached", other)
+    for label, root, run, branch, why in (
+            ("git not on PATH", loose, FakeGit(raises=FileNotFoundError("git")), "main", "git is not on PATH"),
+            ("git refuses the folder", packed, FakeGit(returncode=128, stderr="fatal: detected dubious ownership\nmore"),
+             "feature/y", "dubious ownership"),
+            ("git too slow", detached, FakeGit(raises=subprocess.TimeoutExpired("git", 5)), None, "timed out"),
+            ("no commit yet", loose, FakeGit(git_status(oid="(initial)")), "main", "no commit yet")):
+        v = s.read_version(root, run=run)
+        expect(v["commitFull"] == other and v["commit"] == other[:7] and v["branch"] == branch and v["dirty"] is None
+               and v["error"] is None and v["source"].startswith(".git files") and why in v["source"],
+               f"{label}: {v}")
+
+    # Neither: no commit, and why, but no exception.
+    bare = Path(h.tmp) / "not-a-checkout"
+    bare.mkdir(exist_ok=True)
+    v = s.read_version(bare, run=FakeGit(raises=FileNotFoundError("git")))
+    expect(v["commit"] is None and v["commitFull"] is None and v["source"] is None
+           and "git is not on PATH" in (v["error"] or ""), f"no git, no .git: {v}")
+    garbled = checkout(h, "garbled", "ref: refs/heads/main", loose={"refs/heads/main": "not a commit"})
+    v = s.read_version(garbled, run=FakeGit(returncode=1))
+    expect(v["commit"] is None and "names no commit" in (v["error"] or ""), f"a .git that names no commit: {v}")
+
+
+@test("The log folder is AGENT_LOG_DIR when set (relative to the project folder, ~ the home folder), else logs/ there")
+def _(h):
+    s = h.server
+    root = Path(h.tmp) / "project"
+    expect(s.LOG_DIR == Path(h.tmp) / "logs", f"LOG_DIR under the checks: {s.LOG_DIR}")
+    absolute = Path(h.tmp) / "elsewhere"
+    # The same cases as defaultFile's in tools/check-episodes.mjs: npm run
+    # episodes has to find the file where the backend writes it.
+    for environ, want in (({}, root / "logs"), ({"AGENT_LOG_DIR": "  "}, root / "logs"),
+                          ({"AGENT_LOG_DIR": "runs/today"}, root / "runs" / "today"),
+                          ({"AGENT_LOG_DIR": str(absolute)}, absolute),
+                          ({"AGENT_LOG_DIR": "~"}, Path.home()),
+                          ({"AGENT_LOG_DIR": "~/agent-logs"}, Path.home() / "agent-logs"),
+                          ({"AGENT_LOG_DIR": "~\\agent-logs"}, Path.home() / "agent-logs"),
+                          ({"AGENT_LOG_DIR": "~old/logs"}, root / "~old" / "logs")):
+        got = s.log_dir_from(environ, root)
+        expect(got == want, f"{environ}: {got}, wanted {want}")
+
+
+def read_json_lines(path):
+    return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines()]
+
+
+@test("POST /episode/run writes run.json for the session, stamped with the backend's own commit")
+def _(h):
+    s = h.server
+    run = {"provider": "gemini", "model": "gemini-3.8-flash", "page": {"commit": "abcdef1"},
+           "backend": {"commit": "the page's guess"}, "gamesRequested": 3}
+    status, body = h.api.post("/episode/run", {"session": "run-check", "run": run})
+    path = Path(s.LOG_DIR) / "runs" / "run-check" / "run.json"
+    expect(status == 200 and body.get("ok") is True and Path(body.get("path", "")) == path, f"status {status}: {body}")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    expect(saved["provider"] == "gemini" and saved["gamesRequested"] == 3 and saved["session"] == "run-check"
+           and saved["page"] == {"commit": "abcdef1"} and saved["format"] == s.RECORD_FORMAT and saved.get("recordedAt"),
+           f"run.json: {saved}")
+    expect(saved["backend"] == {**s.VERSION, "startedAt": s.STARTED_AT}, f"the backend's stamp: {saved['backend']}")
+
+    # Sent again (the page updates it), it is replaced, not appended to.
+    status, body = h.api.post("/episode/run", {"session": "run-check", "run": {**run, "model": "other"}})
+    expect(status == 200 and json.loads(path.read_text(encoding="utf-8"))["model"] == "other", f"replaced: {body}")
+
+    # Half an emoji (a lone surrogate, as a cut or pasted game name can hold) is
+    # valid in a JSON string but not in UTF-8. It is written as "?", as the log
+    # and the other records write it: a write failing on it failed the same way
+    # at every retry, and held every record queued after it.
+    status, body = h.api.post("/episode/run", {"session": "run-check", "run": {**run, "gameDesc": "Tetris \ud83d"}})
+    leftovers = [p.name for p in path.parent.iterdir() if p.name != "run.json"]
+    expect(status == 200 and body.get("ok") is True and not leftovers
+           and json.loads(path.read_text(encoding="utf-8"))["gameDesc"] == "Tetris ?",
+           f"a lone surrogate: status {status}: {body}, left behind {leftovers}")
+
+    # A session name cannot reach outside the log folder.
+    status, body = h.api.post("/episode/run", {"session": "../../outside\\x", "run": run})
+    written = Path(body.get("path", ""))
+    expect(status == 200 and Path(s.LOG_DIR).resolve() in written.resolve().parents, f"hostile session name: {body}")
+
+    status, body = h.api.post("/episode/run", {"session": "run-big", "run": {"notes": "x" * s.EPISODE_RECORD_MAX_BYTES}})
+    expect(status == 413 and body.get("tooLarge") is True and not (Path(s.LOG_DIR) / "runs" / "run-big").exists(),
+           f"oversized: status {status}: {str(body)[:200]}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+
+def game_line(**fields):
+    return {"game": 1, "outcome": "won", "turns": 12, "durationMs": 34567, "score": 1234, "scoreSource": "measured",
+            "stuckReason": None, "snapshots": [], "memoryHash": "0badc0de", "provider": "ollama",
+            "model": "qwen2.5vl:3b", "pageCommit": "abcdef1", **fields}
+
+
+@test("POST /episode/game adds one line per game to episodes.jsonl, with the shared outcome names only")
+def _(h):
+    s = h.server
+    path = Path(s.LOG_DIR) / "episodes.jsonl"
+    path.unlink(missing_ok=True)
+    snap = Path(s.LOG_DIR) / "snapshots" / "game-check" / "101010-game-over.png"
+    outcomes = list(get_args(s.Outcome))
+    # A game Stop ended says so; one that does not say is taken as not stopped.
+    for i, outcome in enumerate(outcomes):
+        stopped = {"stopped": True} if outcome == "ended" else {}
+        status, body = h.api.post("/episode/game", {"session": "game-check", "game": game_line(
+            game=i + 1, outcome=outcome, snapshots=[str(snap), "D:\\elsewhere\\x.png"], **stopped)})
+        expect(status == 200 and body.get("ok") is True, f"{outcome}: status {status}: {body}")
+    lines = read_json_lines(path)
+    expect([x["outcome"] for x in lines] == outcomes and [x["game"] for x in lines] == list(range(1, len(outcomes) + 1))
+           and [x["stopped"] for x in lines] == [o == "ended" for o in outcomes], f"lines: {lines}")
+    first = lines[0]
+    expect(first["session"] == "game-check" and first["format"] == s.RECORD_FORMAT and first["provider"] == "ollama"
+           and first["model"] == "qwen2.5vl:3b" and first["pageCommit"] == "abcdef1" and first.get("recordedAt")
+           and first["backendCommit"] == s.VERSION["commit"] and first["backendDirty"] == s.VERSION["dirty"],
+           f"first line: {first}")
+    expect(first["score"] == 1234 and isinstance(first["score"], int), f"an int score stays an int: {first['score']!r}")
+    expect(first["snapshots"] == ["snapshots/game-check/101010-game-over.png", "D:\\elsewhere\\x.png"],
+           f"snapshot paths: {first['snapshots']}")
+    expect(path.read_text(encoding="utf-8").count("\n") == len(outcomes), "one line per game")
+
+    # Refused whole, and nothing written: an outcome that is not one (the legacy
+    # "win" included: the ledger is new), a made-up score source, no game number.
+    for label, game in (("win", game_line(outcome="win")), ("victory", game_line(outcome="victory")),
+                        ("a score source", game_line(scoreSource="guess")), ("game 0", game_line(game=0)),
+                        ("no turns", {k: v for k, v in game_line().items() if k != "turns"}),
+                        ("negative duration", game_line(durationMs=-1))):
+        status, body = h.api.post("/episode/game", {"session": "game-check", "game": game})
+        expect(status == 422, f"{label}: status {status}: {body}")
+    status, body = h.api.post("/episode/game", {"session": "game-check", "game": game_line(notes="x" * s.EPISODE_RECORD_MAX_BYTES)})
+    expect(status == 413 and body.get("tooLarge") is True, f"oversized: status {status}: {str(body)[:200]}")
+    expect(len(read_json_lines(path)) == len(outcomes), "a refused game was written")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
+
+
+@test("POST /episode/turns appends turn records to turns/<session>.jsonl, within its caps")
+def _(h):
+    s = h.server
+    path = Path(s.LOG_DIR) / "turns" / "turn-check.jsonl"
+    path.unlink(missing_ok=True)
+    records = [{"turn": i, "kind": "model", "ms": 100 * i, "llm_ms": 90 * i, "changed": i % 2 == 0} for i in (1, 2, 3)]
+    for batch in (records[:2], records[2:]):
+        status, body = h.api.post("/episode/turns", {"session": "turn-check", "records": batch})
+        expect(status == 200 and body.get("ok") is True and body.get("written") == len(batch)
+               and Path(body.get("path", "")) == path, f"status {status}: {body}")
+    lines = read_json_lines(path)
+    expect(lines == [{"format": s.RECORD_FORMAT, **r} for r in records], f"lines: {lines}")
+
+    over = [{}] * (s.TURN_RECORDS_MAX + 1)
+    big = [{"note": "x" * (s.TURN_RECORDS_MAX_BYTES // 2)}] * 2
+    for label, batch in (("one record too many", over), ("too many bytes", big)):
+        status, body = h.api.post("/episode/turns", {"session": "turn-check", "records": batch})
+        expect(status == 413 and body.get("tooLarge") is True, f"{label}: status {status}: {str(body)[:200]}")
+    # NaN reaches the backend as JSON's NaN literal, which Python reads; it is
+    # not written, since nothing else could read the line.
+    status, body = h.api.post("/episode/turns", {"session": "turn-check", "records": [{"ms": float("nan")}]})
+    expect(status == 422 and body.get("detail"), f"NaN: status {status}: {body}")
+    status, body = h.api.post("/episode/turns", {"session": "turn-check", "records": [1, 2]})
+    expect(status == 422, f"records that are not objects: status {status}: {body}")
+    expect(len(read_json_lines(path)) == 3, "a refused batch was written")
+
+    status, body = h.api.post("/episode/turns", {"session": "..\\..\\x", "records": records[:1]})
+    expect(status == 200 and Path(s.LOG_DIR).resolve() in Path(body.get("path", "")).resolve().parents,
+           f"hostile session name: {body}")
+    expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
 
 
 # ── Ollama relay ─────────────────────────────────────────────────────────────

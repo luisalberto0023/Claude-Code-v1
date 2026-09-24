@@ -18,6 +18,8 @@ The agent is tested on a separate computer that only gets code through
 - Before pushing: `npm run check` (UI first-render smoke test, agent checks
   in `tools/check-agent.mjs` such as the outcome names page and backend share,
   the backend token the page sends and the standing screen rule on the wire,
+  run records in `tools/check-episodes.mjs` (the page's and backend's commits,
+  what each run, game and turn writes, the log queue, `npm run episodes`),
   model request shapes, model lists and
   the model check at Start in `tools/check-llm.mjs`, the key scanner's own test in
   `tools/check-secrets.mjs`, plugin contracts, Minesweeper reader,

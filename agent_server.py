@@ -22,9 +22,10 @@ import ipaddress
 import os
 import secrets
 import socket
+import subprocess
 import threading
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Tuple, get_args
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Tuple, Union, get_args
 
 # ── Who may use this server ─────────────────────────────────────────────────────
 # Every route here moves the real mouse, presses real keys, drives the gamepad,
@@ -201,7 +202,7 @@ import pyautogui
 import pyperclip
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 import uvicorn
 
@@ -455,6 +456,125 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=BACKEND_HOSTS)
 app.add_middleware(BodyReadBeforeRefusal)
 
 
+# ── Which code this is ─────────────────────────────────────────────────────────
+# The test PC gets code only through git pull, and a backend started before a
+# pull keeps running the code it started with, while a reloaded page runs the
+# new code. That has happened: a fix sat uncommitted on the developer's machine
+# while the test PC reported itself up to date. A log that does not say which
+# commit wrote it cannot be compared with any other run, or even trusted to be
+# the code under test. So the backend reads its commit once, when it starts,
+# and says it: in the banner, on GET /health and GET /version, and on every run
+# and game record it writes. The page compares it with its own at ▶ Start
+# (src/agent/episodes.js), and tools/git-version.mjs reads the page's the same
+# way.
+#
+# One git command gives the commit, the branch and whether tracked files were
+# changed since (dirty). Untracked files are not counted: logs/, the token and
+# agent-config.json are git-ignored anyway, and a stray new file changes no code
+# that runs. --no-optional-locks keeps git from taking the index lock, so a
+# backend starting never gets in the way of a git command run at the same time.
+# Where git cannot run (not on PATH, a checkout owned by another user), the
+# commit is read from .git's own files instead, and dirty is unknown (None).
+# Neither working is not an error: the backend starts, and says why it cannot
+# tell.
+
+GIT_STATUS_ARGS = ["git", "--no-optional-locks", "status", "--porcelain=v2", "--branch", "--untracked-files=no"]
+GIT_TIMEOUT_S = 5
+SHORT_COMMIT = 7  # fixed, so the same commit reads the same on every machine
+_COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+def parse_git_status(text: str) -> Dict[str, Any]:
+    """The commit, branch and dirty flag in `git status --porcelain=v2 --branch`
+    output. The commit is None before the first commit, the branch None on a
+    detached HEAD."""
+    full, branch, dirty = None, None, False
+    for line in (text or "").splitlines():
+        if line.startswith("# branch.oid "):
+            value = line[len("# branch.oid "):].strip()
+            full = value if _COMMIT.fullmatch(value) else None
+        elif line.startswith("# branch.head "):
+            value = line[len("# branch.head "):].strip()
+            branch = None if value == "(detached)" else value
+        elif line.strip() and not line.startswith("#"):
+            dirty = True
+    return {"full": full, "branch": branch, "dirty": dirty}
+
+
+def version_from_files(root: Path) -> Dict[str, Any]:
+    """The commit from .git's own files, for when git itself cannot run. Raises
+    when they do not name one (no .git folder, a worktree's .git file)."""
+    git_dir = root / ".git"
+    head = (git_dir / "HEAD").read_text(encoding="utf-8").strip()
+    branch, full = None, head
+    if head.startswith("ref: "):
+        ref = head[len("ref: "):].strip()
+        branch = ref[len("refs/heads/"):] if ref.startswith("refs/heads/") else ref
+        loose = git_dir / ref
+        full = loose.read_text(encoding="utf-8").strip() if loose.is_file() else None
+        packed = git_dir / "packed-refs"
+        if full is None and packed.is_file():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref:
+                    full = parts[0]
+    if not full or not _COMMIT.fullmatch(full):
+        raise ValueError(f"{git_dir} names no commit")
+    return {"full": full, "branch": branch, "dirty": None}
+
+
+def _first_line(text: str) -> str:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    return lines[0][:200] if lines else ""
+
+
+def read_version(root: Path, run: Callable = subprocess.run) -> Dict[str, Any]:
+    """Which commit `root` is checked out at:
+    {commit, commitFull, dirty, branch, source, error}. Never raises: `commit`
+    is None and `error` says why when neither git nor .git's files could tell.
+    `run` is subprocess.run, or a stand-in in the checks."""
+    try:
+        done = run(GIT_STATUS_ARGS, cwd=str(root), capture_output=True, text=True, encoding="utf-8",
+                   errors="replace", timeout=GIT_TIMEOUT_S,
+                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if done.returncode != 0:
+            raise RuntimeError(_first_line(done.stderr) or f"git exited with {done.returncode}")
+        found = parse_git_status(done.stdout)
+        if not found["full"]:
+            raise RuntimeError("the checkout has no commit yet")
+        source = "git"
+    except Exception as e:
+        git_error = f"git: {e}" if not isinstance(e, FileNotFoundError) else "git is not on PATH"
+        try:
+            found = version_from_files(root)
+            source = f".git files ({git_error})"
+        except Exception as e2:
+            return {"commit": None, "commitFull": None, "dirty": None, "branch": None,
+                    "source": None, "error": f"{git_error}; {e2}"}
+    return {"commit": found["full"][:SHORT_COMMIT], "commitFull": found["full"], "dirty": found["dirty"],
+            "branch": found["branch"], "source": source, "error": None}
+
+
+VERSION = read_version(Path(__file__).parent)
+STARTED_AT = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _version_note(version: Dict[str, Any]) -> str:
+    """The version as the banner and the log say it: 842fa64 on <branch>."""
+    if not version.get("commit"):
+        return f"unknown ({version.get('error')})"
+    note = version["commit"] + (f" on {version['branch']}" if version.get("branch") else "")
+    if version.get("dirty"):
+        note += ", with uncommitted changes to tracked files"
+    return note
+
+
+@app.get("/version")
+def version():
+    """This backend's commit, read when it started, and when that was."""
+    return {**VERSION, "startedAt": STARTED_AT}
+
+
 def _capabilities():
     return {
         "gamepad": GAMEPAD_AVAILABLE,
@@ -472,8 +592,11 @@ def health():
     # Answers without the token, so it says only that the backend is up, whether
     # input is halted, and which kill-switch hotkeys it registered, none of which
     # is worth anything to another site. The screen size and capabilities it used
-    # to include are behind the token, at /screen/info and /capabilities.
-    return {"status": "ok", "halted": _input_halted(), "hotkeys": list(HOTKEYS["registered"])}
+    # to include are behind the token, at /screen/info and /capabilities. The
+    # commit is worth nothing to another site either (the code is public), and
+    # here anyone at the test PC can see which code the backend runs.
+    return {"status": "ok", "halted": _input_halted(), "hotkeys": list(HOTKEYS["registered"]),
+            "commit": VERSION["commit"], "dirty": VERSION["dirty"]}
 
 
 @app.get("/capabilities")
@@ -1302,8 +1425,29 @@ def screen_info():
 # The in-page log is capped and lives only in browser memory, so a long run loses
 # its early history and a crashed tab loses everything. Every line is mirrored to
 # a file here so the full run is always available for troubleshooting.
+#
+# logs/ in the project folder, unless AGENT_LOG_DIR names another folder (a path
+# relative to the project folder is taken from there, whatever folder the backend
+# was started in, and a leading ~ alone or before a slash is the home folder).
+# `npm run episodes` reads the variable the same way (defaultFile in
+# tools/episodes.mjs), so it must stay this simple: expanduser would also read
+# ~name as another user's home, which that does not. The checks point it at a
+# temporary folder, so they never write into the real logs/.
 
-LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR_ENV = "AGENT_LOG_DIR"
+
+
+def log_dir_from(environ, root: Path) -> Path:
+    value = (environ.get(LOG_DIR_ENV) or "").strip()
+    if not value:
+        return root / "logs"
+    if value == "~" or value[:2] in ("~/", "~\\"):
+        return Path.home() / value[2:]
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
+LOG_DIR = log_dir_from(os.environ, Path(__file__).parent)
 
 # What one request may add to a session log or a snapshot. Far above what the
 # page sends (it flushes every 2 s, in batches it splits to fit: logBatches in
@@ -1316,7 +1460,9 @@ SNAPSHOT_MAX_BYTES = 8 * 1024 * 1024
 
 
 def _too_large(what: str, limit: str) -> JSONResponse:
-    return JSONResponse({"ok": False, "error": f"{what} is over the limit of {limit}; nothing was written"},
+    # tooLarge tells the page not to send the same request again: it would be
+    # refused again (src/agent/logQueue.js).
+    return JSONResponse({"ok": False, "tooLarge": True, "error": f"{what} is over the limit of {limit}; nothing was written"},
                         status_code=413)
 
 
@@ -1325,9 +1471,14 @@ class LogLines(BaseModel):
     lines: List[str]
 
 
+def _safe_session(session: str) -> str:
+    """A session name as a file name: letters, digits, - and _ only, so no
+    request can name a file outside the log folder."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", session)[:80] or "session"
+
+
 def _log_path(session: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", session)[:80] or "session"
-    return LOG_DIR / f"agent-{safe}.log"
+    return LOG_DIR / f"agent-{_safe_session(session)}.log"
 
 
 @app.post("/log/append")
@@ -1583,6 +1734,187 @@ def memory_patch(game_key: str, patch: MemoryPatch):
     data[game_key] = entry
     _save_all(data)
     return {"ok": True, "entry": entry}
+
+
+# ── Run records: which code played what, and how it went ─────────────────────
+# The session log tells one run's story in words. Comparing runs (this commit
+# against the last, one model against another, a game with a plugin against one
+# without) needs the same facts in the same shape every time, and memory keeps
+# only a best score and the last few results per game. So the page also sends
+# three kinds of record, written here as JSON:
+#   logs/runs/<session>/run.json   what the run was: both commits, provider,
+#                                  model and settings    (POST /episode/run)
+#   logs/episodes.jsonl            one line per game played, every run, in one
+#                                  file                  (POST /episode/game)
+#   logs/turns/<session>.jsonl     one line per turn: where its time went, the
+#                                  tokens, what it did   (POST /episode/turns)
+# The backend adds its own commit to run.json and to each game line, so a record
+# says which backend wrote it even when the page is out of date. What the page
+# puts in them is in src/agent/episodes.js and src/agent/turnClock.js, and
+# tools/episodes.mjs sums up episodes.jsonl.
+
+# What one request may write. Far above what the page sends (it batches turns
+# to fit, src/agent/logQueue.js holds the same numbers and tools/check-agent.mjs
+# compares them): these stop a runaway or hostile request filling the disk.
+EPISODE_RECORD_MAX_BYTES = 64 * 1024
+TURN_RECORDS_MAX = 1000
+TURN_RECORDS_MAX_BYTES = 1024 * 1024
+EPISODES_FILE_NAME = "episodes.jsonl"
+# Bumped when a record changes shape, so tools/episodes.mjs can tell.
+RECORD_FORMAT = 1
+
+# Routes run in a thread pool, so two appends to one file could interleave.
+_records_lock = threading.Lock()
+
+ScoreSource = Literal["measured", "model", "none"]
+
+
+def _run_file(session: str) -> Path:
+    return LOG_DIR / "runs" / _safe_session(session) / "run.json"
+
+
+def _turns_file(session: str) -> Path:
+    return LOG_DIR / "turns" / f"{_safe_session(session)}.jsonl"
+
+
+def _episodes_file() -> Path:
+    return LOG_DIR / EPISODES_FILE_NAME
+
+
+def _now() -> str:
+    return datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def _json_line(record: Dict[str, Any]) -> str:
+    """One record as one line of strict JSON. NaN and Infinity are refused
+    (ValueError): Python would write them, and no JSON reader would read them."""
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _not_json(e: Exception) -> JSONResponse:
+    message = f"not written: the record is not plain JSON ({e})"
+    # detail, as FastAPI's own refusals have: the page does not send it again.
+    return JSONResponse({"ok": False, "error": message, "detail": message}, status_code=422)
+
+
+def _in_log_dir(path: str) -> str:
+    """A file the backend wrote, relative to the log folder when it is in it, so
+    a record still points at it when the folder is copied elsewhere."""
+    try:
+        return Path(path).resolve().relative_to(LOG_DIR.resolve()).as_posix()
+    except (OSError, ValueError):
+        return path
+
+
+def _append_lines(path: Path, lines: List[str]) -> None:
+    with _records_lock:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8", errors="replace") as fh:
+            for line in lines:
+                fh.write(line + "\n")
+
+
+class RunRecordBody(BaseModel):
+    session: str
+    run: Dict[str, Any]
+
+
+class GameRecord(BaseModel):
+    # The fields every game line has, typed, so the ledger cannot fill with
+    # outcomes that are not outcomes. Anything else the page adds (the game's
+    # name, provider, model, its own commit) is kept as it is.
+    model_config = ConfigDict(extra="allow")
+
+    game: int = Field(ge=1)
+    outcome: Outcome
+    # A game ■ Stop ended before anything else did: "ended", but not by itself.
+    stopped: bool = False
+    turns: int = Field(ge=0)
+    durationMs: int = Field(ge=0)
+    score: Union[int, float, None] = None
+    scoreSource: ScoreSource
+    stuckReason: Optional[str] = None
+    snapshots: List[str] = Field(default_factory=list, max_length=200)
+    memoryHash: Optional[str] = None
+
+
+class GameRecordBody(BaseModel):
+    session: str
+    game: GameRecord
+
+
+class TurnRecordsBody(BaseModel):
+    session: str
+    records: List[Dict[str, Any]]
+
+
+@app.post("/episode/run")
+def episode_run(b: RunRecordBody):
+    """Write run.json for this session, replacing any earlier one."""
+    record = {"format": RECORD_FORMAT, **b.run, "session": b.session,
+              "backend": {**VERSION, "startedAt": STARTED_AT}, "recordedAt": _now()}
+    try:
+        text = json.dumps(record, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    except (TypeError, ValueError) as e:
+        return _not_json(e)
+    # Half an emoji (a lone surrogate) is valid in a JSON string but cannot be
+    # written as UTF-8: it becomes "?", as in the log and the other records.
+    # Left in, the write failed with a bare HTTP 500 that the page retried every
+    # 2 s for good, holding back every record queued after it.
+    text = text.encode("utf-8", "replace").decode("utf-8")
+    size = len(text.encode("utf-8"))
+    if size > EPISODE_RECORD_MAX_BYTES:
+        return _too_large(f"a run record of {size} bytes", f"{EPISODE_RECORD_MAX_BYTES} bytes")
+    try:
+        path = _run_file(b.session)
+        with _records_lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            replace_file(path, text)
+        return {"ok": True, "path": str(path)}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/episode/game")
+def episode_game(b: GameRecordBody):
+    """Add one game's line to episodes.jsonl."""
+    game = b.game.model_dump()
+    game["snapshots"] = [_in_log_dir(p) for p in game["snapshots"]]
+    record = {"format": RECORD_FORMAT, "session": b.session, **game,
+              "backendCommit": VERSION["commit"], "backendDirty": VERSION["dirty"], "recordedAt": _now()}
+    try:
+        line = _json_line(record)
+    except (TypeError, ValueError) as e:
+        return _not_json(e)
+    size = len(line.encode("utf-8", "replace"))
+    if size > EPISODE_RECORD_MAX_BYTES:
+        return _too_large(f"a game record of {size} bytes", f"{EPISODE_RECORD_MAX_BYTES} bytes")
+    try:
+        path = _episodes_file()
+        _append_lines(path, [line])
+        return {"ok": True, "path": str(path)}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/episode/turns")
+def episode_turns(b: TurnRecordsBody):
+    """Add turn records to this session's turns file, one line each."""
+    if len(b.records) > TURN_RECORDS_MAX:
+        return _too_large(f"{len(b.records)} turn records", f"{TURN_RECORDS_MAX} records")
+    try:
+        lines = [_json_line({"format": RECORD_FORMAT, **record}) for record in b.records]
+    except (TypeError, ValueError) as e:
+        return _not_json(e)
+    size = sum(len(line.encode("utf-8", "replace")) + 1 for line in lines)
+    if size > TURN_RECORDS_MAX_BYTES:
+        return _too_large(f"{size} bytes of turn records", f"{TURN_RECORDS_MAX_BYTES} bytes")
+    try:
+        path = _turns_file(b.session)
+        _append_lines(path, lines)
+        return {"ok": True, "path": str(path), "written": len(lines)}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
 
 
 # ── Ollama relay ───────────────────────────────────────────────────────────────
@@ -2284,8 +2616,11 @@ def game_detach():
 if __name__ == "__main__":
     print("Game Agent Backend Server")
     print("─" * 40)
+    print(f"Commit   : {_version_note(VERSION)}")
+    print("           The page says at Start if it runs another commit: then restart start.bat.")
     print(f"Platform : {platform.system()}")
     print(f"Screen   : {SCREEN_W} x {SCREEN_H} px")
+    print(f"Logs     : {LOG_DIR}" + (f" (from {LOG_DIR_ENV})" if (os.environ.get(LOG_DIR_ENV) or "").strip() else ""))
     print(f"API      : http://localhost:{PORT} (only for the agent page at {PAGE_ORIGINS[0]})")
     print(f"Token    : {'from AGENT_TOKEN' if (os.environ.get('AGENT_TOKEN') or '').strip() else 'new for this start'}, "
           f"written to {TOKEN_FILE.name}")

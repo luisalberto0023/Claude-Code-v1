@@ -4,7 +4,7 @@ import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
 import { MODEL_OUTCOMES, MODEL_OUTCOME_CHOICES, normalizeOutcome } from "./agent/outcomes.js";
 import {
-  backendFailure, readReply, pageToken, backendHeaders, accessRefusal, logBatches, snapshotBytes, SNAPSHOT_MAX_BYTES,
+  backendFailure, readReply, pageToken, backendHeaders, accessRefusal, snapshotBytes, SNAPSHOT_MAX_BYTES,
 } from "./agent/backend.js";
 import {
   classifyLlmError, httpError, networkError, timeoutError, backendRefusedError, withDeadline, sleep,
@@ -25,8 +25,17 @@ import {
   STOP_HALT, HALT_POLL_MS, HALT_IDLE_POLL_MS, readHaltState, inputHalted, isHaltReply, haltedByOperator, haltBanner,
   haltChange, haltStartProblem, haltedToolText, hotkeysNote, markHalted, metHalt,
 } from "./agent/killSwitch.js";
+import {
+  PAGE_VERSION, readVersion, versionProblem, runSessionId, memoryHash, runRecord, runHeader, scoreOf, gameRecord,
+} from "./agent/episodes.js";
+import { startTurn, backendPhase, sendsInput } from "./agent/turnClock.js";
+import {
+  LOG_QUEUE_MAX, RECORD_QUEUE_MAX, newQueue, onScreen, logLineBatches, recordBatches, drainQueue, keepRecord, flushNotes,
+} from "./agent/logQueue.js";
 import { PROVIDERS } from "./llm/providers.js";
-import { anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote } from "./llm/requests.js";
+import {
+  anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote, usageTokens,
+} from "./llm/requests.js";
 import { MODEL_LIST_PAUSE_MS, modelChoices, modelListMessage, listModels, checkModel } from "./llm/models.js";
 
 // Game plugins provide deterministic perception and policy for a specific game.
@@ -83,7 +92,23 @@ function onBackendRefused(listener) { _onBackendRefused = listener; }
 let _onInputHalted = null;
 function onInputHalted(listener) { _onInputHalted = listener; }
 
+// The turn of play being measured, if any (src/agent/turnClock.js). backend(),
+// callAI, grabFrame, waitChange and pace() add the time they take to it, and
+// what they did, so each turn's record says where its time went. Set only by
+// measureTurn in the component, around one turn at a time.
+let _activeTurn = null;
+function beginTurn(turn) { _activeTurn = turn; }
+function endTurn(turn) { if (_activeTurn === turn) _activeTurn = null; }
+function turnPhase(phase) { return _activeTurn?.enter(phase) ?? (() => {}); }
+function noteTurn(fields) { _activeTurn?.note(fields); }
+async function inTurnPhase(phase, work) {
+  const done = turnPhase(phase);
+  try { return await work(); } finally { done(); }
+}
+
 async function backend(path, body = null, { signal, method } = {}) {
+  // An input request's round trip is backend time for the turn being measured.
+  const timed = backendPhase(path) ? turnPhase("backend") : null;
   try {
     const token = pageToken();
     const res = await fetch(`/api${path}`, {
@@ -99,6 +124,7 @@ async function backend(path, body = null, { signal, method } = {}) {
     const refused = accessRefusal(res.status, token);
     if (!refused) {
       if (inputHalted(path, res.status, reply)) _onInputHalted?.(reply);
+      if (timed && sendsInput(path)) noteTurn({ input: reply?.ok === true });
       return reply;
     }
     _onBackendRefused?.(refused);
@@ -108,6 +134,8 @@ async function backend(path, body = null, { signal, method } = {}) {
   } catch (e) {
     if (signal?.aborted) throw e;
     return { ok: false, error: e.message };
+  } finally {
+    timed?.();
   }
 }
 
@@ -151,9 +179,24 @@ const RETRY_ERR = [2000, 4000, 8000];
  * default, and `signal` (the run's Stop signal) aborts it. `maxTokens` caps the
  * reply below the provider's usual MAX_OUTPUT_TOKENS (the check at Start asks
  * for one token); Ollama ignores it.
+ *
+ * During a turn of play, the time it takes (retries included) is the turn's
+ * llm time, and the tokens the reply reports are the turn's (turnClock.js).
  */
-async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry,
-                      { signal = null, retry = true, timeoutMs = null, maxTokens = null } = {}) {
+async function callAI(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry, options = {}) {
+  const done = turnPhase("llm");
+  try {
+    const reply = await askModel(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry, options);
+    noteTurn({ usage: usageTokens(providerKey, reply?.usage) });
+    return reply;
+  } finally {
+    done();
+  }
+}
+
+// callAI's request itself, with its deadline and its retries.
+async function askModel(providerKey, model, systemPrompt, messages, tools, apiKey, onRetry,
+                        { signal = null, retry = true, timeoutMs = null, maxTokens = null } = {}) {
   // fetch rejects only when no HTTP answer came back at all.
   const post = (url, init, reqSignal) =>
     fetch(url, { method: "POST", ...init, signal: reqSignal })
@@ -580,7 +623,17 @@ async function snapshotHash(grab, canvasEl) {
 // `baseline` MUST be captured before the action. Fast games finish animating
 // during the action's own round trip, so grabbing the baseline afterwards
 // measures post-move vs post-move and always reports "unchanged".
-async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 2.0, baseline = null) {
+// During a turn of play, the wait (its frame grabs included) is the turn's
+// confirm time, and whether the screen changed is noted for its record.
+async function waitChange(grab, canvasEl, maxMs, threshold, baseline) {
+  return inTurnPhase("confirm", async () => {
+    const seen = await watchForChange(grab, canvasEl, maxMs, threshold, baseline);
+    noteTurn({ changed: !!seen.changed });
+    return seen;
+  });
+}
+
+async function watchForChange(grab, canvasEl, maxMs = 2000, threshold = 2.0, baseline = null) {
   const t0 = Date.now();
   if (!baseline) {
     await grab();
@@ -601,6 +654,13 @@ async function waitChange(grab, canvasEl, maxMs = 2000, threshold = 2.0, baselin
     if (dist > threshold) return { changed: true, dist, elapsed: Date.now() - t0 };
   }
   return { changed: false, dist: maxDist, elapsed: maxMs };
+}
+
+// The timing profile's pause after an action (actionPace), which is the turn's
+// pace time.
+async function pace(ms) {
+  if (!(ms > 0)) return;
+  await inTurnPhase("pace", () => new Promise(r => setTimeout(r, ms)));
 }
 
 // ── Conversation window management ────────────────────────────────────────────
@@ -1373,13 +1433,20 @@ export default function GameAgent() {
   const decisionResolverRef = useRef(null);    // resolves once a choice is made
   const decisionTimerRef = useRef(null);
   const fullLogRef = useRef([]);               // every log line, uncapped
-  const logQueueRef = useRef([]);              // lines not yet written to disk
+  const logQueueRef = useRef(newQueue());      // lines not yet written to disk (src/agent/logQueue.js)
+  const recordQueueRef = useRef(newQueue());   // run, game and turn records not yet written
+  const flushNotedRef = useRef(new Set());     // what a flush has already said, said once
   const lastBoardRef = useRef(null);           // last board accepted as read
   const readClashRef = useRef(0);              // reads running against the last one
   const snapshotsRef = useRef(0);              // frames written this game
-  const logSessionRef = useRef(
-    new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")
-  );
+  const gameSnapshotsRef = useRef([]);         // files written this game, for its record
+  const scoreSourceRef = useRef(null);         // where currentScoreRef came from: "measured" or "model"
+  // What this run is (src/agent/episodes.js): its commits, model and settings,
+  // the game being played and the memory it was given. Set at ▶ Start.
+  const runRef = useRef(null);
+  // Names this run's log file, snapshot folder and run records. A new one for
+  // every run (▶ Start); before the first, for this page load.
+  const logSessionRef = useRef(runSessionId());
 
   // Preselect what the agent would do on its own, so accepting is one click.
   useEffect(() => {
@@ -1419,33 +1486,52 @@ export default function GameAgent() {
   // responsive, but every line is also kept in full here and mirrored to a file
   // on disk — a long run must not lose its early history, and a crashed tab must
   // still leave a complete record to troubleshoot from.
-  const addLog = useCallback((text, type = "info") => {
+  //
+  // `screen` cuts a long line short on screen only: the file, and Save log, get
+  // it whole. A model's reply is logged that way, so the file keeps what the
+  // model actually said.
+  const addLog = useCallback((text, type = "info", { screen = null } = {}) => {
     const stamp = ts();
-    setLog(l => [...l.slice(-300), { id: uid(), ts: stamp, text, type }]);
+    setLog(l => [...l.slice(-300), { id: uid(), ts: stamp, text: onScreen(text, screen), type }]);
     const line = `[${stamp}] ${type === "info" ? "" : type.toUpperCase() + ": "}${text}`;
     fullLogRef.current.push(line);
-    logQueueRef.current.push(line);
+    // Each line goes to the file of the run it was logged in.
+    logQueueRef.current.items.push({ session: logSessionRef.current, line });
   }, []);
 
-  // Flush queued lines to the backend on a timer: batching keeps a fast solver
-  // run from issuing a request per move.
+  // A run, game or turn record for the backend to write (src/agent/episodes.js).
+  const queueRecord = useCallback((kind, record) => {
+    recordQueueRef.current.items.push({ session: logSessionRef.current, kind, record });
+  }, []);
+
+  // Flush queued lines and records to the backend on a timer: batching keeps a
+  // fast solver run from issuing a request per move. What does not get through
+  // goes back in the queue for the next flush, up to a bound, rather than being
+  // lost from the file (src/agent/logQueue.js).
   useEffect(() => {
+    let busy = false;
+    // A write the backend has not answered in this long is sent again later.
+    const send = batch => backend(batch.path, batch.body, { signal: AbortSignal.timeout(30000) });
     const flush = async () => {
-      if (!logQueueRef.current.length) return;
-      const queued = logQueueRef.current.splice(0, logQueueRef.current.length);
+      if (busy) return; // one flush at a time, so a slow write is never overtaken
+      busy = true;
       try {
-        // In pieces the backend accepts: it refuses a request over its caps.
-        for (const lines of logBatches(queued)) {
-          await backend("/log/append", { session: logSessionRef.current, lines });
+        const lines = await drainQueue(logQueueRef.current, { plan: logLineBatches, send, max: LOG_QUEUE_MAX });
+        const records = await drainQueue(recordQueueRef.current,
+          { plan: recordBatches, send, max: RECORD_QUEUE_MAX, keep: keepRecord });
+        const notes = flushNotes({ lines, records, logQueue: logQueueRef.current, recordQueue: recordQueueRef.current });
+        for (const note of notes) {
+          if (note.key && flushNotedRef.current.has(note.key)) continue;
+          if (note.key) flushNotedRef.current.add(note.key);
+          addLog(note.text, note.type);
         }
-      } catch {
-        // Backend down or restarting — keep the lines in the full in-memory copy
-        // so "Save log" still produces everything; just do not retry forever.
+      } finally {
+        busy = false;
       }
     };
     const id = setInterval(flush, 2000);
     return () => { flush(); clearInterval(id); };
-  }, []);
+  }, [addLog]);
 
   const saveLogFile = useCallback(() => {
     const body = fullLogRef.current.join("\n") + "\n";
@@ -1495,6 +1581,7 @@ export default function GameAgent() {
         session: logSessionRef.current, tag, png, text: text ?? null,
       });
       if (res?.ok && res.files?.length) {
+        gameSnapshotsRef.current.push(...res.files);
         addLog(`📷 Saved what the agent saw → ${res.files[res.files.length - 1]}`, "info");
       } else if (res && !res.ok && !res.refused) {
         addLog(`📷 Snapshot not saved — ${backendFailure(res)}`, "warn");
@@ -1845,7 +1932,7 @@ export default function GameAgent() {
   }, []);
 
   // ── Unified frame grab (browser screen-share OR backend native capture) ──────
-  const grabFrame = useCallback(async () => {
+  const captureNow = useCallback(async () => {
     let base;
     if (captureSourceRef.current === "native") {
       const r = await backend("/capture/frame");
@@ -1897,6 +1984,9 @@ export default function GameAgent() {
     }
     return base;
   }, []);
+  // During a turn of play, a grab (with its crop, grid and encoding) is the
+  // turn's capture time; inside the confirm wait it counts toward that instead.
+  const grabFrame = useCallback(() => inTurnPhase("capture", captureNow), [captureNow]);
 
 
   // Grab one frame and show it (with crop + grid applied) so margins can be tuned.
@@ -2009,7 +2099,7 @@ export default function GameAgent() {
       const res = await backend("/mouse/move", { x, y, duration: timing.mouseSpeed });
       if (isHaltReply(res)) return halted(res);
       addAction(toolName, toolInput, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok ? "Mouse moved." : `Error: ${res.error}`);
     }
 
@@ -2026,7 +2116,7 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok
         ? `Clicked. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
         : `Error: ${res.error}`);
@@ -2055,7 +2145,7 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok
         ? `Clicked cell ${toolInput.cell.toUpperCase()} (image ${imgX},${imgY}). Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
         : `Error: ${res.error}`);
@@ -2070,7 +2160,7 @@ export default function GameAgent() {
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok ? `Dragged. Screen ${confirm.changed ? "changed" : "unchanged"}.` : `Error: ${res.error}`);
     }
 
@@ -2081,7 +2171,7 @@ export default function GameAgent() {
       if (isHaltReply(res)) return halted(res);
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1000), undefined, __base);
       addAction(toolName, toolInput, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok ? "Scrolled." : `Error: ${res.error}`);
     }
 
@@ -2109,7 +2199,7 @@ export default function GameAgent() {
         lastFailedMovesRef.current.add(String(toolInput.key));
         noOpStreakRef.current++;
       }
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok
         ? `Key pressed. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)}) — this direction is BLOCKED, try a different one`}.`
         : `Error: ${res.error}`);
@@ -2122,7 +2212,7 @@ export default function GameAgent() {
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
       logLimit(toolName, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(holdKeyResult(res, toolInput));
     }
 
@@ -2133,7 +2223,7 @@ export default function GameAgent() {
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
       logLimit(toolName, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(typeTextResult(res));
     }
 
@@ -2146,7 +2236,7 @@ export default function GameAgent() {
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok
         ? withLimitNotes(`Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`, res)
         : `Error: ${res.error}${res.available === false ? " (install vgamepad + ViGEmBus on Windows)" : ""}`);
@@ -2164,7 +2254,7 @@ export default function GameAgent() {
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok
         ? withLimitNotes(`Stick ${toolInput.stick} → (${toolInput.x}, ${toolInput.y}). Screen ${confirm.changed ? "changed" : "unchanged"}.`, res)
         : `Error: ${res.error}`);
@@ -2182,7 +2272,7 @@ export default function GameAgent() {
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
-      if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+      await pace(timing.actionPace);
       return toolResult(res.ok
         ? withLimitNotes(`Trigger ${toolInput.trigger} → ${toolInput.value}. Screen ${confirm.changed ? "changed" : "unchanged"}.`, res)
         : `Error: ${res.error}`);
@@ -2191,7 +2281,8 @@ export default function GameAgent() {
     // ── Meta tools ───────────────────────────────────────────────────────────
     if (toolName === "analyse_game_state") {
       if (toolInput.strategy) addLog(`Strategy: ${toolInput.strategy}`, "info");
-      addLog(`Analysis: ${toolInput.analysis?.slice(0, 200)}`, "info");
+      // The model's own reasoning: whole in the log file, cut short on screen.
+      addLog(`Analysis: ${toolInput.analysis}`, "info", { screen: 210 });
       return toolResult("Analysis noted. Now take the action you described.");
     }
 
@@ -2273,7 +2364,7 @@ export default function GameAgent() {
           summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — changed${cutNote}`);
         }
 
-        if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
+        await pace(timing.actionPace);
       }
 
       if (lastConfirmInfo) setLastConfirm(lastConfirmInfo);
@@ -2300,6 +2391,7 @@ export default function GameAgent() {
       if (toolInput.score != null) {
         setCurrentScore(toolInput.score);
         currentScoreRef.current = toolInput.score;
+        scoreSourceRef.current = "model";
       }
       if (toolInput.milestone) {
         setMilestones(m => [...m, { id: uid(), ts: ts(), text: toolInput.milestone, score: toolInput.score }]);
@@ -2322,8 +2414,12 @@ export default function GameAgent() {
       const reported = normalizeOutcome(end.outcome);
       if (!MODEL_OUTCOMES.includes(reported)) {
         addLog(`Reported outcome ${JSON.stringify(end.outcome ?? null)} is not one of ${MODEL_OUTCOMES.join(", ")} — recording as ended.`, "warn");
+        noteTurn({ violation: `signal_game_end outcome ${JSON.stringify(end.outcome ?? null)} is not one of ${MODEL_OUTCOMES.join(", ")}` });
       }
       end.outcome = MODEL_OUTCOMES.includes(reported) ? reported : "ended";
+      // Where the final score came from, for the game's record: the model's
+      // word, unless the solver measured it (below).
+      end.scoreSource = end.finalScore != null ? "model" : null;
       if (solverActiveRef.current) {
         const measured = screenScoreRef.current ?? solverScoreRef.current;
         if (measured != null && end.finalScore !== measured) {
@@ -2332,6 +2428,7 @@ export default function GameAgent() {
           }
           end.finalScore = measured;
         }
+        if (measured != null) end.scoreSource = "measured";
         // A win in 2048 means a 2048 tile was actually built. This compared
         // against "win", a name the model was never offered, so until the
         // outcome names were shared it could not fire. It is a tile measure, so
@@ -2601,10 +2698,12 @@ Reply with ONLY a JSON object, no other text:
     }
   }, []);
 
-  const solverTurn = useCallback(async (plugin) => {
+  const playSolverTurn = useCallback(async (plugin) => {
     const canvas = solverCanvasRef.current;
     if (!canvas) return { fallback: true, reason: "no canvas" };
 
+    // Looking at the board, retries included, is this turn's capture time.
+    const looked = turnPhase("capture");
     // Full-resolution grab, no crop and no grid overlay
     const frame = captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
     if (!frame) return { fallback: true, reason: "no frame" };
@@ -2623,6 +2722,7 @@ Reply with ONLY a JSON object, no other text:
       captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
       state = plugin.readState(canvas);
     }
+    looked();
     if (!state && plugin.lastReadFailure) {
       // Say which cells could not be read and what colour they were, so a
       // failure is diagnosable from the log rather than only visible as a
@@ -2732,7 +2832,7 @@ Reply with ONLY a JSON object, no other text:
         addLog(`⚠ Backend ${a.type} error: ${res.error}`, "error");
         return { fallback: true, reason: `${a.type} failed` };
       }
-      if (actions.length > 1) await new Promise(r => setTimeout(r, 40));
+      if (actions.length > 1) await pace(40);
     }
 
     // Get the pointer off the board before looking at it again. Whatever the
@@ -2745,10 +2845,14 @@ Reply with ONLY a JSON object, no other text:
 
     // Let the tiles animate, then re-read and compare — a real state check
     // rather than a pixel-difference guess.
+    // The wait and the read after it are this turn's confirm time.
+    const settled = turnPhase("confirm");
     await new Promise(r => setTimeout(r, Math.max(180, timing.actionPace || 0) + 220));
     captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
     const after = plugin.readState(canvas);
     const changed = after && JSON.stringify(after.board) !== JSON.stringify(state.board);
+    settled();
+    noteTurn({ changed: !!changed });
 
     if (changed) {
       solverScoreRef.current += move.gained || 0;
@@ -2776,6 +2880,7 @@ Reply with ONLY a JSON object, no other text:
       }
 
       currentScoreRef.current = screenScoreRef.current ?? solverScoreRef.current;
+      scoreSourceRef.current = "measured";
       setCurrentScore(currentScoreRef.current);
       // "Highest tile" means something in 2048 and nothing in Minesweeper, where
       // the same numbers count neighbouring mines.
@@ -2807,6 +2912,26 @@ Reply with ONLY a JSON object, no other text:
     addAction(`solver.${moveId}`, { move: moveId }, { ok: true, changed });
     return { ok: true, key: moveId, changed, reason: move.reason, board: state.board, state };
   }, [getTiming, addLog, addAction, readScoresFromScreen, noteBestTile, snapshot]);
+
+  // ── Measuring turns ──────────────────────────────────────────────────────────
+  // Every turn of play, the solver's and the model's, is timed by phase and
+  // written as one line to logs/turns/<session>.jsonl (src/agent/turnClock.js
+  // says what is in it). One turn at a time: the games loop awaits each.
+  const measureTurn = useCallback(async (kind, play) => {
+    const turn = startTurn({ kind, turn: turnCountRef.current + 1, game: runRef.current?.game ?? null });
+    beginTurn(turn);
+    let result = null;
+    try {
+      result = await play();
+      return result;
+    } finally {
+      endTurn(turn);
+      queueRecord("turn", turn.finish(result));
+    }
+  }, [queueRecord]);
+
+  const solverTurn = useCallback((plugin) => measureTurn("plugin", () => playSolverTurn(plugin)),
+    [measureTurn, playSolverTurn]);
 
 
   // ── Restart the game after it ends ──────────────────────────────────────────
@@ -2953,7 +3078,7 @@ Reply with ONLY a JSON object, no other text:
         }
 
         const base = await snapshotHash(grabFrame, canvasRef.current);
-        addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input).slice(0, 60)})`, "tool");
+        addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input)})`, "tool", { screen: 64 + String(clickAct.tool).length });
         const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`);
         // The click met a halt (a hotkey pressed while the model was asked), so
         // it was never sent: that is not an attempt that failed, and three of them
@@ -3037,7 +3162,8 @@ Reply with ONLY a JSON object, no other text:
   //   {kind: "transport-error" | "fatal-error", error}   it did not answer
   //   {kind: "stopped"}                                  Stop was pressed
   // A turn the model did not answer is undone, so it can simply be run again.
-  const agentTurn = useCallback(async (systemPrompt, apiKey) => {
+  // Measured like a solver turn (measureTurn), as agentTurn below.
+  const playModelTurn = useCallback(async (systemPrompt, apiKey) => {
     turnCountRef.current++;
 
     // Generate checkpoint every N turns
@@ -3078,6 +3204,7 @@ Reply with ONLY a JSON object, no other text:
     const lastNoOp = lastActionNoOpRef.current;
     const a1Skip = turnCountRef.current > 1 && distFromLast < 2.0 && !lastNoOp;
     const sendImage = !!frame && isStrategyTurn && !a1Skip;
+    noteTurn({ image: sendImage });
 
     // Mode-appropriate nudge: small models must be pushed to ACT, not just analyse.
     let actNudge = noToolsRef.current
@@ -3176,6 +3303,13 @@ Reply with ONLY a JSON object, no other text:
     const hash = frameHash(canvasRef.current);
     stuckRingRef.current = [...stuckRingRef.current.slice(-6), hash];
 
+    // A call to a tool this run did not offer (one the model made up, or one of
+    // another control scheme) is run as before, and noted in the turn's record.
+    const offered = new Set(activeToolsRef.current.map(t => t.name));
+    const notOffered = name => {
+      if (!offered.has(name)) noteTurn({ violation: `${JSON.stringify(name)} is not one of the tools offered` });
+    };
+
     if (noToolsRef.current) {
       // ── JSON-action mode (small local models): plain-text history, parse actions ──
       const text = (resp.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n").trim();
@@ -3185,10 +3319,11 @@ Reply with ONLY a JSON object, no other text:
 
       // Surface the model's reasoning readably instead of dumping raw JSON,
       // and pick up the score it read off the screen (no extra LLM call).
+      // Whole in the log file; cut short on screen only.
       const lead = actions[0];
-      if (lead?.see) addLog(`  👁 ${lead.see.slice(0, 220)}`, "info");
-      if (lead?.plan) addLog(`  🧠 ${lead.plan.slice(0, 220)}`, "assistant");
-      if (!lead?.see && !lead?.plan && text) addLog(text.slice(0, 300), "assistant");
+      if (lead?.see) addLog(`  👁 ${lead.see}`, "info", { screen: 224 });
+      if (lead?.plan) addLog(`  🧠 ${lead.plan}`, "assistant", { screen: 224 });
+      if (!lead?.see && !lead?.plan && text) addLog(text, "assistant", { screen: 300 });
       // Only trust a model-reported score when nothing better is available.
       // The solver computes the score from actual merges; a small model asked
       // to read it off the screen produced a value that simply doubled every
@@ -3202,6 +3337,7 @@ Reply with ONLY a JSON object, no other text:
           (prev == null || (s >= prev && s <= Math.max(prev * 4, prev + 5000)));
         if (plausible && s !== prev) {
           currentScoreRef.current = s;
+          scoreSourceRef.current = "model";
           setCurrentScore(s);
         } else if (!plausible) {
           addLog(`Ignoring implausible reported score ${lead.score}.`, "warn");
@@ -3211,6 +3347,7 @@ Reply with ONLY a JSON object, no other text:
       const hasRealAction = actions.some(a => !PASSIVE.has(a.tool));
 
       if (!actions.length) {
+        noteTurn({ violation: "no JSON action in the reply" });
         addLog("No parseable JSON action — nudging model.", "warn");
         convRef.current.push({
           role: "user",
@@ -3228,14 +3365,16 @@ Reply with ONLY a JSON object, no other text:
       const feedback = [];
       for (const a of actions) {
         if (stopRef.current) break;
-        addLog(`→ ${a.tool}(${JSON.stringify(a.input).slice(0, 100)})`, "tool");
+        addLog(`→ ${a.tool}(${JSON.stringify(a.input)})`, "tool", { screen: 104 + String(a.tool).length });
+        notOffered(a.tool);
+        noteTurn({ tools: 1 });
         const result = await executeTool(a.tool, a.input, `${a.tool}__json`);
         for (const c of (result?.content ?? [])) {
           if (c.type === "image") feedback.push(c);
           else if (c.type === "text") {
             feedback.push({ type: "text", text: `${a.tool}: ${c.text}` });
             // Surface the outcome so failures aren't invisible in JSON mode
-            addLog(`   ↳ ${c.text.slice(0, 160)}`, c.text.startsWith("Error") ? "error" : "info");
+            addLog(`   ↳ ${c.text}`, c.text.startsWith("Error") ? "error" : "info", { screen: 165 });
           }
         }
         if (gameEndRef.current) break;
@@ -3251,7 +3390,9 @@ Reply with ONLY a JSON object, no other text:
       const toolResults = [];
       for (const tu of toolUses) {
         if (stopRef.current) break;
-        addLog(`→ ${tu.name}(${JSON.stringify(tu.input).slice(0, 100)})`, "tool");
+        addLog(`→ ${tu.name}(${JSON.stringify(tu.input)})`, "tool", { screen: 104 + tu.name.length });
+        notOffered(tu.name);
+        noteTurn({ tools: 1 });
         const result = await executeTool(tu.name, tu.input, tu.id);
         toolResults.push(result);
         if (gameEndRef.current) break;
@@ -3268,6 +3409,9 @@ Reply with ONLY a JSON object, no other text:
 
     return { kind: "action" };
   }, [providerKey, model, addLog, executeTool, maxTokens, grabFrame, setGameSpeed]);
+
+  const agentTurn = useCallback((systemPrompt, apiKey) => measureTurn("model", () => playModelTurn(systemPrompt, apiKey)),
+    [measureTurn, playModelTurn]);
 
   // ── runResearch ──────────────────────────────────────────────────────────────
   const runResearch = useCallback(async (apiKey) => {
@@ -3287,7 +3431,7 @@ Reply with ONLY a JSON object, no other text:
         [], apiKey, msg => addLog(msg, "warn"), { signal: stopCtrlRef.current.signal }
       );
       const text = resp.content?.find(c => c.type === "text")?.text ?? "";
-      if (text) addLog(`Research: ${text.slice(0, 300)}`, "success");
+      if (text) addLog(`Research: ${text}`, "success", { screen: 310 });
       return text;
     } catch (e) {
       // Research is optional. A model that is not answering, or refuses the key,
@@ -3370,6 +3514,21 @@ Reply with ONLY a JSON object, no other text:
     }
   }, [providerKey, model, addLog, setGameSpeed]);
 
+  // ── Which code and settings this run is ────────────────────────────────────
+  // The RUN line that opens the run's log, and run.json (src/agent/episodes.js):
+  // both commits, said loudly when they differ, the provider, model and
+  // settings. `settings` holds the RUN_FIELDS startAgent knows.
+  const stampRun = useCallback(async (settings) => {
+    const reply = await backend("/version");
+    const backendVersion = readVersion(reply);
+    const run = { ...settings, page: PAGE_VERSION, backend: backendVersion };
+    runRef.current = { ...run, game: null, memoryHash: null };
+    addLog(runHeader(run), "info");
+    const problem = versionProblem(PAGE_VERSION, backendVersion, { failure: backendVersion ? null : backendFailure(reply) });
+    if (problem) addLog(problem.text, problem.type);
+    queueRecord("run", runRecord(run));
+  }, [addLog, queueRecord]);
+
   // ── startAgent ───────────────────────────────────────────────────────────────
   const startAgent = useCallback(async () => {
     if (running || startingRef.current) return;
@@ -3399,11 +3558,8 @@ Reply with ONLY a JSON object, no other text:
     captureSourceRef.current = nativeMode ? "native" : "browser";
     const schemeCfg = CONTROL_SCHEMES[controlScheme] ?? CONTROL_SCHEMES["browser-kbm"];
     const pauseActive = pauseToThink && schemeCfg.native && attachedRef.current;
+    const pauseDropped = pauseToThink && schemeCfg.native && !attachedRef.current;
     pauseToThinkRef.current = pauseActive;
-    if (pauseToThink && schemeCfg.native && !attachedRef.current) {
-      addLog("Pause-to-think is on but no game is attached — running without it.", "warn");
-    }
-    addLog(`Control scheme: ${schemeCfg.label}${pauseActive ? " · pause-to-think ON" : ""}`, "info");
 
     const prov = PROVIDERS[providerKey];
     const apiKey = apiKeyInput || getEnv(prov.envKey ?? "");
@@ -3469,6 +3625,26 @@ Reply with ONLY a JSON object, no other text:
     strategyIntervalRef.current = Math.max(1, strategyInterval || 1);
     forceStrategyRef.current = true; // first play turn is always a vision turn
     noToolsRef.current = noToolsMode;
+    scoreSourceRef.current = null;
+    // This run's own name for its log file, snapshots and records, and what it
+    // is, for its RUN line and run.json once the log is cleared (stampRun).
+    logSessionRef.current = runSessionId();
+    const runPlugin = useSolver ? findPlugin(gameDesc) : null;
+    const runSettings = {
+      session: logSessionRef.current, startedAt: new Date().toISOString(),
+      provider: providerKey, model,
+      controlScheme: { id: controlScheme, label: schemeCfg.label },
+      jsonMode: noToolsMode, captureSource: nativeMode ? "native" : "browser",
+      frameWidth: MAX_FRAME_W, frameQuality: FRAME_QUALITY, imageCap: MAX_IMAGES, windowTurns: WINDOW_TURNS,
+      strategyInterval: strategyIntervalRef.current, grid: gridEnabled, crop: !!cropRef.current?.enabled,
+      timing: { profile: timingProfile, label: TIMING_PROFILES[timingProfile]?.label ?? timingProfile, ...getTiming() },
+      pauseToThink: pauseActive, plugin: runPlugin ? pluginName(runPlugin) : null, useSolver, skipResearch, maxTokens,
+      gameDesc, gameKey: slugify(gameDesc), gamesRequested: Math.max(1, gamesPerSession || 1),
+      ollama: providerKey !== "ollama" ? null : {
+        relay: ollamaViaBackend,
+        base: ollamaViaBackend ? (ollamaRelay?.base ?? null) : (tidyOllamaBase(ollamaHost) || OLLAMA_DEFAULT_BASE),
+      },
+    };
 
     setRunning(true);
     setGameResult(null);
@@ -3480,6 +3656,11 @@ Reply with ONLY a JSON object, no other text:
     setTurnCount(0);
     setTokenCount({ input: 0, output: 0 });
     setPhase("research");
+    await stampRun(runSettings);
+    // Said once the run has its own session, so these reach its log file, not
+    // the last run's, and are not cleared off the screen with the last run's.
+    if (pauseDropped) addLog("Pause-to-think is on but no game is attached — running without it.", "warn");
+    addLog(`Control scheme: ${schemeCfg.label}${pauseActive ? " · pause-to-think ON" : ""}`, "info");
     if (providerKey === "ollama") {
       addLog(ollamaViaBackend
         ? `Ollama: ${model} on ${ollamaRelay?.base ?? "the backend's configured server"}, through the backend relay.`
@@ -3556,6 +3737,13 @@ Reply with ONLY a JSON object, no other text:
       ? `Best score: ${mem.bestScore ?? "unknown"}. Strategies: ${mem.strategies.slice(0, isLocal ? 2 : 3).join("; ")}. Discoveries: ${(mem.discoveries ?? []).slice(0, isLocal ? 2 : 5).join("; ")}. Avoid: ${(mem.avoidPatterns ?? []).slice(0, isLocal ? 2 : 3).join("; ")}`
       : "";
     const memCtx = memRaw ? `\n\nPRIOR KNOWLEDGE:\n${cap(memRaw, MEM_CAP)}` : "";
+    // Which memory this run played with, for each game's record. When the model
+    // plays, that is the text that goes into its prompt. With a solver playing,
+    // the prompt gets none (its model turns get the short brief), and what
+    // memory changes about play is the plugin's tuned weights, if any.
+    if (runRef.current) {
+      runRef.current.memoryHash = memoryHash(activePlugin ? (mem?.tuning ? JSON.stringify(mem.tuning) : "") : memCtx);
+    }
 
     const researchCtx = research ? `\n\nSTRATEGY NOTES:\n${cap(research, RESEARCH_CAP)}` : "";
 
@@ -3712,7 +3900,7 @@ REASONING STYLE (for analyse_game_state):
           // No-tools study: just observe in plain text (no action parsing/execution)
           const text = content.filter(c => c.type === "text").map(c => c.text).join("\n").trim();
           convRef.current.push({ role: "assistant", content: text || "(observing)" });
-          if (text) addLog(`Study ${i + 1}/3: ${text.slice(0, 200)}`, "info");
+          if (text) addLog(`Study ${i + 1}/3: ${text}`, "info", { screen: 212 });
         } else {
           convRef.current.push({ role: "assistant", content });
           const toolResults = [];
@@ -3721,7 +3909,7 @@ REASONING STYLE (for analyse_game_state):
           }
           if (toolResults.length) convRef.current.push({ role: "user", content: toolResults });
           const text = content.find(c => c.type === "text")?.text ?? "";
-          if (text) addLog(`Study ${i + 1}/3: ${text.slice(0, 200)}`, "info");
+          if (text) addLog(`Study ${i + 1}/3: ${text}`, "info", { screen: 212 });
         }
       } catch (e) {
         // Study is optional too: a model that is not answering, or refuses the
@@ -3811,6 +3999,12 @@ REASONING STYLE (for analyse_game_state):
     for (let gameIdx = 0; gameIdx < totalGames && !stopRef.current && !session.abortReason; gameIdx++) {
       setGameNumber(gameIdx + 1);
       if (totalGames > 1) addLog(`── Game ${gameIdx + 1} of ${totalGames} ──`, "info");
+      // For this game's line in logs/episodes.jsonl.
+      if (runRef.current) runRef.current.game = gameIdx + 1;
+      const gameStartedAt = Date.now();
+      const turnsBeforeGame = turnCountRef.current;
+      gameSnapshotsRef.current = [];
+      let stuckReason = null; // what left play with nothing to do, when something did
 
       // Reset per-game tracking
       noOpStreakRef.current = 0;
@@ -3855,6 +4049,7 @@ REASONING STYLE (for analyse_game_state):
           const decision = await analyseStuckScreen(activePlugin, apiKey);
           if (!decision) {
             gameOutcome = gameBestTileRef.current >= 2048 ? "won" : "ended";
+            stuckReason = "the game stopped responding and nothing on screen can be clicked";
             addLog("The game stopped responding and nothing on screen can be clicked.", "warn");
             break;
           }
@@ -3908,6 +4103,7 @@ REASONING STYLE (for analyse_game_state):
             addLog(`Game over — ${ending.detail}.`, ending.result === "won" ? "success" : "warn");
             if (activePlugin.scoreOf) {
               currentScoreRef.current = activePlugin.scoreOf(sr.state);
+              scoreSourceRef.current = "measured";
               setCurrentScore(currentScoreRef.current);
             }
           } else {
@@ -3982,6 +4178,7 @@ REASONING STYLE (for analyse_game_state):
               "error");
             await snapshot("gave-up", sr.reason ?? "board not readable");
             gameOutcome = "stuck";
+            stuckReason = `the board could not be read (${sr.reason ?? "no reason given"}), and a blind move would end the game`;
             break;
           }
           addLog("Falling back to the model for this turn.", "warn");
@@ -4001,6 +4198,7 @@ REASONING STYLE (for analyse_game_state):
         gameOutcome = turn.outcome;
         if (turn.finalScore != null) {
           currentScoreRef.current = turn.finalScore;
+          scoreSourceRef.current = gameEndRef.current?.scoreSource ?? "model";
           setCurrentScore(turn.finalScore);
         }
         break;
@@ -4038,6 +4236,9 @@ REASONING STYLE (for analyse_game_state):
       const hardStop = noOps >= 10;
       if (exhausted || hardStop) {
         gameOutcome = "stuck";
+        stuckReason = exhausted
+          ? `no moves available: ${distinctFailed} different actions all changed nothing over ${noOps} actions`
+          : `no progress after ${noOps} actions in a row`;
         addLog(
           exhausted
             ? `No moves available — ${distinctFailed} different directions all blocked over ${noOps} actions.`
@@ -4074,6 +4275,21 @@ REASONING STYLE (for analyse_game_state):
 
       finalOutcome = thisGame.outcome;
       finalScore = thisScore ?? finalScore;
+      // The game's line in logs/episodes.jsonl (src/agent/episodes.js), with
+      // its score taken the same way as thisScore, and where that came from.
+      queueRecord("game", gameRecord({
+        run: runRef.current, game: gameIdx + 1, outcome: thisGame.outcome,
+        turns: turnCountRef.current - turnsBeforeGame, startedAt: gameStartedAt, endedAt: Date.now(),
+        ...scoreOf({
+          reported: gameEndRef.current?.finalScore, reportedSource: gameEndRef.current?.scoreSource,
+          current: currentScoreRef.current, currentSource: scoreSourceRef.current,
+        }),
+        stuckReason: stuckReason ?? (gameEndRef.current?.outcome === "stuck"
+          ? `the model reported it stuck: ${gameEndRef.current.reason ?? "no reason given"}` : null),
+        snapshots: gameSnapshotsRef.current,
+        // Nothing ended the game but ■ Stop (gameEnding records that as "ended").
+        stopped: gameOutcome == null && stopRef.current,
+      }));
 
       const moreToPlay = gameIdx + 1 < totalGames;
       if (!moreToPlay || stopRef.current) break;
@@ -4092,6 +4308,7 @@ REASONING STYLE (for analyse_game_state):
       // than the old one, which the consistency check would otherwise read as
       // squares un-opening themselves and reject every frame.
       currentScoreRef.current = null;
+      scoreSourceRef.current = null;
       setCurrentScore(null);
       lastTurnHashRef.current = null;
       forceStrategyRef.current = true;
@@ -4235,7 +4452,8 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
-      waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState]);
+      waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState,
+      stampRun, queueRecord, getTiming, timingProfile, maxTokens]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
