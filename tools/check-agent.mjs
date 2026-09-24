@@ -83,6 +83,19 @@
 //   - the tool result says what the backend really held or typed, and every hold
 //     or type in GameAgent.jsx, execute_sequence's steps included, reports it
 //
+// Then the kill switch, because moving the mouse into a screen corner never
+// stopped keys sent with SendInput, and Stop only stopped the page asking for
+// more. The backend halts input on Ctrl+Alt+Pause, Ctrl+Alt+Shift+H or Stop and
+// refuses input with HTTP 423 until Resume (tools/check_backend.py checks that).
+// Here:
+//   - the page (src/agent/killSwitch.js) and the backend agree on the status and
+//     the reasons for a halt, and the page reads the state, shows the banner,
+//     logs changes and refuses ▶ Start as it should
+//   - backend() reports a halted input route at once, and Stop aborts the model
+//     request in flight and halts input already sent, lifting only its own halt
+//   - the games loop waits while input is halted, and no halted reply is counted
+//     as a no-op, a failed solver move or a failed restart click
+//
 // Then how model requests are sent, because the cloud requests had gone stale
 // (max_tokens to OpenAI, the Gemini key in the URL, Gemini's thought signatures
 // dropped, no browser header for Anthropic) and a retired model id showed only
@@ -107,7 +120,7 @@
 //
 // Values that live inside GameAgent.jsx (TOOLS, GAMEPAD_TOOLS, GAME_PLUGINS,
 // pluginName, buildActionReference, callAI, setOllamaViaBackend, setOllamaBase,
-// backend, onBackendRefused) are
+// backend, onBackendRefused, onInputHalted) are
 // read by bundling it with a line that exports them added at the end, the same
 // way check-render.mjs bundles it, so the check sees what the page really
 // builds. Agent logic that can live in its own module under src/agent/ is
@@ -207,7 +220,7 @@ let agent = null;
 try {
   await build({
     stdin: {
-      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, setOllamaBase as __setOllamaBase, backend as __backend, onBackendRefused as __onBackendRefused };\n`,
+      contents: `${source}\nexport { TOOLS as __TOOLS, GAMEPAD_TOOLS as __GAMEPAD_TOOLS, GAME_PLUGINS as __GAME_PLUGINS, pluginName as __pluginName, buildActionReference as __buildActionReference, callAI as __callAI, setOllamaViaBackend as __setOllamaViaBackend, setOllamaBase as __setOllamaBase, backend as __backend, onBackendRefused as __onBackendRefused, onInputHalted as __onInputHalted };\n`,
       resolveDir: path.join(ROOT, "src"),
       sourcefile: "GameAgent.jsx",
       loader: "jsx",
@@ -744,6 +757,134 @@ console.log("input limits");
   check("execute_sequence puts what was cut on each step's line",
     !!noted && stepLines.length === 2 && stepLines.every(m => m[2] === `\${${noted[2]}}`),
     show({ note: noted?.[0] ?? null, lines: stepLines.map(m => m[0]) }));
+}
+
+// ── The kill switch ───────────────────────────────────────────────────────────
+// The mouse in a screen corner never stopped keys sent with SendInput, and Stop
+// only stopped the page asking for more. The backend now halts input on a hotkey
+// or on Stop and refuses input with 423 until Resume (tools/check_backend.py
+// checks that side). Here: the page and the backend agree on the names, the page
+// says the right things, and the page is wired so that a halt is waited out,
+// never counted as a no-op, an error or a stuck game, and Stop halts too.
+console.log("kill switch");
+{
+  const ks = await import(pathToFileURL(path.join(ROOT, "src", "agent", "killSwitch.js")).href);
+  const pyStatus = py.match(/^HALT_STATUS\s*=\s*(\d+)/m);
+  const pyReasons = py.match(/^HALT_REASONS\s*=\s*\(([^)]*)\)/m);
+  const pyReasonNames = pyReasons ? [...pyReasons[1].matchAll(/["']([^"']+)["']/g)].map(m => m[1]) : null;
+  const pageReasons = py.match(/class HaltBody\(BaseModel\):\s*reason: Literal\[([^\]]*)\]/);
+  check("the page and the backend agree on the halt status and the reasons for a halt",
+    Number(pyStatus?.[1]) === ks.HALT_STATUS && same(pyReasonNames, ks.HALT_REASONS) && ks.HALT_REASONS.includes(ks.STOP_HALT)
+      && same(pageReasons ? [...pageReasons[1].matchAll(/["']([^"']+)["']/g)].map(m => m[1]) : null, ["page", "stop"]),
+    show({ status: pyStatus?.[1], reasons: pyReasonNames, page: pageReasons?.[1] }));
+
+  const state = (halted, reasons, extra = {}) => ({
+    halted, reasons, by: reasons.length ? "Ctrl+Alt+Pause" : null, since: halted ? "2026-09-17T14:03:22" : null,
+    hotkeys: ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"], hotkeyProblems: [], ...extra,
+  });
+  const idle = ks.readHaltState(state(false, []));
+  const byHotkey = ks.readHaltState(state(true, ["hotkey"]));
+  const byStop = ks.readHaltState(state(true, ["stop"], { by: "■ Stop on the agent page" }));
+  const cases = [
+    ["a reply that is not a state (an old backend's 404, no answer)",
+      [ks.readHaltState({ detail: "Not Found" }), ks.readHaltState({ ok: false, error: "Failed to fetch" }), ks.readHaltState(null)],
+      r => r.every(x => x === null)],
+    ["a hotkey's halt gets the red banner, with who and when, and a log line; Stop's own gets neither",
+      [ks.haltBanner(byHotkey), ks.haltBanner(byStop), ks.haltBanner(idle), ks.haltChange(idle, byHotkey), ks.haltChange(idle, byStop)],
+      ([banner, stop, none, said, quiet]) => banner?.title === "Input halted: press Resume" && banner.detail.includes("Ctrl+Alt+Pause")
+        && banner.detail.includes("14:03:22") && stop === null && none === null && said?.type === "error" && said.text.includes("Resume")
+        && quiet === null],
+    ["a hotkey pressed while Stop's halt is on is still said, and Resume is logged; Stop's own lifting is not",
+      [ks.haltChange(byStop, ks.readHaltState(state(true, ["stop", "hotkey"]))), ks.haltChange(byHotkey, idle), ks.haltChange(byStop, idle),
+        ks.haltChange(byHotkey, byHotkey)],
+      ([said, resumed, quiet, same]) => said?.type === "error" && resumed?.text === "▶ Input resumed." && quiet === null && same === null],
+    ["▶ Start refuses while someone halted input, and not for Stop's own halt or an old backend",
+      [ks.haltStartProblem(byHotkey), ks.haltStartProblem(byStop), ks.haltStartProblem(idle), ks.haltStartProblem(null)],
+      ([refused, ...rest]) => /^Not started: input is halted .*Resume/.test(refused ?? "") && rest.every(x => x === null)],
+    ["an input route's halted reply is heard; the state's own routes are not",
+      [ks.inputHalted("/mouse/click", 423, { ok: false, halted: true }), ks.inputHalted("/keyboard/hold", 200, { ok: true, halted: true }),
+        ks.inputHalted("/session/state", 200, { halted: true, reasons: ["hotkey"] }), ks.inputHalted("/session/halt", 200, { ok: true, halted: true }),
+        ks.inputHalted("/keyboard/hold", 200, { ok: true, halted: false })],
+      r => same(r, [true, true, false, false, false])],
+    ["the model is told a halt is not a move that failed, and what was done before it",
+      [ks.haltedToolText({ ok: false, halted: true, error: "x" }), ks.haltedToolText({ ok: false, halted: true, typed: 4 }),
+        ks.haltedToolText({ ok: true, halted: true, held: 0.3 }), ks.haltedToolText({ ok: false, halted: true, clicked: 1 })],
+      ([refused, typed, held, clicked]) => refused.startsWith("Not done.") && /do not try another action/.test(refused) && /Resume/.test(refused)
+        && typed.startsWith("Only the first 4 characters") && held.startsWith("Input was halted after 0.3s") && clicked.startsWith("Clicked 1 time,")],
+    ["the controls name the registered hotkeys and ■ Stop for a game that blocks them, and warn when there are none",
+      [ks.hotkeysNote(byHotkey), ks.hotkeysNote(ks.readHaltState(state(false, [], { hotkeys: [], hotkeyProblems: ["Ctrl+Alt+Pause is taken by another program"] }))),
+        ks.hotkeysNote(null)],
+      ([named, none, unknown]) => named?.type === "info" && named.text.includes("Ctrl+Alt+Pause or Ctrl+Alt+Shift+H")
+        && named.text.includes("■ Stop") && !/any window/.test(named.text)
+        && none?.type === "warn" && none.text.includes("taken by another program") && none.text.includes("■ Stop") && unknown === null],
+    // A halted tool result is known by a list, not a field: the result goes to
+    // the provider as it is, and Anthropic refuses a field it does not know.
+    ["a tool result for an action that met a halt is known as one, and carries nothing more to the provider",
+      (() => {
+        const result = { type: "tool_result", tool_use_id: "t1", content: [{ type: "text", text: "Not done." }] };
+        const marked = ks.markHalted(result);
+        return [marked === result, ks.metHalt(result), ks.metHalt({ ...result }), ks.metHalt(JSON.parse(JSON.stringify(result))),
+          ks.metHalt(null), ks.metHalt({ type: "tool_result" }), JSON.stringify(result).includes("halted"), Object.keys(result)];
+      })(),
+      r => same(r, [true, true, false, false, false, false, false, ["type", "tool_use_id", "content"]])],
+  ].filter(([, got, ok]) => !ok(got)).map(([label, got]) => `${label}: ${show(got)}`);
+  check("what the page reads, shows and says about a halt", !cases.length, cases.join("; "));
+
+  // The page's wiring, as esbuild prints it.
+  const between = (from, to) => {
+    const start = code.indexOf(from);
+    const end = start < 0 ? -1 : code.indexOf(to, start + from.length);
+    return start < 0 || end < 0 ? "" : code.slice(start, end);
+  };
+  const stop = between("const stopAgent = useCallback(", "const togglePause = useCallback(");
+  check("■ Stop aborts the model request in flight and halts the input already sent",
+    /stopCtrlRef\.current\.abort\(\);/.test(stop) && /backend\("\/session\/halt", \{ reason: STOP_HALT \}\)/.test(stop), show(stop.slice(0, 200)));
+  const lifts = [...code.matchAll(/backend\("\/session\/resume", \{ reason: STOP_HALT \}\)/g)].length;
+  const resume = between("const resumeInput = useCallback(", "const waitWhileHalted");
+  check("the page lifts only Stop's own halt by itself (when its run ends, or one left behind, idle or at Start); Resume lifts any",
+    lifts === 3 && /backend\("\/session\/resume", \{\}\)/.test(resume) && !/reason/.test(resume), show({ lifts, resume: resume.slice(0, 160) }));
+  check("the games loop waits while input is halted, as while paused",
+    /while \(\(pauseRef\.current \|\| haltedRef\.current\) && !stopRef\.current\) await/.test(code), "no wait on haltedRef at the top of the loop");
+  check("a solver move that met a halt is neither a failure nor a blocked move, and the loop goes round",
+    /if \(isHaltReply\(res\)\) return \{ halted: true, reason: "input halted" \};\s*if \(!res\.ok\) \{/.test(code) && /if \(sr\.halted\) continue;/.test(code),
+    "solverTurn or the games loop does not handle { halted }");
+  check("the loop's own clicks (a restart button, a decision's option) wait out a halt instead of failing",
+    [...code.matchAll(/sendWhenLive\("\/mouse\/click"/g)].length === 3, `found ${[...code.matchAll(/sendWhenLive\("\/mouse\/click"/g)].length}, wanted 3`);
+  check("▶ Start does not begin while someone halted input", /const haltProblem = haltStartProblem\(/.test(between("const startAgent = useCallback(", "stopRef.current = false;")),
+    "no haltStartProblem before the run's reset");
+  // startingRef is what keeps a second click on ▶ Start out. Let down while the
+  // page waits for the state or for Stop's halt to be lifted, it let a double
+  // click start two runs side by side, both sending input.
+  const startHalt = between('const haltReply = await backend("/session/state")', 'backend("/session/resume", { reason: STOP_HALT })');
+  check("▶ Start keeps a second click out while it asks for the halt state and lifts Stop's halt",
+    !!startHalt && /if \(haltProblem\) \{\s*startingRef\.current = false;[^}]*return;\s*\}/.test(startHalt)
+      && !/startingRef\.current = false/.test(startHalt.replace(/if \(haltProblem\) \{[^}]*\}/, "")),
+    show(startHalt.slice(0, 300)));
+  // A restart click the model picked that met a halt was never sent: counted as
+  // a failed attempt, three of them ended the session, on exactly the games with
+  // no plugin, which only have this way to restart.
+  const restart = between("const attemptRestart = useCallback(", "const testSolver = useCallback(");
+  const afterClick = restart.slice(restart.indexOf("await executeTool(clickAct.tool"));
+  check("a restart click the model picked that met a halt is not counted as an attempt",
+    /^await executeTool\(clickAct\.tool[^;]*;\s*if \(metHalt\((\w+)\)\) \{\s*attempt--;\s*continue;\s*\}/.test(afterClick)
+      && afterClick.indexOf("metHalt(") < afterClick.indexOf("verify(")
+      && /if \(!await waitWhileHalted\(\)\) return \{ ok: false \};/.test(restart.slice(0, restart.indexOf("await executeTool(clickAct.tool"))),
+    show(afterClick.slice(0, 200)));
+  const executeTool = between("const executeTool = useCallback(", "toolName === \"observe_screen\"");
+  check("executeTool marks a halted action's tool result", /return markHalted\(toolResult\(haltedToolText\(res\)\)\);/.test(executeTool),
+    show(executeTool.slice(executeTool.indexOf("const halted"), executeTool.indexOf("const halted") + 160)));
+
+  // In executeTool, every input the model sends is checked for a halt before the
+  // screen is watched for a change or a no-op is counted.
+  const tools = between("const executeTool = useCallback(", 'toolName === "update_memory"');
+  const unchecked = [...tools.matchAll(/backend\("\/(mouse|keyboard|gamepad)\/[a-z]+"/g)].map(m => {
+    const rest = tools.slice(m.index + m[0].length);
+    const next = rest.search(/waitChange\(|noOpStreakRef|toolName === /);
+    return /isHaltReply\(/.test(next < 0 ? rest : rest.slice(0, next)) ? null : context(code.indexOf(tools) + m.index);
+  }).filter(Boolean);
+  const inputs = [...tools.matchAll(/backend\("\/(mouse|keyboard|gamepad)\/[a-z]+"/g)].length;
+  check(`every input the model sends is checked for a halt before a no-op could be counted (${inputs} calls)`,
+    inputs >= 15 && !unchecked.length, unchecked.length ? unchecked.join("  |  ") : `found ${inputs}, expected at least 15`);
 }
 
 // ── Failed model requests ─────────────────────────────────────────────────────
@@ -1519,8 +1660,27 @@ if (agent) {
         !relayLocked.hung && relayLocked.e?.verdict?.kind === "fatal" && relayLocked.e.verdict.reason === "backend-refused" &&
           relayLocked.calls === 1 && headerOf(relayLocked.sent[0], "X-Agent-Token") === token && /reload/i.test(relayLocked.e.verdict.userText),
         show({ verdict: relayLocked.e?.verdict, calls: relayLocked.calls }));
+
+      // The kill switch: an input route that finds input halted is heard at
+      // once, so the games loop waits from that moment; the halt state's own
+      // routes are read as a state instead.
+      const halts = [];
+      agent.__onInputHalted(r => halts.push(r));
+      respond = () => json(423, { ok: false, halted: true, error: "input is halted by Ctrl+Alt+Pause: ..." });
+      const refusedClick = await agent.__backend("/mouse/click", { x: 1, y: 2 });
+      respond = () => json(200, { ok: true, method: "sendinput", held: 0.3, halted: true });
+      await agent.__backend("/keyboard/hold", { key: "a", duration: 5 });
+      respond = () => json(200, { halted: true, reasons: ["hotkey"], by: "Ctrl+Alt+Pause" });
+      await agent.__backend("/session/state");
+      respond = () => json(200, { ok: true, halted: false });
+      await agent.__backend("/keyboard/press", { key: "a" });
+      check("backend() reports a halted input route at once (a 423, or a hold let go early), and not the state's own routes",
+        halts.length === 2 && halts[0].halted === true && halts[1].held === 0.3 && refusedClick.ok === false && !refusedClick.refused
+          && backendFailure(refusedClick).includes("halted"),
+        show({ halts, refusedClick }));
     } finally {
       agent.__onBackendRefused(null);
+      agent.__onInputHalted(null);
       delete globalThis.__AGENT_TOKEN__;
     }
   } finally {

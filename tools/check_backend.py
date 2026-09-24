@@ -87,6 +87,16 @@ one argument, a Harness, with:
 A route that talks to Ollama goes through the backend's _ollama_open. Answer it
 with with_ollama(h, respond, call) (see the Ollama relay checks).
 
+Every test starts with input not halted and nothing listed as held
+(fresh_input_state). A test that halts input does it inside `with halted(h):`,
+which lifts the halt however the block ends. A new route that sends input is
+declared with @input_route in agent_server.py and needs a body in INPUT_BODIES
+here; a new route that takes anything but GET and sends no input goes in
+NOT_INPUT_ROUTES here. The kill-switch check fails on a route in neither, since
+HaltGate would let it through while input is halted. To halt input after a request got past
+the backend's HaltGate (so the route itself must notice), swap _input_halted for
+halted_after_gate(). What the backend window would print (_announce) is dropped.
+
 Fail with expect(condition, "what went wrong"). An exception fails the test
 too. For example:
 
@@ -96,16 +106,17 @@ too. For example:
         expect(body.get("ok") is False, f"accepted: {body}")
         expect(not h.inputs.calls, f"input reached: {h.inputs.names()}")
 
-Holds (a key, a gamepad button, a stick or trigger held for a duration) wait
-through the backend's _wait and keep time by its _clock. Here _clock is a
+Holds (a key held or pressed, a gamepad button, a stick or trigger held for a
+duration), pointer glides longer than 0.1 s and the gaps between clicks wait
+through the backend's _wait, and holds keep time by its _clock. Here _clock is a
 FakeClock and _wait its wait: waiting returns at once, moves the fake clock on by
 exactly that long, and shows up in h.inputs as Call("wait", (seconds,), {}), in
 order with the key-down and key-up around it. A test that swaps _wait for its own
 calls the harness's through (wait = h.server._wait before swapping), or the hold
 it runs never reaches its deadline; one that wants a sleep to overshoot moves
-h.server._clock.now on as well. Other sleeps are still real (a key press holds for up to
-2 s, typing waits its interval between characters), so keep those short in
-tests. A new input library in agent_server (keyboard, pynput,
+h.server._clock.now on as well. Other sleeps are still real (a native capture
+retries a frame after 20 ms, a clipboard paste waits 0.1 s), so keep those few
+in tests. A new input library in agent_server (keyboard, pynput,
 pydirectinput, win32api, ...) is refused by the import guard until it gets a
 stand-in here: build one with stand_in(name) in import_server, before
 agent_server is imported. Win32 input written with ctypes needs no stand-in to
@@ -520,6 +531,10 @@ def import_server(inputs, tmp):
             server._clock = clock
     server.LOG_DIR = Path(tmp) / "logs"
     server.MEMORY_FILE = Path(tmp) / "game-agent-memory.json"
+    # What the backend window says when input is halted or resumed is not
+    # printed into the checks' output.
+    if hasattr(server, "_announce"):
+        server._announce = lambda text: None
     # The backend refuses every request without its launch token. Importing it
     # sets none (only running it does), so the tests give it theirs.
     if hasattr(server, "TOKEN_HEADER"):
@@ -734,10 +749,11 @@ def refused_before_running(h, status, body, want, label):
     expect(not h.inputs.calls, f"{label}: input reached: {h.inputs.names()}")
 
 
-@test("GET /health answers without the token, and says nothing but ok")
+@test("GET /health answers without the token, and says only ok, whether input is halted and the kill-switch hotkeys")
 def _(h):
     status, body = h.api.get("/health", headers={TOKEN: None})
-    expect(status == 200 and body == {"status": "ok"}, f"status {status}: {body}")
+    # No hotkey is registered while the checks run (AGENT_TEST=1).
+    expect(status == 200 and body == {"status": "ok", "halted": False, "hotkeys": []}, f"status {status}: {body}")
 
 
 @test("Every route but GET /health refuses a request without the token, before it runs")
@@ -913,11 +929,15 @@ def _(h):
 
     status, reply = h.api.post("/mouse/drag", {"x1": 100, "y1": 100, "x2": 300, "y2": 400, "duration": 0})
     expect(status == 200 and reply.get("ok") is True, f"on-screen drag: status {status}: {reply}")
+    # pyautogui.dragTo's own three steps, taken apart so a halt can stop the move.
+    expect([(c.name, c.args[:2], c.kwargs.get("button")) for c in h.inputs.calls]
+           == [("pyautogui.moveTo", (100, 100), None), ("pyautogui.mouseDown", (), "left"),
+               ("pyautogui.moveTo", (300, 400), None), ("pyautogui.mouseUp", (), "left")],
+           f"drag: {h.inputs.calls}")
+    h.inputs.clear()
     status, reply = h.api.post("/mouse/scroll", {"x": 500, "y": 500, "amount": -3})
     expect(status == 200 and reply.get("ok") is True, f"on-screen scroll: status {status}: {reply}")
-    drags = h.inputs.named("pyautogui.dragTo")
     scrolls = h.inputs.named("pyautogui.scroll")
-    expect(len(drags) == 1 and drags[0].args[:2] == (300, 400), f"drags: {drags}")
     expect(len(scrolls) == 1 and scrolls[0].args[:1] == (-3,), f"scrolls: {scrolls}")
 
 
@@ -1011,6 +1031,14 @@ def _(h):
 # before each, and lets go of what it pressed however it ends; typed text is cut
 # to TYPE_TEXT_MAX_CHARS. Each reply's "limit" says what was asked and what was
 # done. _wait is a recorder here, so no hold below really waits.
+
+def halted_after_gate():
+    """An _input_halted that says no once, to HaltGate, and yes from then on:
+    a halt that lands after the request got past the gate, which the route
+    itself has to notice."""
+    answers = iter([False])
+    return lambda: next(answers, True)
+
 
 @contextlib.contextmanager
 def swapped(target, **attrs):
@@ -1124,10 +1152,11 @@ def _(h):
             expect(key_events(h) == [("down", ids["a"])] + [("wait", 0.1)] * 3 + [("up", ids["a"])],
                    f"{method}, halted: {key_events(h)}")
 
-            # Input already halted when the hold is asked for: nothing goes down at
-            # all (pressing and at once letting go would still be a tap).
+            # Input halted by the time the hold starts, after the request got past
+            # HaltGate: nothing goes down at all (pressing and at once letting go
+            # would still be a tap).
             h.inputs.clear()
-            with swapped(h.server, _input_halted=lambda: True):
+            with swapped(h.server, _input_halted=halted_after_gate()):
                 status, body = h.api.post("/keyboard/hold", {"key": "ctrl+a", "duration": 2})
             expect(status == 200 and body.get("ok") is True and body.get("halted") is True and body.get("held") == 0
                    and body.get("limit") == seconds_limit(2, 2, 0, 5), f"{method}, halted before: status {status}: {body}")
@@ -1171,9 +1200,9 @@ def _(h):
                    f"{method}, a release raised: an error other than the fail-safe went past pyautogui: {h.inputs.names()}")
 
             if method == "pyautogui":
-                # The mouse moved into a screen corner during the hold, the operator's
-                # emergency stop: pyautogui's fail-safe refuses every call from then
-                # on, key-ups included, so the key-up goes to its platform layer.
+                # The mouse moved into a screen corner during the hold (someone
+                # trying to stop it): pyautogui's fail-safe refuses every call from
+                # then on, key-ups included, so the key-up goes to its platform layer.
                 def refused_up(k, *args, **kw):
                     h.inputs.record("pyautogui.keyUp", k, *args, **kw)
                     raise h.server.pyautogui.FailSafeException("the mouse is in a screen corner")
@@ -1268,13 +1297,15 @@ def _(h):
 
     # The page sends its timing profile's interval (0.08 s at most); a larger one
     # would stretch 300 characters over many minutes.
-    for given, used in ((0.03, 0.03), (10, h.server.TYPE_INTERVAL_MAX_S), (-1, 0.0),
-                        (float("inf"), h.server.TYPE_INTERVAL_MAX_S), (float("nan"), 0.0)):
+    # Typed a few characters at a time (each piece about HOLD_STEP_S long), so a
+    # halt can stop the rest: at 0.2 s apart, one at a time.
+    for given, used, pieces in ((0.03, 0.03, ["hi"]), (10, h.server.TYPE_INTERVAL_MAX_S, ["h", "i"]), (-1, 0.0, ["hi"]),
+                                (float("inf"), h.server.TYPE_INTERVAL_MAX_S, ["h", "i"]), (float("nan"), 0.0, ["hi"])):
         h.inputs.clear()
         status, body = h.api.post("/keyboard/type", {"text": "hi", "interval": given})
         typed = h.inputs.named("pyautogui.typewrite")
-        expect(body.get("ok") is True and len(typed) == 1 and typed[0].kwargs.get("interval") == used,
-               f"interval {given}: {body}; typed {typed}")
+        expect(body.get("ok") is True and [c.args[0] for c in typed] == pieces
+               and all(c.kwargs.get("interval") == used for c in typed), f"interval {given}: {body}; typed {typed}")
     expect(h.server.TYPE_INTERVAL_MAX_S * most <= 60, f"300 characters can take {h.server.TYPE_INTERVAL_MAX_S * most} s")
 
 
@@ -1344,14 +1375,14 @@ def _(h):
             status, reply = h.api.post(route, {**body, "duration": 2})
         expect(reply.get("ok") is False and pad_events()[-2:] == [rest, ("update",)], f"{route}, a step raised: {reply}; {pad_events()}")
 
-    # While input is halted, a button is not pressed and a stick or trigger is not
-    # moved, with or without a duration.
+    # Once input is halted (here after the request got past HaltGate), a button
+    # is not pressed and a stick or trigger is not moved, with or without a duration.
     for route, body in (("/gamepad/button", {"button": "a", "hold": 1}),
                         ("/gamepad/stick", {"stick": "left", "x": 1, "y": 1, "duration": 0}),
                         ("/gamepad/stick", {"stick": "left", "x": 1, "y": 1, "duration": 2}),
                         ("/gamepad/trigger", {"trigger": "left", "value": 1, "duration": 0})):
         h.inputs.clear()
-        with swapped(h.server, _input_halted=lambda: True):
+        with swapped(h.server, _input_halted=halted_after_gate()):
             status, reply = h.api.post(route, body)
         expect(status == 200 and reply.get("ok") is True and reply.get("halted") is True and reply.get("held") == 0,
                f"{route} {body}, halted before: status {status}: {reply}")
@@ -1372,6 +1403,448 @@ def _(h):
         expect(status == 200 and reply.get("ok") is True
                and reply.get("limit") == {"requested": shown, "applied": applied, "min": low, "max": 5, "unit": "s", "clamped": True}
                and abs(sum(steps) - applied) < 1e-6, f"{route} {field} {value}: status {status}: {reply}; waited {steps}")
+
+
+# ── Kill switch ──────────────────────────────────────────────────────────────
+# The mouse in a screen corner only ever stopped pyautogui's own calls: keys go
+# out through SendInput and the gamepad through vgamepad, and ■ Stop only stopped
+# the page asking for more. Input now has a halt flag, set by a hotkey, the
+# page's Stop or POST /session/halt: while it is set every input route refuses
+# with 423, whatever is held is let go at once, a hold or glide under way stops
+# within a step, and only POST /session/resume lifts it.
+
+# A body each input route accepts, so a route the gate wrongly let through would
+# really send input, and the check would see it.
+INPUT_BODIES = {
+    "/mouse/move": {"x": 100, "y": 100, "duration": 0},
+    "/mouse/click": {"x": 100, "y": 100, "move_duration": 0},
+    "/mouse/drag": {"x1": 100, "y1": 100, "x2": 200, "y2": 200, "duration": 0},
+    "/mouse/scroll": {"x": 100, "y": 100, "amount": -1},
+    "/keyboard/press": {"key": "a", "hold": 0},
+    "/keyboard/hold": {"key": "a", "duration": 0.1},
+    "/keyboard/type": {"text": "hi", "interval": 0},
+    "/gamepad/button": {"button": "a", "hold": 0.02},
+    "/gamepad/stick": {"stick": "left", "x": 1, "y": 0, "duration": 0},
+    "/gamepad/trigger": {"trigger": "right", "value": 1, "duration": 0},
+    "/game/attach": {"process": "game.exe"},
+    "/game/speed": {"speed": 0},
+}
+
+
+# Every route that takes anything but GET and sends no input, each named, so that
+# a new route is put on one side or the other on purpose. Going by its path would
+# miss one that sends input from anywhere else (a route that brings a window to
+# the front for a game with no plugin, say), and HaltGate would let it through.
+NOT_INPUT_ROUTES = {
+    "/session/halt", "/session/resume",    # the kill switch itself
+    "/log/append", "/log/snapshot",        # files under logs/
+    "/memory/{game_key}",                  # game-agent-memory.json (POST and DELETE)
+    "/llm/ollama", "/config/ollama-base",  # the model relay, and its server for the next start
+    "/capture/select",                     # which screen region is captured; no window is moved or focused
+    "/game/detach",                        # sets the game back to normal speed, as a halt does
+}
+
+
+def writing_routes(h):
+    """Every route that takes anything but GET (a GET sends no input: HaltGate
+    only looks at POST)."""
+    return sorted({route.path for route in h.server.app.routes
+                   if set(getattr(route, "methods", None) or ()) - {"GET", "HEAD"}})
+
+
+def input_routes_in_app(h):
+    """Every route that takes anything but GET and is not in NOT_INPUT_ROUTES:
+    the ones that must be declared with @input_route."""
+    return sorted(set(writing_routes(h)) - NOT_INPUT_ROUTES)
+
+
+@contextlib.contextmanager
+def halted(h, reason="page"):
+    """Input halted through POST /session/halt for a with block, and lifted after
+    it however the block ends."""
+    status, body = h.api.post("/session/halt", {"reason": reason})
+    expect(status == 200 and body.get("ok") is True and body.get("halted") is True,
+           f"POST /session/halt: status {status}: {body}")
+    try:
+        yield body
+    finally:
+        h.server.resume_input()
+
+
+@test("While input is halted every input route refuses with 423 before any input, and after Resume they work again")
+def _(h):
+    declared = input_routes_in_app(h)
+    listed = sorted(h.server.INPUT_ROUTES)
+    expect(declared == listed, f"neither @input_route nor in NOT_INPUT_ROUTES here: {sorted(set(declared) - set(listed))}; "
+                               f"@input_route but not found: {sorted(set(listed) - set(declared))}")
+    expect(NOT_INPUT_ROUTES <= set(writing_routes(h)),
+           f"NOT_INPUT_ROUTES names routes the backend no longer has: {sorted(NOT_INPUT_ROUTES - set(writing_routes(h)))}")
+    expect(sorted(INPUT_BODIES) == declared, f"INPUT_BODIES here needs a body for: {sorted(set(declared) - set(INPUT_BODIES))}")
+
+    with halted(h) as state:
+        expect(state.get("reasons") == ["page"] and state.get("by") == "the agent page" and isinstance(state.get("since"), str),
+               f"POST /session/halt: {state}")
+        h.inputs.clear()
+        for path in declared:
+            status, body = h.api.post(path, INPUT_BODIES[path])
+            expect(status == 423 and body.get("ok") is False and body.get("halted") is True
+                   and "Resume" in body.get("error", ""), f"{path} while halted: status {status}: {body}")
+        expect(not h.inputs.calls, f"input reached while halted: {h.inputs.names()}")
+        # A request without the token is refused for that, and learns nothing of the halt.
+        status, body = h.api.post("/mouse/click", INPUT_BODIES["/mouse/click"], headers={TOKEN: None})
+        expect(status == 401 and "halted" not in body, f"no token while halted: status {status}: {body}")
+        # What sends no input still answers: the screen, the state, and letting the game run.
+        for method, path, body in (("GET", "/screen/info", None), ("GET", "/session/state", None),
+                                   ("POST", "/game/detach", {}), ("POST", "/log/append", {"session": "halt-check", "lines": ["x"]})):
+            status, reply = h.api.request(method, path, body)
+            expect(status == 200, f"{method} {path} while halted: status {status}: {reply}")
+        status, reply = h.api.get("/session/state")
+        expect(reply.get("halted") is True and reply.get("reasons") == ["page"], f"GET /session/state: {reply}")
+        status, reply = h.api.get("/health", headers={TOKEN: None})
+        expect(status == 200 and reply.get("halted") is True, f"GET /health while halted: status {status}: {reply}")
+
+        status, reply = h.api.post("/session/resume", {})
+        expect(status == 200 and reply.get("ok") is True and reply.get("halted") is False and reply.get("reasons") == []
+               and reply.get("since") is None, f"POST /session/resume: status {status}: {reply}")
+        h.inputs.clear()
+        status, body = h.api.post("/mouse/click", INPUT_BODIES["/mouse/click"])
+        expect(status == 200 and body.get("ok") is True and len(h.inputs.named("pyautogui.click")) == 1,
+               f"a click after Resume: status {status}: {body}; {h.inputs.names()}")
+
+
+@test("A halt lets go at once of every key held, from another request, and the hold under way stops within a step")
+def _(h):
+    for method, ids, patches in key_paths(h):
+        with swapped(h.server, **patches):
+            # The hold waits at its third step until the halt has been sent from
+            # another request, as the page's Stop or a hotkey would send it.
+            wait = h.server._wait
+            third_step, go_on = threading.Event(), threading.Event()
+
+            def blocking_wait(seconds):
+                wait(seconds)
+                if len(h.inputs.named("wait")) == 3:
+                    third_step.set()
+                    go_on.wait(10)
+
+            result = {}
+            holder = Api(h.api.base, h.api.headers)
+            h.inputs.clear()
+            with swapped(h.server, _wait=blocking_wait):
+                thread = threading.Thread(target=lambda: result.update(
+                    reply=holder.post("/keyboard/hold", {"key": "ctrl+a", "duration": 5})))
+                thread.start()
+                try:
+                    expect(third_step.wait(10), f"{method}: the hold never reached its third step: {key_events(h)}")
+                    status, halt = h.api.post("/session/halt", {"reason": "page"})
+                    at_halt = key_events(h)
+                finally:
+                    go_on.set()
+                    thread.join(10)
+            h.server.resume_input()
+            down = [("down", ids["ctrl"]), ("down", ids["a"])] + [("wait", 0.1)] * 3
+            up = [("up", ids["a"]), ("up", ids["ctrl"])]
+            # The halt itself let both keys go while the hold was still waiting...
+            expect(status == 200 and at_halt == down + up and len(halt.get("letGo", {}).get("keys", [])) == 2,
+                   f"{method}: when the halt answered: {at_halt}; {halt}")
+            # ...and the hold, seeing the halt at its next step, stopped and let
+            # them go again (a key-up for a key that is up does nothing).
+            status, body = result.get("reply", (None, {}))
+            expect(status == 200 and body.get("ok") is True and body.get("halted") is True and abs(body.get("held", 0) - 0.3) < 1e-6,
+                   f"{method}: the hold's reply: {result}")
+            expect(key_events(h) == down + up + up, f"{method}: {key_events(h)}")
+            expect(not h.server._held, f"{method}: still listed as held: {h.server._held}")
+
+    # The gamepad goes back to rest and a slowed game to normal speed.
+    status, body = h.api.post("/gamepad/button", {"button": "a", "hold": 0.02})  # the pad exists from here on
+    expect(body.get("ok") is True, f"gamepad button: {body}")
+    client = sys.modules["xspeedhack"].Client(process_id=1234)
+    with swapped(h.server, _speed_client=client):
+        h.inputs.clear()
+        with halted(h) as state:
+            names = h.inputs.names()
+    expect(names == ["vgamepad.reset", "vgamepad.update", "xspeedhack.set_speed"]
+           and h.inputs.named("xspeedhack.set_speed")[0].args == (1.0,), f"on halt: {h.inputs.calls}")
+    expect(state.get("letGo") == {"keys": [], "gamepad": True, "speed": True, "errors": []}, f"letGo: {state.get('letGo')}")
+
+
+@test("A halt part-way through a pointer glide, a drag, clicks, a key press or typing stops the rest, and a drag lets its button go")
+def _(h):
+    def after_steps(n):
+        return lambda: len(h.inputs.named("wait")) >= n
+
+    # A one-second glide goes in pyautogui's own 0.05 s steps, ending on the spot...
+    status, body = h.api.post("/mouse/move", {"x": 1000, "y": 500, "duration": 1})
+    moves = [c.args for c in h.inputs.named("pyautogui.moveTo")]
+    steps = [c.args[0] for c in h.inputs.named("wait")]
+    expect(body.get("ok") is True and len(moves) == 20 and moves[-1] == (1000, 500) and abs(sum(steps) - 1) < 1e-6,
+           f"a 1 s glide: {body}; {len(moves)} moves ending {moves[-1:]}, waited {sum(steps)}")
+    # ...is cut to five seconds...
+    h.inputs.clear()
+    h.api.post("/mouse/move", {"x": 1000, "y": 500, "duration": 600})
+    expect(abs(sum(c.args[0] for c in h.inputs.named("wait")) - h.server.MOUSE_MOVE_MAX_S) < 1e-6,
+           f"a 600 s glide waited {sum(c.args[0] for c in h.inputs.named('wait'))} s")
+    # ...and stops where it was when input is halted.
+    h.inputs.clear()
+    with swapped(h.server, _input_halted=after_steps(5)):
+        status, body = h.api.post("/mouse/move", {"x": 1000, "y": 500, "duration": 1})
+    moves = [c.args for c in h.inputs.named("pyautogui.moveTo")]
+    expect(body.get("ok") is False and body.get("halted") is True and len(moves) == 4 and moves[-1] != (1000, 500),
+           f"a glide halted after 5 steps: {body}; moves {moves}")
+
+    # A drag halted part-way: the halt lets the button go, the glide stops, and
+    # the drag lets it go again.
+    wait = h.server._wait
+
+    def halt_at_third_step(seconds):
+        wait(seconds)
+        if len(h.inputs.named("wait")) == 3:
+            h.server.halt_input("page", "the check")
+
+    h.inputs.clear()
+    with swapped(h.server, _wait=halt_at_third_step):
+        status, body = h.api.post("/mouse/drag", {"x1": 100, "y1": 100, "x2": 300, "y2": 300, "duration": 1})
+    h.server.resume_input()
+    calls = [c.name.split(".")[-1] for c in h.inputs.calls if c.name.startswith("pyautogui.") and c.name != "pyautogui.position"]
+    expect(body.get("ok") is False and body.get("halted") is True, f"drag halted: {body}")
+    expect(calls == ["moveTo", "mouseDown", "moveTo", "moveTo", "mouseUp", "mouseUp"], f"drag halted: {calls}")
+    expect(not h.server._held, f"still listed as held: {h.server._held}")
+
+    # A triple click halted after the first click makes no more.
+    h.inputs.clear()
+    with swapped(h.server, _input_halted=after_steps(1)):
+        status, body = h.api.post("/mouse/click", {"x": 100, "y": 100, "clicks": 3, "move_duration": 0})
+    expect(body.get("ok") is False and body.get("halted") is True and body.get("clicked") == 1
+           and len(h.inputs.named("pyautogui.click")) == 1, f"clicks halted: {body}; {h.inputs.names()}")
+    h.inputs.clear()
+    status, body = h.api.post("/mouse/click", {"x": 100, "y": 100, "clicks": 3, "move_duration": 0})
+    expect(body.get("ok") is True and len(h.inputs.named("pyautogui.click")) == 3
+           and [c.args[0] for c in h.inputs.named("wait")] == [h.server.CLICK_INTERVAL_S] * 2, f"a triple click: {h.inputs.calls}")
+
+    # A key press is a short hold: halted part-way, it lets the key go at once.
+    for method, ids, patches in key_paths(h):
+        h.inputs.clear()
+        with swapped(h.server, _input_halted=after_steps(2), **patches):
+            status, body = h.api.post("/keyboard/press", {"key": "a", "hold": 1})
+        expect(body.get("ok") is False and body.get("halted") is True and body.get("method") == method,
+               f"{method}, a press halted: {body}")
+        expect(key_events(h) == [("down", ids["a"]), ("wait", 0.1), ("wait", 0.1), ("up", ids["a"])],
+               f"{method}, a press halted: {key_events(h)}")
+
+    # Typing goes a piece at a time (two characters at 0.05 s apart); halted
+    # after the second piece, the rest is not typed, and the reply says how much was.
+    h.inputs.clear()
+    with swapped(h.server, _input_halted=lambda: len(h.inputs.named("pyautogui.typewrite")) >= 2):
+        status, body = h.api.post("/keyboard/type", {"text": "abcdefghij", "interval": 0.05})
+    typed = [c.args[0] for c in h.inputs.named("pyautogui.typewrite")]
+    expect(body.get("ok") is False and body.get("halted") is True and body.get("typed") == 4
+           and body.get("limit", {}).get("applied") == 10 and typed == ["ab", "cd"], f"typing halted: {body}; typed {typed}")
+
+
+@test("A stick, a trigger or the game speed a request set just as input was halted is put back, not left for the halt")
+def _(h):
+    def halted_after(n):
+        """No to the first n askers (HaltGate, then the route), yes from then on:
+        a halt that lands while the route is setting the value."""
+        answers = iter([False] * n)
+        return lambda: next(answers, True)
+
+    for path, body, setter, moved, rest in (
+            ("/gamepad/stick", {"stick": "left", "x": 1, "y": 0, "duration": 0}, "vgamepad.left_joystick_float",
+             {"x_value_float": 1.0, "y_value_float": 0.0}, {"x_value_float": 0.0, "y_value_float": 0.0}),
+            ("/gamepad/trigger", {"trigger": "right", "value": 1, "duration": 0}, "vgamepad.right_trigger_float",
+             {"value_float": 1.0}, {"value_float": 0.0})):
+        # With duration 0 it stays where it was put...
+        h.inputs.clear()
+        status, reply = h.api.post(path, body)
+        sets = [c.kwargs for c in h.inputs.named(setter)]
+        expect(reply.get("ok") is True and reply.get("halted") is False and sets == [moved], f"{path}: {reply}; {sets}")
+        # ...unless input was halted meanwhile: the halt's gamepad reset may have
+        # come first, so the route puts it back to rest itself.
+        h.inputs.clear()
+        with swapped(h.server, _input_halted=halted_after(2)):
+            status, reply = h.api.post(path, body)
+        sets = [c.kwargs for c in h.inputs.named(setter)]
+        expect(status == 200 and reply.get("ok") is True and reply.get("halted") is True and reply.get("held") == 0.0
+               and sets == [moved, rest], f"{path} halted while set: status {status}: {reply}; {sets}")
+
+    client = sys.modules["xspeedhack"].Client(process_id=1234)
+    with swapped(h.server, _speed_client=client, SPEEDHACK_AVAILABLE=True):
+        h.inputs.clear()
+        status, reply = h.api.post("/game/speed", {"speed": 0})
+        speeds = [c.args[0] for c in h.inputs.named("xspeedhack.set_speed")]
+        expect(reply == {"ok": True, "speed": 0} and speeds == [0.0], f"pause-to-think's speed 0: {reply}; {speeds}")
+        # Pause-to-think's speed 0, halted as it went out: the game is set back
+        # to normal speed, or it would stay frozen for the whole halt.
+        h.inputs.clear()
+        with swapped(h.server, _input_halted=halted_after(2)):
+            status, reply = h.api.post("/game/speed", {"speed": 0})
+        speeds = [c.args[0] for c in h.inputs.named("xspeedhack.set_speed")]
+        expect(status == 200 and reply.get("ok") is False and reply.get("halted") is True and speeds == [0.0, 1.0],
+               f"speed 0 halted as it went out: status {status}: {reply}; speeds {speeds}")
+        # Halted after the gate but before the call: nothing is sent at all.
+        h.inputs.clear()
+        with swapped(h.server, _input_halted=halted_after_gate()):
+            status, reply = h.api.post("/game/speed", {"speed": 0})
+        expect(reply.get("halted") is True and not h.inputs.named("xspeedhack.set_speed"),
+               f"speed 0 halted after the gate: {reply}; {h.inputs.calls}")
+
+
+@test("The agent never presses a kill-switch chord: /keyboard/press and /keyboard/hold refuse one before any input")
+def _(h):
+    # Windows takes an injected chord for the operator's, so the agent pressing
+    # one (told to by the screen, say) would halt its own input until Resume.
+    chords = ("ctrl+alt+shift+h", "Ctrl + Alt + Shift + H", "h+shift+alt+ctrl", "ctrlright+altleft+shiftright+h",
+              "altright+shift+h", "ctrl+alt+pause", "ctrl+alt+break", "alt+ctrl+pause", "ctrl+alt+shift+pause")
+    for method, ids, patches in key_paths(h):
+        with swapped(h.server, **patches):
+            for key in chords:
+                for path, body in (("/keyboard/press", {"key": key, "hold": 0}),
+                                   ("/keyboard/hold", {"key": key, "duration": 0.1})):
+                    h.inputs.clear()
+                    status, reply = h.api.post(path, body)
+                    expect(status == 200 and reply.get("ok") is False and "kill switch" in reply.get("error", "")
+                           and not h.inputs.calls, f"{method}, {path} {key!r}: status {status}: {reply}; {h.inputs.names()}")
+            # Near misses are keys like any other.
+            for key in ("ctrl+alt+h", "ctrl+shift+h", "alt+shift+h", "ctrl+alt+a", "ctrl+pause", "shift+pause", "h"):
+                h.inputs.clear()
+                status, reply = h.api.post("/keyboard/press", {"key": key, "hold": 0})
+                expect(reply.get("ok") is True and h.inputs.calls, f"{method}, {key!r}: {reply}; {h.inputs.names()}")
+
+    # A chord made with keys another request is holding down is refused too.
+    held_ways = [("key", ("ctrl", "alt"))]
+    if h.server.SENDINPUT_OK:
+        held_ways.insert(0, ("scan", (0x1D, 0x38)))
+    for kind, held in held_ways:
+        try:
+            for key in held:
+                h.server._pressing(kind, key, lambda: None)
+            h.inputs.clear()
+            status, reply = h.api.post("/keyboard/press", {"key": "shift+h", "hold": 0})
+            expect(reply.get("ok") is False and "Ctrl+Alt+Shift+H" in reply.get("error", "") and not h.inputs.calls,
+                   f"shift+h while {kind} {held} are held: {reply}; {h.inputs.names()}")
+            status, reply = h.api.post("/keyboard/press", {"key": "h", "hold": 0})
+            expect(reply.get("ok") is True, f"h while {kind} {held} are held: {reply}")
+        finally:
+            for key in held:
+                h.server._let_go(kind, key)
+
+
+@test("The kill-switch hotkeys: two chords, without repeat, that halt input and never resume it; none registered in the checks")
+def _(h):
+    s = h.server
+    expect([name for name, _, _ in s.HALT_HOTKEYS] == ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"], f"chords: {s.HALT_HOTKEYS}")
+    before = {k: list(v) for k, v in s.HOTKEYS.items()}
+    try:
+        # Registering a global hotkey is a side effect on whatever machine runs
+        # the checks, so the backend skips it under AGENT_TEST=1.
+        got = s.start_halt_hotkeys()
+        expect(got["registered"] == [] and "AGENT_TEST" in " ".join(got["problems"])
+               and not [t for t in threading.enumerate() if t.name == "kill-switch-hotkeys"], f"under AGENT_TEST: {got}")
+
+        class FakeWindows:
+            """RegisterHotKey and the message loop, stood in for."""
+
+            def __init__(self, taken=(), pressed=()):
+                self.registered, self.taken, self.pressed = [], set(taken), list(pressed)
+
+            def register(self, hotkey_id, modifiers, vk):
+                self.registered.append((hotkey_id, modifiers, vk))
+                return s.ERROR_HOTKEY_ALREADY_REGISTERED if vk in self.taken else 0
+
+            def next_hotkey(self):
+                return self.pressed.pop(0) if self.pressed else None
+
+        # Ctrl+Alt+Pause is registered as Break (what Pause sends with Ctrl held,
+        # so the one that counts) and as Pause, and with Shift as well (the chord
+        # pressed while the agent holds Shift); Ctrl+Alt+Shift+H as H; all
+        # without key repeat. Pressing the chord (as Break, id 1, twice) halts
+        # input, and twice is harmless.
+        fake = FakeWindows(pressed=[1, 1])
+        ready = threading.Event()
+        s._hotkey_loop(ready, fake)
+        state = s.halt_state()
+        ctrl_alt = s.MOD_CONTROL | s.MOD_ALT | s.MOD_NOREPEAT
+        shift = s.MOD_SHIFT
+        expect(ready.is_set() and sorted((m, vk) for _, m, vk in fake.registered)
+               == sorted([(ctrl_alt, 0x13), (ctrl_alt, 0x03), (ctrl_alt | shift, 0x13), (ctrl_alt | shift, 0x03),
+                          (ctrl_alt | shift, ord("H"))]), f"registered: {fake.registered}")
+        expect(s.HOTKEYS == {"registered": ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"], "problems": []}, f"HOTKEYS: {s.HOTKEYS}")
+        expect(state["halted"] is True and state["reasons"] == ["hotkey"] and state["by"] == "Ctrl+Alt+Pause", f"after the chord: {state}")
+        status, body = h.api.get("/health", headers={TOKEN: None})
+        expect(body == {"status": "ok", "halted": True, "hotkeys": ["Ctrl+Alt+Pause", "Ctrl+Alt+Shift+H"]}, f"/health: {body}")
+        s.resume_input()
+
+        # A chord another program holds is reported, and the other still works.
+        fake = FakeWindows(taken={ord("H")}, pressed=[5])  # 5 is the H chord's id, not registered
+        s._hotkey_loop(threading.Event(), fake)
+        expect(s.HOTKEYS == {"registered": ["Ctrl+Alt+Pause"], "problems": ["Ctrl+Alt+Shift+H is taken by another program"]}
+               and not s._input_halted(), f"one chord taken: {s.HOTKEYS}; halted {s._input_halted()}")
+        # Registered only with Shift added is not the chord as people press it.
+        fake = FakeWindows(taken={0x13, 0x03})
+        fake.register = lambda hotkey_id, modifiers, vk: (
+            fake.registered.append((hotkey_id, modifiers, vk))
+            or (s.ERROR_HOTKEY_ALREADY_REGISTERED if vk in (0x13, 0x03) and not modifiers & s.MOD_SHIFT else 0))
+        s._hotkey_loop(threading.Event(), fake)
+        expect(s.HOTKEYS == {"registered": ["Ctrl+Alt+Shift+H"], "problems": ["Ctrl+Alt+Pause is taken by another program"]},
+               f"Ctrl+Alt+Pause taken, Ctrl+Alt+Shift+Pause free: {s.HOTKEYS}")
+        # Only Ctrl+Alt+Break taken: Pause itself registered with Ctrl+Alt, but
+        # most keyboards never send Pause with Ctrl down, so the chord is not
+        # named as working. From a keyboard that does send it (id 2), it still halts.
+        fake = FakeWindows(pressed=[2])
+        fake.register = lambda hotkey_id, modifiers, vk: (
+            fake.registered.append((hotkey_id, modifiers, vk))
+            or (s.ERROR_HOTKEY_ALREADY_REGISTERED if vk == 0x03 and not modifiers & s.MOD_SHIFT else 0))
+        s._hotkey_loop(threading.Event(), fake)
+        expect(s.HOTKEYS == {"registered": ["Ctrl+Alt+Shift+H"], "problems": ["Ctrl+Alt+Pause is taken by another program"]}
+               and (2, s.MOD_CONTROL | s.MOD_ALT | s.MOD_NOREPEAT, 0x13) in fake.registered,
+               f"Ctrl+Alt+Break taken, Ctrl+Alt+Pause free: {s.HOTKEYS}; {fake.registered}")
+        expect(s._input_halted() and s.halt_state()["by"] == "Ctrl+Alt+Pause", f"Pause pressed with Ctrl+Alt: {s.halt_state()}")
+        s.resume_input()
+
+        # The handler the thread calls halts, and pressing a chord again while
+        # halted does not resume.
+        for _ in range(2):
+            s._on_hotkey("Ctrl+Alt+Shift+H")
+            expect(s._input_halted() and s.halt_state()["by"] == "Ctrl+Alt+Shift+H", f"after the handler: {s.halt_state()}")
+    finally:
+        s.HOTKEYS.update(before)
+    expect(not [c for c in h.inputs.calls if c.name.startswith("user32.")], f"reached Windows: {h.inputs.names()}")
+
+
+@test("Stop's halt is lifted by Stop's own resume, a hotkey's only by Resume, and only the page's reasons are accepted")
+def _(h):
+    status, body = h.api.post("/session/halt", {"reason": "stop"})
+    expect(status == 200 and body.get("reasons") == ["stop"] and body.get("by") == "■ Stop on the agent page", f"Stop's halt: {body}")
+    status, body = h.api.post("/session/resume", {"reason": "stop"})
+    expect(body.get("halted") is False, f"Stop's own resume: {body}")
+
+    # A hotkey pressed while Stop's halt is on keeps input halted when the run ends.
+    h.api.post("/session/halt", {"reason": "stop"})
+    since = h.server.halt_state()["since"]
+    h.server._on_hotkey("Ctrl+Alt+Pause")
+    status, body = h.api.post("/session/resume", {"reason": "stop"})
+    expect(body.get("halted") is True and body.get("reasons") == ["hotkey"] and body.get("by") == "Ctrl+Alt+Pause"
+           and body.get("since") == since, f"Stop's resume after a hotkey: {body}")
+    status, body = h.api.post("/mouse/move", INPUT_BODIES["/mouse/move"])
+    expect(status == 423, f"still halted: status {status}: {body}")
+    status, body = h.api.post("/session/resume", {})
+    expect(body.get("halted") is False and body.get("reasons") == [], f"Resume: {body}")
+
+    # Stop pressed after a hotkey: the page is still told the hotkey halted input,
+    # since that is the halt that stays.
+    h.server._on_hotkey("Ctrl+Alt+Shift+H")
+    status, body = h.api.post("/session/halt", {"reason": "stop"})
+    expect(body.get("reasons") == ["hotkey", "stop"] and body.get("by") == "Ctrl+Alt+Shift+H", f"Stop after a hotkey: {body}")
+    h.server.resume_input()
+
+    # Only the hotkey thread halts as a hotkey, and there is no reason to resume
+    # that the page does not have.
+    for path, body in (("/session/halt", {"reason": "hotkey"}), ("/session/halt", {"reason": "anything"}),
+                       ("/session/resume", {"reason": "hotkey"})):
+        status, reply = h.api.post(path, body)
+        expect(status == 422, f"{path} {body}: status {status}: {reply}")
+    expect(not h.server._input_halted(), "a refused request halted input")
 
 
 # ── Memory: outcome names ────────────────────────────────────────────────────
@@ -1839,6 +2312,15 @@ def _(h):
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 
+def fresh_input_state(server):
+    """Each test starts with input not halted and nothing held, whatever the one
+    before it left behind (a check that failed part-way can leave either)."""
+    if hasattr(server, "resume_input"):
+        server.resume_input()
+    if hasattr(server, "_held"):
+        server._held.clear()
+
+
 def print_raised(check):
     """Report an exception as a FAIL line, so every failure reads the same way."""
     print(f"  FAIL  {check} - raised:")
@@ -1883,6 +2365,7 @@ def main(argv):
             return 1
         try:
             for name, fn in selected:
+                fresh_input_state(server)
                 inputs.clear()
                 api = Api(f"http://127.0.0.1:{port}", DEFAULT_HEADERS)
                 try:

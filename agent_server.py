@@ -16,13 +16,15 @@ import json
 import math
 import re
 import datetime
+import functools
 import hmac
 import ipaddress
 import os
 import secrets
 import socket
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple, get_args
+from typing import Any, Callable, Dict, List, Literal, NamedTuple, Optional, Tuple, get_args
 
 # ── Who may use this server ─────────────────────────────────────────────────────
 # Every route here moves the real mouse, presses real keys, drives the gamepad,
@@ -417,10 +419,34 @@ class BodyReadBeforeRefusal:
         await self.app(scope, tracked_receive, send_once_read)
 
 
+class HaltGate:
+    """Refuse a request to a route that sends input while input is halted (see
+    "Kill switch" below), before the route runs: HTTP 423 with
+    {"ok": false, "halted": true, "error": "..."}. The routes it guards are the
+    ones declared with @input_route, listed in INPUT_ROUTES.
+
+    A request that got past this a moment before the halt is stopped inside its
+    route, which asks _input_halted() before each press, step and click (and, for
+    a stick, a trigger or the game speed, again once it is set, to put it back)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] == "http" and scope["method"] == "POST"
+                and scope["path"] in INPUT_ROUTES and _input_halted()):
+            await JSONResponse(_halted_reply(), status_code=HALT_STATUS)(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
 app = FastAPI(title="Game Agent Backend")
 # No CORS middleware: the page reaches the backend through Vite's proxy, from its
 # own origin, so no other origin ever needs to read a reply. CORS allowed every
 # origin here before, which let any page read the screen through /capture/frame.
+# Added first, so it runs last of these: a request without the token is refused
+# for that, and learns nothing about the halt.
+app.add_middleware(HaltGate)
 app.add_middleware(PageOnly)
 # Added after PageOnly, so it runs before it: a request with a hostile Host is
 # turned away before anything else looks at it.
@@ -443,15 +469,337 @@ def _capabilities():
 
 @app.get("/health")
 def health():
-    # Answers without the token, so it says only that the backend is up. The
-    # screen size and capabilities it used to include are behind the token, at
-    # /screen/info and /capabilities.
-    return {"status": "ok"}
+    # Answers without the token, so it says only that the backend is up, whether
+    # input is halted, and which kill-switch hotkeys it registered, none of which
+    # is worth anything to another site. The screen size and capabilities it used
+    # to include are behind the token, at /screen/info and /capabilities.
+    return {"status": "ok", "halted": _input_halted(), "hotkeys": list(HOTKEYS["registered"])}
 
 
 @app.get("/capabilities")
 def capabilities():
     return _capabilities()
+
+
+# ── Kill switch ────────────────────────────────────────────────────────────────
+# SETUP.md used to say that moving the mouse into a screen corner kills all input.
+# It never did. That is pyautogui's fail-safe, and it stops only pyautogui's own
+# calls: keys go out through SendInput and the gamepad through vgamepad, and
+# neither asks pyautogui anything. ■ Stop only stopped the page asking for more,
+# so a hold, a drag or a line of typing already sent ran to its end. Unattended
+# play on a game nobody has vetted is acceptable only if a person can stop it at
+# once, so input has a halt flag:
+#   - it is set by a global hotkey, Ctrl+Alt+Pause or Ctrl+Alt+Shift+H (many
+#     laptops have no Pause key), which works over most windows but not all (see
+#     "Kill-switch hotkeys"); by the page's ■ Stop; or by POST /session/halt,
+#   - when it is set, every key and mouse button the backend holds down is let
+#     go, the virtual gamepad is put back to rest, and a game slowed by the speed
+#     hack runs at normal speed again,
+#   - while it is set, every route declared with @input_route refuses with HTTP
+#     423 (HaltGate), and a hold, a pointer glide, a run of clicks or a line of
+#     typing already under way stops within HOLD_STEP_S,
+#   - only POST /session/resume clears it. No hotkey resumes, so a stray key
+#     press cannot set the agent going again. The page's Resume button sends it,
+#     and its ■ Stop lifts only the halt Stop itself set, once the run has ended.
+# GET /health says whether input is halted and which hotkeys registered.
+
+HALT_STATUS = 423  # "Locked"
+# Who can halt: a hotkey, the page (POST /session/halt), or the page's ■ Stop.
+HALT_REASONS = ("hotkey", "page", "stop")
+_HALTED_BY = {"page": "the agent page", "stop": "■ Stop on the agent page"}
+
+_halted = threading.Event()
+_halt_lock = threading.Lock()
+_halt_reasons: Dict[str, str] = {}   # reason -> who, for people, oldest first
+_halt_since: Optional[str] = None
+
+
+def _input_halted() -> bool:
+    """Whether injected input has been told to stop. Every hold, pointer glide,
+    run of clicks and line of typing asks this before each press and step."""
+    return _halted.is_set()
+
+
+def _announce(text: str) -> None:
+    """A line in the backend window, with the time (the checks silence it). A
+    window that cannot show a character, or has gone, must not fail a halt."""
+    try:
+        print(f"[{datetime.datetime.now():%H:%M:%S}] {text}", flush=True)
+    except Exception:
+        pass
+
+
+# What the backend has pressed and not let go of yet, so a halt can let go of it
+# at once rather than when the hold notices: (kind, key) -> how to let it go.
+# A hold adds a key before pressing it and takes it out once it is up again; a
+# release that failed stays here, so the next halt tries again.
+_held: Dict[Tuple[str, Any], Callable[[], None]] = {}
+_held_lock = threading.Lock()
+
+
+def _pressing(kind: str, key: Any, release: Callable[[], None]) -> None:
+    with _held_lock:
+        _held[(kind, key)] = release
+
+
+def _let_go(kind: str, key: Any) -> None:
+    with _held_lock:
+        _held.pop((kind, key), None)
+
+
+def _let_go_of_everything() -> Dict[str, Any]:
+    """Let go of every key, button and mouse button the backend holds, put the
+    virtual gamepad back to rest and a slowed game back to normal speed. Each
+    step is tried whatever the others do; what failed is reported, not raised.
+    Letting go of something already up does no harm."""
+    with _held_lock:
+        held = list(_held.items())
+    let_go, errors = [], []
+    for (kind, key), release in reversed(held):
+        try:
+            release()
+            _let_go(kind, key)
+            let_go.append(f"{kind} {key}")
+        except Exception as e:
+            errors.append(f"letting go of {kind} {key}: {e}")
+    gamepad = speed = False
+    if _gamepad is not None:
+        try:
+            _gamepad.reset()
+            _gamepad.update()
+            gamepad = True
+        except Exception as e:
+            errors.append(f"resetting the gamepad: {e}")
+    if _speed_client is not None:
+        try:
+            _speed_client.set_speed(1.0)
+            speed = True
+        except Exception as e:
+            errors.append(f"setting the game back to normal speed: {e}")
+    return {"keys": let_go, "gamepad": gamepad, "speed": speed, "errors": errors}
+
+
+def halt_state() -> Dict[str, Any]:
+    """Whether input is halted, why and since when, and the kill-switch hotkeys."""
+    with _halt_lock:
+        halted = _halted.is_set()
+        reasons = list(_halt_reasons)
+        # Who halted it, for people: the last to, not counting ■ Stop when
+        # someone else did too (Stop's halt lifts itself; theirs is what stays).
+        by = [who for reason, who in _halt_reasons.items() if reason != "stop"] or list(_halt_reasons.values())
+        since = _halt_since
+    return {"halted": halted, "reasons": reasons, "by": by[-1] if by else None, "since": since,
+            "hotkeys": list(HOTKEYS["registered"]), "hotkeyProblems": list(HOTKEYS["problems"])}
+
+
+def halt_input(reason: str, who: str) -> Dict[str, Any]:
+    """Halt injected input, then let go of everything held. The flag goes up
+    first, so nothing is pressed again behind the release. Safe to call again
+    while halted, from any thread: it lets go again."""
+    global _halt_since
+    with _halt_lock:
+        if not _halted.is_set():
+            _halt_since = datetime.datetime.now().isoformat(timespec="seconds")
+        _halt_reasons.pop(reason, None)
+        _halt_reasons[reason] = who
+        _halted.set()
+    let_go = _let_go_of_everything()
+    _announce(f"Input HALTED by {who}: everything held was let go, and no key, click or "
+              f"gamepad input is sent until Resume on the agent page.")
+    for error in let_go["errors"]:
+        _announce(f"  could not finish {error}")
+    return {**halt_state(), "letGo": let_go}
+
+
+def resume_input(reason: Optional[str] = None) -> Dict[str, Any]:
+    """Lift the halt: every reason for it, or with `reason` only that one (the
+    page's ■ Stop lifting its own halt once its run has ended, which leaves a
+    halt someone set by hotkey in place)."""
+    global _halt_since
+    with _halt_lock:
+        was_halted = _halted.is_set()
+        if reason is None:
+            _halt_reasons.clear()
+        else:
+            _halt_reasons.pop(reason, None)
+        if not _halt_reasons:
+            _halted.clear()
+            _halt_since = None
+        lifted = was_halted and not _halted.is_set()
+    if lifted:
+        _announce("Input resumed.")
+    return halt_state()
+
+
+def _halted_reply(**extra) -> Dict[str, Any]:
+    """The reply to input not sent, or not finished, because input is halted."""
+    who = halt_state()["by"] or "the kill switch"
+    return {"ok": False, "halted": True,
+            "error": f"input is halted by {who}: nothing more is sent, and anything held was let go, "
+                     f"until Resume is pressed on the agent page", **extra}
+
+
+class HaltBody(BaseModel):
+    reason: Literal["page", "stop"] = "page"
+
+
+class ResumeBody(BaseModel):
+    # None lifts every halt (the page's Resume button). "stop" lifts only the one
+    # ■ Stop set, once the run has ended.
+    reason: Optional[Literal["page", "stop"]] = None
+
+
+@app.get("/session/state")
+def session_state():
+    return halt_state()
+
+
+@app.post("/session/halt")
+def session_halt(b: HaltBody):
+    return {"ok": True, **halt_input(b.reason, _HALTED_BY[b.reason])}
+
+
+@app.post("/session/resume")
+def session_resume(b: ResumeBody):
+    return {"ok": True, **resume_input(b.reason)}
+
+
+# Every route that moves the mouse, presses a key, drives the gamepad or reaches
+# into the game is declared with @input_route rather than @app.post, which lists
+# it here for HaltGate (tools/check_backend.py fails on one that is not).
+INPUT_ROUTES = set()
+
+
+def input_route(path: str):
+    INPUT_ROUTES.add(path)
+    return app.post(path)
+
+
+# ── Kill-switch hotkeys ────────────────────────────────────────────────────────
+# Windows' RegisterHotKey, on a thread of its own: a hotkey arrives as a message
+# for the thread that registered it, so that thread does nothing but wait for
+# messages. MOD_NOREPEAT: a chord held down halts once, not twenty times a second.
+# What a hotkey does not do, and SETUP.md says so: the window in front still gets
+# Ctrl, Alt and Shift (only the last key, Pause or H, is kept from it); a program
+# in front that reads the keyboard as raw input with RIDEV_NOHOTKEYS, as some
+# games do, turns every such hotkey off while it has focus (Alt+Tab still works,
+# and ■ Stop on the agent page is the way then); and over Remote Desktop the
+# local client takes Ctrl+Alt+Break for itself.
+MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_NOREPEAT = 0x0001, 0x0002, 0x0004, 0x4000
+VK_CANCEL, VK_PAUSE = 0x03, 0x13
+WM_HOTKEY = 0x0312
+ERROR_HOTKEY_ALREADY_REGISTERED = 1409
+# (the chord as people press it, the modifier sets it is registered with, its
+# virtual keys). A hotkey fires only on its exact modifiers, and a key the agent
+# is holding counts: Ctrl+Alt+Pause pressed while the agent holds Shift arrives
+# as Ctrl+Alt+Shift+Pause, so it is registered that way too (Ctrl+Alt+Shift+H
+# has Shift already, and a held Ctrl or Alt changes neither). With Ctrl held
+# down, most keyboards send Pause as Break (VK_CANCEL), so that chord is both.
+# The first modifier set with the first virtual key is the chord as a person
+# presses it, so the chord counts as registered only when that one is: Ctrl+Alt
+# with Pause itself would never fire from such a keyboard.
+HALT_HOTKEYS = (
+    ("Ctrl+Alt+Pause", (MOD_CONTROL | MOD_ALT, MOD_CONTROL | MOD_ALT | MOD_SHIFT), (VK_CANCEL, VK_PAUSE)),
+    ("Ctrl+Alt+Shift+H", (MOD_CONTROL | MOD_ALT | MOD_SHIFT,), (ord("H"),)),
+)
+# Which chords registered, and why any did not (start_halt_hotkeys fills it in).
+HOTKEYS: Dict[str, List[str]] = {"registered": [], "problems": []}
+
+
+def _on_hotkey(chord: str) -> None:
+    """What pressing a kill-switch chord does: halt input. It never resumes."""
+    halt_input("hotkey", chord)
+
+
+class _Win32Hotkeys:
+    """The two Windows calls the hotkey thread makes (the checks stand in for
+    them, so that thread's loop can be run without registering anything)."""
+
+    def __init__(self):
+        import ctypes
+        from ctypes import wintypes
+        self._ctypes = ctypes
+        self._user32 = ctypes.WinDLL("user32", use_last_error=True)
+        self._user32.RegisterHotKey.argtypes = (wintypes.HWND, ctypes.c_int, wintypes.UINT, wintypes.UINT)
+        self._user32.RegisterHotKey.restype = wintypes.BOOL
+        self._user32.GetMessageW.argtypes = (ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT)
+        self._user32.GetMessageW.restype = wintypes.BOOL
+        self._msg = wintypes.MSG()
+
+    def register(self, hotkey_id: int, modifiers: int, vk: int) -> int:
+        """0 once registered, else the Windows error code."""
+        if self._user32.RegisterHotKey(None, hotkey_id, modifiers, vk):
+            return 0
+        return self._ctypes.get_last_error() or -1
+
+    def next_hotkey(self) -> Optional[int]:
+        """Wait for the next hotkey this thread registered, and return its id;
+        None if the thread's message loop has ended."""
+        while self._user32.GetMessageW(self._ctypes.byref(self._msg), None, 0, 0) > 0:
+            if self._msg.message == WM_HOTKEY:
+                return int(self._msg.wParam)
+        return None
+
+
+def _hotkey_loop(ready: threading.Event, api=None) -> None:
+    """Register the kill-switch chords, say which took (HOTKEYS, then `ready`),
+    and halt input each time one is pressed, for as long as the backend runs."""
+    chords: Dict[int, str] = {}
+    registered: List[str] = []
+    problems: List[str] = []
+    try:
+        api = api or _Win32Hotkeys()
+        hotkey_id = 0
+        for name, modifier_sets, keys in HALT_HOTKEYS:
+            as_pressed = -1  # the error registering the chord as people press it; 0 once it took
+            for n, modifiers in enumerate(modifier_sets):
+                for k, vk in enumerate(keys):
+                    hotkey_id += 1
+                    error = api.register(hotkey_id, modifiers | MOD_NOREPEAT, vk)
+                    if not error:
+                        chords[hotkey_id] = name
+                    # The first set with the first key is the chord as people
+                    # press it (see HALT_HOTKEYS); the others only cover a key
+                    # the agent holds, or a keyboard that sends Pause with Ctrl.
+                    if n == 0 and k == 0:
+                        as_pressed = error
+            if not as_pressed:
+                registered.append(name)
+            elif as_pressed == ERROR_HOTKEY_ALREADY_REGISTERED:
+                problems.append(f"{name} is taken by another program")
+            else:
+                problems.append(f"{name} could not be registered (Windows error {as_pressed})")
+    except Exception as e:
+        problems.append(f"the hotkeys could not be set up ({e})")
+    finally:
+        HOTKEYS.update(registered=registered, problems=problems)
+        ready.set()
+    while chords:
+        hotkey_id = api.next_hotkey()
+        if hotkey_id is None:
+            return
+        if hotkey_id in chords:
+            try:
+                _on_hotkey(chords[hotkey_id])
+            except Exception as e:
+                _announce(f"Kill switch: halting input failed: {e}")
+
+
+def start_halt_hotkeys(timeout: float = 5.0) -> Dict[str, List[str]]:
+    """Start the hotkey thread and wait until it says which chords registered.
+    Skipped while the backend checks run (AGENT_TEST=1): a global hotkey is a
+    side effect on whatever machine runs them."""
+    if os.environ.get("AGENT_TEST") == "1":
+        HOTKEYS.update(registered=[], problems=["not registered while the backend checks run (AGENT_TEST=1)"])
+        return HOTKEYS
+    if platform.system() != "Windows":
+        HOTKEYS.update(registered=[], problems=["global hotkeys are only set up on Windows"])
+        return HOTKEYS
+    ready = threading.Event()
+    threading.Thread(target=_hotkey_loop, args=(ready,), name="kill-switch-hotkeys", daemon=True).start()
+    if not ready.wait(timeout):
+        HOTKEYS.update(registered=[], problems=["the hotkey thread did not answer"])
+    return HOTKEYS
 
 
 # ── Mouse ──────────────────────────────────────────────────────────────────────
@@ -500,28 +848,41 @@ def _on_screen(x: int, y: int) -> tuple:
     return max(1, min(SCREEN_W - 2, x)), max(1, min(SCREEN_H - 2, y))
 
 
-@app.post("/mouse/move")
+@input_route("/mouse/move")
 def mouse_move(b: MoveBody):
     try:
         x, y = _on_screen(b.x, b.y)
-        pyautogui.moveTo(x, y, duration=b.duration)
+        if _glide(x, y, b.duration):
+            return _halted_reply()
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/mouse/click")
+# The gap between the clicks of a double (or triple) click, as pyautogui's own.
+CLICK_INTERVAL_S = 0.05
+
+
+@input_route("/mouse/click")
 def mouse_click(b: ClickBody):
     try:
         x, y = _on_screen(b.x, b.y)
-        pyautogui.moveTo(x, y, duration=b.move_duration)
-        pyautogui.click(button=b.button, clicks=b.clicks, interval=0.05)
+        if _glide(x, y, b.move_duration):
+            return _halted_reply()
+        # One click at a time, as pyautogui.click(clicks=n) makes them, so a halt
+        # between two stops the rest.
+        for i in range(b.clicks):
+            if i:
+                _wait(CLICK_INTERVAL_S)
+            if _input_halted():
+                return _halted_reply(clicked=i)
+            pyautogui.click(button=b.button)
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/mouse/drag")
+@input_route("/mouse/drag")
 def mouse_drag(b: DragBody):
     try:
         # Both ends are checked before the pointer moves at all: a drag whose end
@@ -529,18 +890,19 @@ def mouse_drag(b: DragBody):
         # corner, which is pyautogui's abort signal (see _on_screen).
         x1, y1 = _on_screen(b.x1, b.y1)
         x2, y2 = _on_screen(b.x2, b.y2)
-        pyautogui.moveTo(x1, y1, duration=0.1)
-        pyautogui.dragTo(x2, y2, duration=b.duration, button=b.button)
+        if _glide(x1, y1, 0.1) or _drag_to(x2, y2, b.duration, b.button):
+            return _halted_reply()
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/mouse/scroll")
+@input_route("/mouse/scroll")
 def mouse_scroll(b: ScrollBody):
     try:
         x, y = _on_screen(b.x, b.y)
-        pyautogui.moveTo(x, y, duration=0.05)
+        if _glide(x, y, 0.05) or _input_halted():
+            return _halted_reply()
         pyautogui.scroll(b.amount)
         return {"ok": True}
     except Exception as e:
@@ -556,12 +918,16 @@ def mouse_scroll(b: ScrollBody):
 #   - a key is held at most KEY_HOLD_MAX_S per call, and a gamepad button, stick
 #     or trigger at most GAMEPAD_HOLD_MAX_S (the limit those routes always had),
 #   - a hold waits in steps of HOLD_STEP_S and asks _input_halted() before each,
-#     so input that has been told to stop is let go within a step (and a hold
-#     asked for while it is halted presses nothing),
+#     so input that has been told to stop (see "Kill switch") is let go within a
+#     step, and a hold asked for while it is halted presses nothing,
 #   - whatever goes down comes back up, even when a step raises, and a pyautogui
 #     key-up goes through even while the mouse is in a screen corner,
 #   - at most TYPE_TEXT_MAX_CHARS characters are typed per call, TYPE_INTERVAL_MAX_S
-#     apart at most, so a call to type text ends within a minute.
+#     apart at most, so a call to type text ends within a minute; they are typed
+#     a few at a time, so a halt stops the rest,
+#   - the pointer glides in steps of MOUSE_STEP_S, asking _input_halted() before
+#     each, for at most MOUSE_MOVE_MAX_S, and a drag lets its button go however
+#     it ends.
 # A value outside its bounds is brought inside them, not refused, and the reply's
 # "limit" says what was asked and what was done, so the page can tell the model it
 # was cut. The page's tool schemas state the same numbers (src/agent/inputLimits.js;
@@ -574,13 +940,13 @@ GAMEPAD_BUTTON_MIN_S = 0.02
 HOLD_STEP_S = 0.1
 TYPE_TEXT_MAX_CHARS = 300
 TYPE_INTERVAL_MAX_S = 0.2
-
-
-def _input_halted() -> bool:
-    """Whether injected input has been told to stop. Nothing tells it to yet, so
-    this is always False; a kill switch will make it True, and every hold checks
-    it before it presses anything and before each step."""
-    return False
+# pyautogui glides the pointer in steps of this length too (its MINIMUM_SLEEP),
+# and makes a move of 0.1 s or less (its MINIMUM_DURATION) one jump. The page
+# asks for at most a second (a drag with the Slow timing); a pointer glide or a
+# drag is cut to MOUSE_MOVE_MAX_S, where pyautogui used to try any length asked.
+MOUSE_STEP_S = 0.05
+MOUSE_JUMP_MAX_S = 0.1
+MOUSE_MOVE_MAX_S = 5.0
 
 
 def _wait(seconds: float) -> None:
@@ -641,18 +1007,28 @@ def _hold(seconds: float) -> Tuple[float, bool]:
 
 def _pyautogui_key_up(key: str) -> None:
     """pyautogui's key-up, for letting go of a key a hold pressed. pyautogui
-    refuses every call while the mouse is in a screen corner (its fail-safe, the
-    emergency stop in SETUP.md), a key-up included, which would leave the key down
-    for good at the moment the operator wants input to stop. A key-up refused that
-    way goes straight to pyautogui's platform layer, which does not check; new
-    presses are still refused."""
+    refuses every call while the mouse is in a screen corner (its fail-safe), a
+    key-up included, which would leave the key down for good at the moment
+    someone moved the mouse there to stop it. A key-up refused that way goes
+    straight to pyautogui's platform layer, which does not check; new presses
+    are still refused."""
     try:
         pyautogui.keyUp(key)
     except pyautogui.FailSafeException:
         pyautogui.platformModule._keyUp(key)
 
 
-def _hold_down(press, release, keys: list, seconds: float) -> Tuple[float, bool]:
+def _mouse_up(button: str) -> None:
+    """pyautogui's mouseUp, going through even while the mouse sits in a screen
+    corner, as _pyautogui_key_up does for keys."""
+    try:
+        pyautogui.mouseUp(button=button)
+    except pyautogui.FailSafeException:
+        x, y = pyautogui.position()
+        pyautogui.platformModule._mouseUp(x, y, button)
+
+
+def _hold_down(press, release, keys: list, seconds: float, kind: str = "key") -> Tuple[float, bool]:
     """Press `keys` in order, hold them for `seconds` (see _hold), and release them
     in reverse order. Every key it tried to press is released, whatever happens in
     between: a press or a step that raises, or a halt. That includes a press that
@@ -661,13 +1037,19 @@ def _hold_down(press, release, keys: list, seconds: float) -> Tuple[float, bool]
     would stay down. A release that raises does not stop the others; the first
     such error is raised once all were tried.
 
-    While input is halted it presses nothing, and returns (0.0, True)."""
+    Each key is in _held, under (kind, key), from just before it is pressed until
+    it is up again, so a halt can let go of it at once.
+
+    While input is halted it presses nothing more, and returns (0.0, True)."""
     if _input_halted():
         return 0.0, True
     pressed = []
     try:
         for k in keys:
+            if _input_halted():
+                return 0.0, True
             pressed.append(k)
+            _pressing(kind, k, functools.partial(release, k))
             press(k)
         return _hold(seconds)
     finally:
@@ -675,10 +1057,69 @@ def _hold_down(press, release, keys: list, seconds: float) -> Tuple[float, bool]
         for k in reversed(pressed):
             try:
                 release(k)
+                _let_go(kind, k)
             except Exception as e:
                 failed = failed or e
         if failed is not None:
             raise failed
+
+
+def _glide(x: int, y: int, duration: float) -> bool:
+    """Move the pointer to (x, y) in a straight line over `duration` seconds (at
+    most MOUSE_MOVE_MAX_S), as pyautogui.moveTo does, asking _input_halted()
+    before each step. Returns True if input was halted, before the move or
+    part-way through it.
+
+    A move short enough for pyautogui to make in one jump is left to it, as it
+    always was; a longer one is made here in pyautogui's steps, so that it can be
+    stopped between them."""
+    if _input_halted():
+        return True
+    if not duration > MOUSE_JUMP_MAX_S:
+        pyautogui.moveTo(x, y, duration=duration)
+        return False
+    seconds = min(duration, MOUSE_MOVE_MAX_S)
+    steps = max(1, math.ceil(seconds / MOUSE_STEP_S - 1e-9))
+    x0, y0 = pyautogui.position()
+    for i in range(1, steps + 1):
+        _wait(seconds / steps)
+        if _input_halted():
+            return True
+        pyautogui.moveTo(round(x0 + (x - x0) * i / steps), round(y0 + (y - y0) * i / steps))
+    return False
+
+
+def _drag_to(x: int, y: int, duration: float, button: str) -> bool:
+    """Press `button`, glide to (x, y), and let the button go however that ends:
+    pyautogui.dragTo's three parts (on Windows it is exactly these), taken apart
+    so a halt stops the glide and the button is in _held meanwhile. Returns True
+    if input was halted."""
+    if _input_halted():
+        return True
+    _pressing("mouse", button, functools.partial(_mouse_up, button))
+    try:
+        pyautogui.mouseDown(button=button)
+        return _glide(x, y, duration)
+    finally:
+        _mouse_up(button)
+        _let_go("mouse", button)
+
+
+def _type_in_pieces(text: str, interval: float) -> int:
+    """Type `text` with pyautogui.typewrite, `interval` seconds after each
+    character as before, a few characters at a time: each piece takes about
+    HOLD_STEP_S (or is one character, when they are further apart than that),
+    and _input_halted() is asked before each. Returns how many characters were
+    typed."""
+    size = len(text) if interval <= 0 else max(1, int(HOLD_STEP_S / interval + 1e-9))
+    typed = 0
+    while typed < len(text):
+        if _input_halted():
+            break
+        piece = text[typed:typed + size]
+        pyautogui.typewrite(piece, interval=interval)
+        typed += len(piece)
+    return typed
 
 
 # ── Keyboard ───────────────────────────────────────────────────────────────────
@@ -699,6 +1140,48 @@ class TypeBody(BaseModel):
 
 def _parse_key(key: str):
     return [k.strip().lower() for k in key.split("+") if k.strip()]
+
+
+# The agent must never press a kill-switch chord itself. Windows matches injected
+# keys against a hotkey as it does a person's, so press_key or hold_key with
+# Ctrl+Alt+Shift+H (which a model can be talked into by what the screen says)
+# would halt the agent's own input, and an unattended run would sit there until
+# someone pressed Resume. Key names that stand for a chord's key, beyond the
+# chord's own names (HALT_HOTKEYS): AltGr (altright) is Ctrl+Alt on many layouts.
+_AS_CHORD_KEY = {
+    "ctrlleft": ("ctrl",), "ctrlright": ("ctrl",),
+    "altleft": ("alt",), "altright": ("alt", "ctrl"),
+    "shiftleft": ("shift",), "shiftright": ("shift",),
+    "break": ("pause",),
+}
+
+
+def _kill_chord_in(keys: list) -> Optional[str]:
+    """The kill-switch chord that pressing `keys` would make, counting the keys
+    the backend holds down at that moment (another request's hold), or None."""
+    names = set(keys)
+    scan_names = {code: name for name, code in globals().get("_SCAN", {}).items()}
+    with _held_lock:
+        held = list(_held)
+    for kind, key in held:
+        if kind == "key":
+            names.add(key)
+        elif kind == "scan":
+            names.add(scan_names.get(key, ""))
+    down = {k for name in names for k in _AS_CHORD_KEY.get(name, (name,))}
+    for chord, _, _ in HALT_HOTKEYS:
+        if set(chord.lower().split("+")) <= down:
+            return chord
+    return None
+
+
+def _kill_chord_refusal(keys: list) -> Optional[str]:
+    """The error for keys that would press a kill-switch chord, or None."""
+    chord = _kill_chord_in(keys)
+    if chord is None:
+        return None
+    return (f"{chord} is the operator's kill switch, and the agent never presses it: it would halt "
+            f"all of the agent's input until a person pressed Resume")
 
 
 def _active_window_title() -> str:
@@ -724,58 +1207,51 @@ class KeyPressBody(BaseModel):
     hold: float = 0.08
 
 
-@app.post("/keyboard/press")
+@input_route("/keyboard/press")
 def key_press(b: KeyPressBody):
+    keys = _parse_key(b.key)
+    if not keys:
+        return {"ok": False, "error": f"no key to press in {b.key!r}"}
+    refused = _kill_chord_refusal(keys)
+    if refused:
+        return {"ok": False, "error": refused}
     try:
-        keys = _parse_key(b.key)
         focus = _active_window_title()
-        hold = max(0.0, min(b.hold, 2.0))
-
+        hold = _within(b.hold, 0.0, 2.0)
+        # A press is a short hold: modifiers down in order, then the key, and all
+        # of them up in reverse, whatever happens in between (see _hold_down).
         # Preferred path: SendInput with hardware scan codes (correct extended-key
         # handling; works with browsers AND DirectInput games).
         scans = [_scan_for(k) for k in keys]
-        if scans and all(s is not None for s in scans):
-            *mods, last = scans
-            for m in mods:
-                _send_scan(m)
-            _send_scan(last)
-            time.sleep(hold)
-            _send_scan(last, keyup=True)
-            for m in reversed(mods):
-                _send_scan(m, keyup=True)
-            return {"ok": True, "focus": focus, "held": hold, "method": "sendinput"}
-
-        # Fallback: pyautogui (non-Windows, or a key we have no scan code for)
-        if len(keys) > 1:
-            *mods, last = keys
-            for m in mods:
-                pyautogui.keyDown(m)
-            pyautogui.keyDown(last)
-            time.sleep(hold)
-            pyautogui.keyUp(last)
-            for m in reversed(mods):
-                pyautogui.keyUp(m)
+        if all(s is not None for s in scans):
+            method = "sendinput"
+            _, halted = _hold_down(_send_scan, lambda s: _send_scan(s, keyup=True), scans, hold, kind="scan")
         else:
-            pyautogui.keyDown(keys[0])
-            time.sleep(hold)
-            pyautogui.keyUp(keys[0])
-        return {"ok": True, "focus": focus, "held": hold, "method": "pyautogui"}
+            # Fallback: pyautogui (non-Windows, or a key we have no scan code for)
+            method = "pyautogui"
+            _, halted = _hold_down(pyautogui.keyDown, _pyautogui_key_up, keys, hold)
+        if halted:
+            return _halted_reply(focus=focus, method=method)
+        return {"ok": True, "focus": focus, "held": hold, "method": method}
     except Exception as e:
         return {"ok": False, "error": str(e), "focus": _active_window_title()}
 
 
-@app.post("/keyboard/hold")
+@input_route("/keyboard/hold")
 def key_hold(b: HoldBody):
     duration = _within(b.duration, 0.0, KEY_HOLD_MAX_S)
     limit = _limit(b.duration, duration, 0.0, KEY_HOLD_MAX_S, "s")
     keys = _parse_key(b.key)
     if not keys:
         return {"ok": False, "error": f"no key to hold in {b.key!r}", "limit": limit}
+    refused = _kill_chord_refusal(keys)
+    if refused:
+        return {"ok": False, "error": refused, "limit": limit}
     try:
         scans = [_scan_for(k) for k in keys]
         if all(s is not None for s in scans):
             method = "sendinput"
-            held, halted = _hold_down(_send_scan, lambda s: _send_scan(s, keyup=True), scans, duration)
+            held, halted = _hold_down(_send_scan, lambda s: _send_scan(s, keyup=True), scans, duration, kind="scan")
         else:
             method = "pyautogui"
             held, halted = _hold_down(pyautogui.keyDown, _pyautogui_key_up, keys, duration)
@@ -784,14 +1260,18 @@ def key_hold(b: HoldBody):
         return {"ok": False, "error": str(e), "limit": limit}
 
 
-@app.post("/keyboard/type")
+@input_route("/keyboard/type")
 def key_type(b: TypeBody):
     text = b.text[:TYPE_TEXT_MAX_CHARS]
     limit = _limit(len(b.text), len(text), 0, TYPE_TEXT_MAX_CHARS, "characters")
     interval = _within(b.interval, 0.0, TYPE_INTERVAL_MAX_S)
     try:
         if all(ord(c) < 128 for c in text):
-            pyautogui.typewrite(text, interval=interval)
+            typed = _type_in_pieces(text, interval)
+            if typed < len(text):
+                return _halted_reply(typed=typed, limit=limit)
+        elif _input_halted():
+            return _halted_reply(typed=0, limit=limit)
         else:
             prev = ""
             try:
@@ -1125,7 +1605,6 @@ def memory_patch(game_key: str, patch: MemoryPatch):
 # the relay refuses every request and says why, rather than quietly sending the
 # model's requests to another server. A saved change is used from the next start.
 
-import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1539,7 +2018,7 @@ def gamepad_status():
     return {"available": GAMEPAD_AVAILABLE, "connected": _gamepad is not None}
 
 
-@app.post("/gamepad/button")
+@input_route("/gamepad/button")
 def gamepad_button(b: GamepadButtonBody):
     if not GAMEPAD_AVAILABLE:
         return {"ok": False, "available": False,
@@ -1561,7 +2040,7 @@ def gamepad_button(b: GamepadButtonBody):
             gp.release_button(button=btn)
             gp.update()
 
-        held, halted = _hold_down(press, release, [key], hold)
+        held, halted = _hold_down(press, release, [key], hold, kind="pad")
         return {"ok": True, "held": held, "halted": halted, "limit": limit}
     except Exception as e:
         return {"ok": False, "error": str(e), "limit": limit}
@@ -1571,12 +2050,19 @@ def _stay_or_hold(set_value, value, rest, duration: float) -> dict:
     """Move a stick or trigger to `value` with `set_value`. With a duration of 0
     (or less) it stays there until the next call; with a positive one it is held
     for up to GAMEPAD_HOLD_MAX_S (see _hold) and then set back to `rest`, however
-    the hold ends. While input is halted it is not moved at all."""
+    the hold ends. While input is halted it is not moved at all.
+
+    A stick or trigger is not in _held, so a halt that came between the check
+    and set_value (its gamepad reset done first) would leave it where this put
+    it for the whole halt: the flag is asked again once it is there."""
     applied = _within(duration, 0.0, GAMEPAD_HOLD_MAX_S)
     limit = _limit(duration, applied, 0.0, GAMEPAD_HOLD_MAX_S, "s")
     if _input_halted():
         return {"held": 0.0, "halted": True, "limit": limit}
     set_value(value)
+    if _input_halted():
+        set_value(rest)
+        return {"held": 0.0, "halted": True, "limit": limit}
     if applied <= 0:
         return {"held": 0.0, "halted": False, "limit": limit}
     try:
@@ -1586,7 +2072,7 @@ def _stay_or_hold(set_value, value, rest, duration: float) -> dict:
     return {"held": held, "halted": halted, "limit": limit}
 
 
-@app.post("/gamepad/stick")
+@input_route("/gamepad/stick")
 def gamepad_stick(b: GamepadStickBody):
     if not GAMEPAD_AVAILABLE:
         return {"ok": False, "available": False, "error": "vgamepad not installed"}
@@ -1605,7 +2091,7 @@ def gamepad_stick(b: GamepadStickBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/gamepad/trigger")
+@input_route("/gamepad/trigger")
 def gamepad_trigger(b: GamepadTriggerBody):
     if not GAMEPAD_AVAILABLE:
         return {"ok": False, "available": False, "error": "vgamepad not installed"}
@@ -1653,6 +2139,8 @@ def capture_windows():
     return {"ok": True, "windows": out}
 
 
+# Not an input route: it only chooses which part of the screen /capture/frame
+# grabs, and moves no window and no focus.
 @app.post("/capture/select")
 def capture_select(b: CaptureSelectBody):
     global _capture_region
@@ -1731,7 +2219,7 @@ class SpeedBody(BaseModel):
     speed: float = 1.0
 
 
-@app.post("/game/attach")
+@input_route("/game/attach")
 def game_attach(b: AttachBody):
     global _speed_client
     if not SPEEDHACK_AVAILABLE:
@@ -1753,17 +2241,29 @@ def game_attach(b: AttachBody):
         return {"ok": False, "error": str(e)}
 
 
-@app.post("/game/speed")
+@input_route("/game/speed")
 def game_speed(b: SpeedBody):
     if not SPEEDHACK_AVAILABLE or _speed_client is None:
         return {"ok": False, "error": "not attached to a game"}
     try:
+        # A halt sets the game back to normal speed. One that came while this
+        # request was past HaltGate could have done so just before this call,
+        # and pause-to-think's speed 0 would then freeze the game for the whole
+        # halt (the page's own speed 1 is refused while halted): the flag is
+        # asked again afterwards, and a halted game is set back to 1.
+        if _input_halted():
+            return _halted_reply()
         _speed_client.set_speed(max(0.0, b.speed))
+        if _input_halted():
+            _speed_client.set_speed(1.0)
+            return _halted_reply()
         return {"ok": True, "speed": b.speed}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
+# Not an input route: it lets the game run at normal speed, as a halt does, so it
+# is allowed while input is halted.
 @app.post("/game/detach")
 def game_detach():
     global _speed_client
@@ -1803,8 +2303,16 @@ if __name__ == "__main__":
     print(f"  capture  (dxcam)     : {'ready' if CAPTURE_AVAILABLE else 'missing — pip install dxcam'}")
     print(f"  windows  (pygetwindow): {'ready' if WINDOWS_API else 'missing — pip install pygetwindow'}")
     print(f"  speedhack(xspeedhack): {'ready' if SPEEDHACK_AVAILABLE else 'missing — pip install xspeedhack'}")
+    hotkeys = start_halt_hotkeys()
     print()
-    print("Move mouse to TOP-LEFT corner to emergency-stop.")
+    if hotkeys["registered"]:
+        print(f"Kill switch: {' or '.join(hotkeys['registered'])} halts all input.")
+        print("             Resume on the agent page lifts it. A game in front can block the chord:")
+        print("             then Alt+Tab to the agent page and click Stop. (A screen corner is NOT a kill switch.)")
+    else:
+        print("Kill switch: NO HOTKEY - use Stop on the agent page, which halts input too.")
+    for problem in hotkeys["problems"]:
+        print(f"             {problem}")
     print("Press Ctrl+C to quit.")
     print()
     # On the socket claimed at the top of this file, before the token was written.

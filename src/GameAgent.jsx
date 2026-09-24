@@ -21,6 +21,10 @@ import {
   limitNote, replyNote, withLimitNotes, holdKeyResult, typeTextResult,
 } from "./agent/inputLimits.js";
 import { SCREEN_RULE, withScreenRule } from "./agent/prompts.js";
+import {
+  STOP_HALT, HALT_POLL_MS, HALT_IDLE_POLL_MS, readHaltState, inputHalted, isHaltReply, haltedByOperator, haltBanner,
+  haltChange, haltStartProblem, haltedToolText, hotkeysNote, markHalted, metHalt,
+} from "./agent/killSwitch.js";
 import { PROVIDERS } from "./llm/providers.js";
 import { anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote } from "./llm/requests.js";
 import { MODEL_LIST_PAUSE_MS, modelChoices, modelListMessage, listModels, checkModel } from "./llm/models.js";
@@ -74,6 +78,10 @@ function setRuntimeKey(k, v) { _runtimeKeys[k] = v; }
 let _onBackendRefused = null;
 // The page registers this to hear, once, that the backend turned it away.
 function onBackendRefused(listener) { _onBackendRefused = listener; }
+// ...and this to hear at once that an input route found input halted (the kill
+// switch, src/agent/killSwitch.js), rather than at its next look at the state.
+let _onInputHalted = null;
+function onInputHalted(listener) { _onInputHalted = listener; }
 
 async function backend(path, body = null, { signal, method } = {}) {
   try {
@@ -89,7 +97,10 @@ async function backend(path, body = null, { signal, method } = {}) {
     // and readReply says so instead of reporting a JSON parse error.
     const reply = readReply(res.status, await res.text());
     const refused = accessRefusal(res.status, token);
-    if (!refused) return reply;
+    if (!refused) {
+      if (inputHalted(path, res.status, reply)) _onInputHalted?.(reply);
+      return reply;
+    }
     _onBackendRefused?.(refused);
     // `error` is what callers print. `detail` marks a request refused before
     // anything ran, which the Ollama relay reads as not worth asking again.
@@ -1281,6 +1292,10 @@ export default function GameAgent() {
   // {since, nextCheckAt, reason}. Null otherwise.
   const [modelWait, setModelWait] = useState(null);
   const [modelWaitSecondsLeft, setModelWaitSecondsLeft] = useState(null);
+  // The backend's kill-switch state as last heard (src/agent/killSwitch.js), null
+  // until it has said. While input is halted the backend refuses every key, click
+  // and gamepad input, and the games loop waits.
+  const [haltState, setHaltState] = useState(null);
 
   // Collapse
   const [showMemory, setShowMemory] = useState(false);
@@ -1321,6 +1336,11 @@ export default function GameAgent() {
   // Aborted by Stop, so a model request in flight ends now rather than when it
   // answers or times out. Replaced at the start of every run.
   const stopCtrlRef = useRef(new AbortController());
+  // Whether input is halted (haltState.halted), readable by the loop without a render.
+  const haltedRef = useRef(false);
+  const haltStateRef = useRef(null);            // haltState, to compare the next one with
+  // ■ Stop's request to halt input, until the run has ended and the halt is lifted.
+  const stopHaltRef = useRef(null);
   const pauseRef = useRef(false);
   const stuckRingRef = useRef([]);
   const stuckTriggerRef = useRef(0);
@@ -1497,6 +1517,91 @@ export default function GameAgent() {
     });
     return () => onBackendRefused(null);
   }, [addLog]);
+
+  // ── Kill switch ──────────────────────────────────────────────────────────────
+  // The backend's halt state (src/agent/killSwitch.js), kept in haltState and
+  // haltedRef, with a log line when it changes. A reply that is not a state (the
+  // backend down, or older than this page) changes nothing.
+  const applyHaltState = useCallback((reply) => {
+    const next = readHaltState(reply);
+    if (!next) return;
+    const before = haltStateRef.current;
+    haltStateRef.current = next;
+    haltedRef.current = next.halted;
+    // Asked every second during a run: the page renders again only on a change.
+    if (JSON.stringify(before) === JSON.stringify(next)) return;
+    setHaltState(next);
+    const said = haltChange(before, next);
+    if (said) addLog(said.text, said.type);
+  }, [addLog]);
+
+  // Asked about once a second while a run is on or input is halted, so a run
+  // waits within a second of a hotkey and goes on within a second of Resume.
+  useEffect(() => {
+    let live = true;
+    let timer = null;
+    const look = async () => {
+      const reply = await backend("/session/state");
+      applyHaltState(reply);
+      // A halt ■ Stop left with no run to lift it (its tab was closed first, or
+      // the backend did not answer then) is lifted once this page is idle; it
+      // gets no banner, since nobody halted input on purpose.
+      const state = readHaltState(reply);
+      if (live && !running && state?.halted && !haltedByOperator(state)) {
+        applyHaltState(await backend("/session/resume", { reason: STOP_HALT }));
+      }
+      if (live) timer = setTimeout(look, running || haltedRef.current ? HALT_POLL_MS : HALT_IDLE_POLL_MS);
+    };
+    look();
+    return () => { live = false; clearTimeout(timer); };
+  }, [running, applyHaltState]);
+
+  // An input route found input halted: the loop waits from now on, and who
+  // halted it is asked straight away.
+  useEffect(() => {
+    onInputHalted(() => {
+      if (haltedRef.current) return;
+      haltedRef.current = true;
+      backend("/session/state").then(applyHaltState);
+    });
+    return () => onInputHalted(null);
+  }, [applyHaltState]);
+
+  // The banner's Resume: lifts every halt, a hotkey's included.
+  const resumeInput = useCallback(async () => {
+    const reply = await backend("/session/resume", {});
+    if (reply?.ok) applyHaltState(reply);
+    else if (!reply?.refused) addLog(`Resume failed — ${backendFailure(reply)}`, "error");
+  }, [addLog, applyHaltState]);
+
+  // Wait while input is halted, or until Stop. False when Stop ended the wait.
+  const waitWhileHalted = useCallback(async () => {
+    while (haltedRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 250));
+    return !stopRef.current;
+  }, []);
+
+  // Send input the loop decided on itself (a restart button, a decision's
+  // option), not the model: a halt is waited out and the input sent after
+  // Resume, since what it is for has not changed. {ok: false, stopped: true}
+  // when Stop came first.
+  const sendWhenLive = useCallback(async (path, body) => {
+    for (;;) {
+      if (!await waitWhileHalted()) return { ok: false, stopped: true, error: "stopped" };
+      const res = await backend(path, body);
+      if (!isHaltReply(res)) return res;
+    }
+  }, [waitWhileHalted]);
+
+  // ■ Stop halts input, so what was already sent stops too. Once the run has
+  // ended that halt, and only that one, is lifted: a hotkey's stays until Resume.
+  useEffect(() => {
+    if (running || !stopHaltRef.current) return;
+    const halting = stopHaltRef.current;
+    stopHaltRef.current = null;
+    halting.then(reply => {
+      if (reply?.ok) backend("/session/resume", { reason: STOP_HALT }).then(applyHaltState);
+    });
+  }, [running, applyHaltState]);
 
   // What the backend can do, and which Ollama server its relay uses. Asked on
   // mount, and again when a backend that was down comes up, since start.bat
@@ -1874,6 +1979,16 @@ export default function GameAgent() {
       if (note) addLog(`⚠ ${name}: ${note}`, "warn");
     };
 
+    // Input is halted (the kill switch, src/agent/killSwitch.js): the backend
+    // sent nothing, or let go of what it held. That says nothing about the game,
+    // so it is not a move that failed: no waiting for the screen to change, no
+    // no-op counted, and the model is told so. The games loop waits for Resume,
+    // and the restart loop, seeing the result marked, does not count the click.
+    const halted = (res) => {
+      addAction(toolName, toolInput, res);
+      return markHalted(toolResult(haltedToolText(res)));
+    };
+
     // ── Screen observation ───────────────────────────────────────────────────
     if (toolName === "observe_screen" || toolName === "read_screen_text") {
       const frame = await grabFrame();
@@ -1892,6 +2007,7 @@ export default function GameAgent() {
     if (toolName === "move_mouse") {
       const { x, y } = scaled(toolInput.x, toolInput.y);
       const res = await backend("/mouse/move", { x, y, duration: timing.mouseSpeed });
+      if (isHaltReply(res)) return halted(res);
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
       return toolResult(res.ok ? "Mouse moved." : `Error: ${res.error}`);
@@ -1906,6 +2022,7 @@ export default function GameAgent() {
         clicks: toolInput.clicks ?? 1,
         move_duration: timing.mouseSpeed,
       });
+      if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
@@ -1934,6 +2051,7 @@ export default function GameAgent() {
         clicks: toolInput.clicks ?? 1,
         move_duration: timing.mouseSpeed,
       });
+      if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
@@ -1948,6 +2066,7 @@ export default function GameAgent() {
       const s2 = scaled(toolInput.x2, toolInput.y2);
       const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/mouse/drag", { x1: s1.x, y1: s1.y, x2: s2.x, y2: s2.y, duration: timing.mouseSpeed * 2, button: toolInput.button ?? "left" });
+      if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
@@ -1959,6 +2078,7 @@ export default function GameAgent() {
       const { x, y } = scaled(toolInput.x, toolInput.y);
       const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/mouse/scroll", { x, y, amount: toolInput.amount });
+      if (isHaltReply(res)) return halted(res);
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1000), undefined, __base);
       addAction(toolName, toolInput, res);
       if (timing.actionPace > 0) await new Promise(r => setTimeout(r, timing.actionPace));
@@ -1969,6 +2089,7 @@ export default function GameAgent() {
     if (toolName === "press_key") {
       const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/keyboard/press", { key: toolInput.key });
+      if (isHaltReply(res)) return halted(res);
       if (!res.ok) {
         addLog(`⚠ Backend key error: ${res.error}`, "error");
       } else if (res.focus) {
@@ -1997,6 +2118,7 @@ export default function GameAgent() {
     if (toolName === "hold_key") {
       const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/keyboard/hold", { key: toolInput.key, duration: toolInput.duration });
+      if (isHaltReply(res)) return halted(res);
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
       logLimit(toolName, res);
@@ -2007,6 +2129,7 @@ export default function GameAgent() {
     if (toolName === "type_text") {
       const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/keyboard/type", { text: toolInput.text, interval: timing.typingInterval });
+      if (isHaltReply(res)) return halted(res);
       await waitChange(grabFrame, canvasRef.current, Math.min(timing.confirmDelay, 1500), undefined, __base);
       addAction(toolName, toolInput, res);
       logLimit(toolName, res);
@@ -2018,6 +2141,7 @@ export default function GameAgent() {
     if (toolName === "gamepad_button") {
       const __base = await snapshotHash(grabFrame, canvasRef.current);
       const res = await backend("/gamepad/button", { button: toolInput.button, hold: toolInput.hold ?? 0.08 });
+      if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
@@ -2035,6 +2159,7 @@ export default function GameAgent() {
         x: toolInput.x ?? 0, y: toolInput.y ?? 0,
         duration: toolInput.duration ?? 0,
       });
+      if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
@@ -2052,6 +2177,7 @@ export default function GameAgent() {
         value: toolInput.value ?? 1,
         duration: toolInput.duration ?? 0.1,
       });
+      if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
       setLastConfirm(confirm);
       addAction(toolName, toolInput, { ...res, ...confirm });
@@ -2116,6 +2242,13 @@ export default function GameAgent() {
         } else {
           summary.push(`${executed + 1}: unsupported tool "${t}" — skipped`);
           continue;
+        }
+        // Input halted (the kill switch): not a step that changed nothing, and
+        // the rest of the sequence is not sent.
+        if (isHaltReply(r)) {
+          addAction(`seq.${t}`, inp, r);
+          summary.push(`step ${executed + 1} (${t}): ${haltedToolText(r)}`);
+          break;
         }
 
         const confirm = await waitChange(grabFrame, canvasRef.current, timing.confirmDelay, undefined, __base);
@@ -2362,7 +2495,8 @@ Reply with ONLY a JSON object, no other text:
       const sx = Math.round(opt.x / (scale.scale || 1));
       const sy = Math.round(opt.y / (scale.scale || 1));
       addLog(`Clicking "${opt.label}" at ${sx},${sy}.`, "info");
-      await backend("/mouse/click", { x: sx, y: sy, button: "left" });
+      const res = await sendWhenLive("/mouse/click", { x: sx, y: sy, button: "left" });
+      if (res.stopped) return false;
       await new Promise(r => setTimeout(r, 600));
       return true;
     };
@@ -2427,7 +2561,7 @@ Reply with ONLY a JSON object, no other text:
     setPendingDecision(null);
     setPhase("playing");
     return finish(chosen);
-  }, [addLog]);
+  }, [addLog, sendWhenLive]);
 
   // Record the biggest tile seen, from every board that reads successfully.
   //
@@ -2591,6 +2725,9 @@ Reply with ONLY a JSON object, no other text:
             button: a.button || "left",
           })
         : await backend("/keyboard/press", { key: a.key });
+      // Input halted mid-move (the kill switch): the loop waits for Resume and
+      // reads the board again then. Not a failed move, and not a blocked one.
+      if (isHaltReply(res)) return { halted: true, reason: "input halted" };
       if (!res.ok) {
         addLog(`⚠ Backend ${a.type} error: ${res.error}`, "error");
         return { fallback: true, reason: `${a.type} failed` };
@@ -2727,7 +2864,8 @@ Reply with ONLY a JSON object, no other text:
         const y = Math.round((s.offsetY ?? 0) + pt.y * sc);
         addLog(`Restarting — clicking the ${pt.kind ?? "restart"} button at image ${pt.x},${pt.y} (screen ${x},${y}).`, "info");
         const base = await snapshotHash(grabFrame, canvasRef.current);
-        const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+        const res = await sendWhenLive("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+        if (res.stopped) return { ok: false };
         if (!res.ok) { addLog(`Click failed: ${res.error}`, "warn"); break; }
 
         const fresh = await verifyFresh();
@@ -2751,7 +2889,8 @@ Reply with ONLY a JSON object, no other text:
       const { x, y } = restartPointRef.current;
       addLog("Restarting — clicking remembered New Game button…", "info");
       const base = await snapshotHash(grabFrame, canvasRef.current);
-      const res = await backend("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+      const res = await sendWhenLive("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: timing.mouseSpeed });
+      if (res.stopped) return { ok: false };
       if (res.ok && await verify(base)) {
         addLog("✓ New game started.", "success");
         return { ok: true };
@@ -2765,6 +2904,8 @@ Reply with ONLY a JSON object, no other text:
     gridEnabledRef.current = true; // click_grid needs the overlay drawn
     try {
       for (let attempt = 1; attempt <= 3 && !stopRef.current; attempt++) {
+        // Not while input is halted: the click the model picks would not be sent.
+        if (!await waitWhileHalted()) return { ok: false };
         const frame = await grabFrame();
         if (!frame) return { ok: false };
         const ask = [
@@ -2814,6 +2955,11 @@ Reply with ONLY a JSON object, no other text:
         const base = await snapshotHash(grabFrame, canvasRef.current);
         addLog(`→ ${clickAct.tool}(${JSON.stringify(clickAct.input).slice(0, 60)})`, "tool");
         const result = await executeTool(clickAct.tool, clickAct.input, `${clickAct.tool}__restart`);
+        // The click met a halt (a hotkey pressed while the model was asked), so
+        // it was never sent: that is not an attempt that failed, and three of them
+        // must not end the session. The top of the loop waits for Resume, and the
+        // model is asked again about the screen as it is then.
+        if (metHalt(result)) { attempt--; continue; }
         const txtOut = (result?.content ?? []).find(c => c.type === "text")?.text ?? "";
 
         if (await verify(base)) {
@@ -2836,7 +2982,7 @@ Reply with ONLY a JSON object, no other text:
       gridEnabledRef.current = savedGrid;
     }
     return { ok: false };
-  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog, useSolver, gameDesc]);
+  }, [getTiming, grabFrame, executeTool, providerKey, model, addLog, useSolver, gameDesc, sendWhenLive, waitWhileHalted]);
 
   // ── Solver diagnostics ──────────────────────────────────────────────────────
   // Tile palettes differ between 2048 clones, so rather than guessing colours,
@@ -3234,6 +3380,19 @@ Reply with ONLY a JSON object, no other text:
       addLog(nativeMode ? "Select a game window to capture first." : "Start screen capture first.", "error");
       return;
     }
+
+    // Input halted by the kill switch: nothing would reach the game, so say so
+    // now. A halt that ■ Stop left behind (its tab was closed before its run
+    // ended) is lifted; one set by a hotkey stays until Resume.
+    // startingRef stays up through both requests, so a second click on ▶ Start
+    // meanwhile cannot start a second run beside this one.
+    startingRef.current = true;
+    const haltReply = await backend("/session/state");
+    applyHaltState(haltReply);
+    const haltProblem = haltStartProblem(readHaltState(haltReply));
+    if (haltProblem) { startingRef.current = false; addLog(haltProblem, "error"); return; }
+    if (readHaltState(haltReply)?.halted) applyHaltState(await backend("/session/resume", { reason: STOP_HALT }));
+    startingRef.current = false;
 
     // Lock in the chosen control scheme for this run
     activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled);
@@ -3676,7 +3835,9 @@ REASONING STYLE (for analyse_game_state):
       let gameOutcome = null;
 
     while (!stopRef.current) {
-      while (pauseRef.current && !stopRef.current) await new Promise(r => setTimeout(r, 500));
+      // Paused, or input halted by the kill switch: wait. A halt is not a turn,
+      // a no-op or an error, so nothing about the game is counted meanwhile.
+      while ((pauseRef.current || haltedRef.current) && !stopRef.current) await new Promise(r => setTimeout(r, 500));
       if (stopRef.current) break;
 
       // ── Solver path ──────────────────────────────────────────────────────
@@ -3684,6 +3845,9 @@ REASONING STYLE (for analyse_game_state):
       // deterministically; the model is only consulted if that fails.
       if (activePlugin) {
         const sr = await solverTurn(activePlugin);
+        // Input was halted mid-move: go round, wait above until Resume, and read
+        // the board again then.
+        if (sr.halted) continue;
 
         // The game reached a point where it is asking what to do next — in 2048,
         // winning, which offers to keep playing the same board.
@@ -4071,7 +4235,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
   }, [running, capturing, useNativeCapture, nativeRegionSet, controlScheme, gridEnabled, pauseToThink, strategyInterval, noToolsMode,
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
-      waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities]);
+      waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -4081,7 +4245,15 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
     pauseRef.current = false;
     setPaused(false);
     addLog("Stopping agent...", "warn");
-  }, [addLog]);
+    // And the input already sent: the backend lets go of everything held and a
+    // hold, a glide or a line of typing under way ends within 0.1 s. Lifted
+    // again once the run has ended (the effect after sendWhenLive).
+    stopHaltRef.current = backend("/session/halt", { reason: STOP_HALT }).then(reply => {
+      if (reply?.ok) applyHaltState(reply);
+      else if (!reply?.refused) addLog(`■ Stop did not reach the backend's kill switch (${backendFailure(reply)}): input already sent runs to its end.`, "warn");
+      return reply;
+    });
+  }, [addLog, applyHaltState]);
 
   const togglePause = useCallback(() => {
     pauseRef.current = !pauseRef.current;
@@ -4179,6 +4351,15 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             ⛔ {backendRefused.message}
             <div style={{ marginTop: 4 }}>
               <button onClick={() => window.location.reload()} style={{ ...btnStyle(C.red), fontSize: 11 }}>Reload page</button>
+            </div>
+          </div>
+        )}
+        {haltBanner(haltState) && (
+          <div role="alert" style={{ margin: "0 10px 6px", padding: "8px", borderRadius: 4, background: "#7f1d1d", color: "#fff", fontSize: 11, lineHeight: 1.4 }}>
+            <div style={{ fontSize: 13, fontWeight: 700 }}>⛔ {haltBanner(haltState).title}</div>
+            <div style={{ marginTop: 3 }}>{haltBanner(haltState).detail}</div>
+            <div style={{ marginTop: 6 }}>
+              <button onClick={resumeInput} style={{ ...btnStyle(C.green), fontSize: 12 }}>Resume</button>
             </div>
           </div>
         )}
@@ -4629,6 +4810,11 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 style={{ ...btnStyle(C.border), fontSize: 11 }}>Clear Memory</button>
             )}
           </div>
+          {hotkeysNote(haltState) && (
+            <div style={{ fontSize: 10, color: hotkeysNote(haltState).type === "warn" ? C.yellow : C.dim, marginTop: 5 }}>
+              {hotkeysNote(haltState).text}
+            </div>
+          )}
           {previewSrc && (
             <div style={{ marginTop: 8 }}>
               <div style={{ fontSize: 10, color: C.textDim, marginBottom: 3 }}>
@@ -4803,8 +4989,8 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
           <HudRow
             label="Status"
-            value={running ? (modelWait ? "paused: model unreachable" : paused ? "paused" : "running") : phase}
-            color={running ? (paused || modelWait ? C.yellow : C.green) : phaseColor}
+            value={running ? (haltedByOperator(haltState) ? "input halted: press Resume" : modelWait ? "paused: model unreachable" : paused ? "paused" : "running") : phase}
+            color={running ? (haltedByOperator(haltState) ? C.red : paused || modelWait ? C.yellow : C.green) : phaseColor}
           />
           {running && modelWait && (
             <HudRow label="Model" value={modelWaitSecondsLeft > 0 ? `next check in ${modelWaitSecondsLeft}s` : "checking…"} color={C.yellow} />

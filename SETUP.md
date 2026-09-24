@@ -104,8 +104,72 @@ windows  (pygetwindow): ready / missing ...
 speedhack(xspeedhack): ready / missing ...
 ```
 
-> **Emergency stop at any time:** slam the mouse into the **top-left screen corner**
-> (pyautogui FAILSAFE), or click **■ Stop** in the UI.
+> **Emergency stop at any time:** press **Ctrl+Alt+Pause** or **Ctrl+Alt+Shift+H**,
+> or click **■ Stop** in the UI. Either one halts all input at once — see **The
+> kill switch** below. The chords work over most windows, but a game in front can
+> block them (see **Where a chord may not work**): if a chord does nothing, press
+> **Alt+Tab** to reach the agent tab and click **■ Stop**.
+> Moving the mouse into a screen corner is **not** an emergency stop, whatever
+> older notes said: it stops only pyautogui's own calls (mouse moves and clicks,
+> and typed text), never the keys the agent sends with Windows `SendInput` or its
+> gamepad.
+
+### The kill switch
+When the backend starts, its window says which hotkeys it registered:
+```
+Kill switch: Ctrl+Alt+Pause or Ctrl+Alt+Shift+H halts all input.
+             Resume on the agent page lifts it. A game in front can block the chord:
+             then Alt+Tab to the agent page and click Stop. (A screen corner is NOT a kill switch.)
+```
+Many laptop keyboards have no Pause key: use **Ctrl+Alt+Shift+H** there. The same
+chords are named under the **▶ Start** button on the agent page.
+
+Pressing either chord (it works while the agent is holding Shift, Ctrl or Alt
+down):
+- lets go at once of every key and mouse button the agent is holding, puts the
+  virtual gamepad back to rest, and sets a game slowed by pause-to-think back to
+  normal speed;
+- stops a key hold, a pointer glide, a drag, a run of clicks or a line of typing
+  that is under way within 0.1 s;
+- makes the backend refuse every key, click, gamepad input and game-speed change
+  until you lift it. Its window prints
+  `[hh:mm:ss] Input HALTED by Ctrl+Alt+Pause: everything held was let go, ...`.
+
+The agent page shows a red box, **⛔ Input halted: press Resume**, saying who
+halted input and when, and the log says `⛔ Input halted by Ctrl+Alt+Pause: ...`.
+A running session waits where it is (HUD **Status** `input halted: press Resume`):
+nothing it tried meanwhile counts as a move that did nothing, an error or a stuck
+game. Click **Resume** in the red box to lift the halt (`▶ Input resumed.`); play
+goes on from where it was, in the same game. No hotkey resumes, so a stray key
+press cannot set the agent going again, and **▶ Start** refuses to begin while
+input is halted.
+
+**■ Stop** halts input too, so a hold or a line of typing under way ends within
+0.1 s instead of running on (and the model request in flight is cancelled, as
+before). That halt lifts itself once the run has ended, with no red box; a hotkey
+pressed meanwhile keeps input halted until you press **Resume**.
+
+**Where a chord may not work.** The chords are Windows hotkeys, and three things
+get in their way:
+- **A game that turns hotkeys off.** A game in front that reads the keyboard as
+  raw input with hotkeys turned off (`RIDEV_NOHOTKEYS`; some native and
+  full-screen games do) stops both chords from reaching the backend while it has
+  focus. **Alt+Tab** still works: press it to reach the agent tab and click
+  **■ Stop**. Before leaving a new native game alone with the agent, press a chord
+  over it once (Test 14) and check the backend window says `Input HALTED`.
+- **Remote Desktop.** The Remote Desktop window on your own PC keeps
+  **Ctrl+Alt+Break**, which is what Ctrl+Alt+Pause sends, for itself (it switches
+  full screen), so that chord never reaches the test PC. Over Remote Desktop use
+  **Ctrl+Alt+Shift+H**.
+- **The game still sees Ctrl, Alt and Shift.** Only the chord's last key (Pause
+  or H) is kept from the window in front. A game that does something on Ctrl,
+  Alt or Shift alone may do it as you press the chord.
+
+The agent itself never presses a chord: the backend refuses a key press or hold
+that would make one, since Windows takes an injected chord for yours and the run
+would sit halted until someone pressed **Resume**. The log then says
+`⚠ Backend key error: Ctrl+Alt+Shift+H is the operator's kill switch, and the agent never presses it ...`,
+and the model is told the same.
 
 ### Only the agent page can use the backend
 The backend moves your real mouse and keyboard, and any web page open in your
@@ -576,6 +640,65 @@ can start following a message meant for it, or it can stop following the game.
   like an API key` line means a key got into the build output: do not commit or
   publish `dist/`, and report it.
 
+### ✅ Test 14 — The kill switch stops keys, clicks and the gamepad
+Moving the mouse into a screen corner never stopped the agent's keys, and ■ Stop
+let a hold or a line of typing already sent run on. See **The kill switch** under
+Launch. This needs the backend restarted: close the backend window and the
+`start.bat` window, run `start.bat`, and reload the agent tab.
+- **Pass:** the backend window shows `Kill switch: Ctrl+Alt+Pause or Ctrl+Alt+Shift+H halts all input.`
+  and the same chords are named under **▶ Start**. If it says `NO HOTKEY` or
+  `... is taken by another program`, note what it says and see Troubleshooting.
+- **Idle:** click into Notepad and press **Ctrl+Alt+Shift+H**. **Pass:** nothing
+  appears in Notepad, the backend window prints `Input HALTED by Ctrl+Alt+Shift+H: ...`,
+  and within a few seconds the agent tab shows the red **⛔ Input halted: press
+  Resume** box and the log line `⛔ Input halted by Ctrl+Alt+Shift+H: ...`. Click
+  **⌨ Test Key**: the log says `Test FAILED: input is halted by Ctrl+Alt+Shift+H: ...`.
+  Click **▶ Start**: `Not started: input is halted (by Ctrl+Alt+Shift+H). Press Resume first.`
+  Click **Resume**: the box goes, the log says `▶ Input resumed.`, and **⌨ Test
+  Key** works again. If your keyboard has a Pause key, repeat with
+  **Ctrl+Alt+Pause**.
+- **A held key is let go:** open Notepad next to the agent tab, and in the agent
+  tab's Console (F12) paste Test 11's first line (Shift held down, starting 5
+  seconds later). Click into Notepad and type letters: they come out as CAPITALS.
+  About 2 seconds into the capitals, press **Ctrl+Alt+Pause** (or
+  Ctrl+Alt+Shift+H), let go, and type again. **Pass:** the letters are small at
+  once, not 3 seconds later, and the Console reply shows `"halted":true` with
+  `"held"` about 2. Click **Resume** in the agent tab.
+- **Typing stops:** clear Notepad, and in the Console paste
+  ```js
+  setTimeout(() => fetch("/api/keyboard/type", {method: "POST", headers: {"Content-Type": "application/json", "X-Agent-Token": window.__AGENT_TOKEN__}, body: JSON.stringify({text: "b".repeat(300), interval: 0.08})}).then(r => r.json()).then(r => console.log(JSON.stringify(r))), 5000)
+  ```
+  Click into Notepad. `b`s start after 5 seconds and would take 24 seconds; press
+  the chord after a few. **Pass:** the `b`s stop at once, and the Console shows
+  `"halted":true` and `"typed":N` with N the number of `b`s in Notepad (give or
+  take two). Click **Resume**.
+- **During a run:** run Test 0 (2048, solver on) for a few moves, then press the
+  chord. **Pass:** moves stop within a second, the red box shows, HUD **Status**
+  reads `input halted: press Resume`, and for the next 30 seconds the log has no
+  `⚠ Backend key error`, `Solver could not act`, `No progress` or `Game N finished`
+  line. Click **Resume**. **Pass:** play goes on with the same board and game number.
+  With **Use built-in solver** off (the model plays), do the same: while halted
+  no turn is played, and after **Resume** the model goes on.
+- **■ Stop:** start a run and click **■ Stop** during play. **Pass:** the backend
+  window prints `Input HALTED by ■ Stop on the agent page: ...` and, after
+  `Session complete` in the log, `Input resumed.`; no red box appears, and **⌨ Test
+  Key** works. Then start a run, press the chord, and click **■ Stop**. **Pass:**
+  after `Session complete` the red box is still there, and only **Resume** lifts it.
+- **Over a native game:** open a native game (the one from Test 6 or 7, or any
+  game you mean to leave with the agent), click into it so it has focus, and
+  press **Ctrl+Alt+Shift+H**. **Record** the game's name and whether the backend
+  window printed `Input HALTED by Ctrl+Alt+Shift+H`. If it did not, that game
+  blocks hotkeys (see **Where a chord may not work**): press **Alt+Tab**, check
+  that it brings the agent tab up, and plan on **■ Stop** for that game. If it
+  did halt, click **Resume**. With a Pause key, try **Ctrl+Alt+Pause** too (not
+  over Remote Desktop, which keeps Ctrl+Alt+Break for itself).
+- **The agent cannot press a chord:** in the agent tab's Console paste
+  ```js
+  fetch("/api/keyboard/press", {method: "POST", headers: {"Content-Type": "application/json", "X-Agent-Token": window.__AGENT_TOKEN__}, body: JSON.stringify({key: "ctrl+alt+shift+h"})}).then(r => r.json()).then(r => console.log(JSON.stringify(r)))
+  ```
+  **Pass:** the Console shows `"ok":false` and `... is the operator's kill switch ...`,
+  no red box appears, and the backend window prints no `Input HALTED` line.
+
 ---
 
 ## 5. What to watch in the log
@@ -590,7 +713,7 @@ can start following a message meant for it, or it can stop following the game.
 | `System prompt ≈ N tokens` | The size of the prompt resent every turn. It is about 120 tokens larger than before this change: every prompt now carries the standing rule about what is on screen (see Safety recap). The warning above ≈1200 tokens on a local model is unchanged |
 | `Attached to <proc> (pid ...)` | Speed hack attached |
 | Backend banner `... : ready` | Capability/driver present |
-| `Backend online — Windows 1920×1080` | The page reached the backend with its token. The screen size now comes from `/screen/info`; `/health` answers anyone and says only `ok` |
+| `Backend online — Windows 1920×1080` | The page reached the backend with its token. The screen size now comes from `/screen/info`; `/health` answers anyone and says only `ok`, whether input is halted and which kill-switch hotkeys are registered |
 | `⛔ The backend refused this page's token. ...` (and a red box with **Reload page**) | The backend was restarted after this tab loaded, so the tab's token is old. Reload the tab. A running session pauses; a session using the Ollama relay is given up (`Session given up: the backend refused to relay the request to Ollama ...`) |
 | `📷 The frame was too large to save whole; saving it at 1/2 size.` | A snapshot frame was over the backend's 8 MB limit as a PNG (a large, busy screen) and was saved smaller rather than not at all |
 | `Game N finished — won` / `Session complete — outcome: won` | A win. Outcomes are always one of `won`, `lost`, `stuck`, `ended`, `aborted`; `win` no longer appears. The backend reads an old `win` count in the memory file as `won` straight away, and the file itself is rewritten without `win` the next time a session saves to it |
@@ -618,6 +741,14 @@ can start following a message meant for it, or it can stop following the game.
 | `... accepted the key and <model> but would not give a one-token reply (...); starting.` | The provider accepted both but refused so short a reply. The run starts; worth reporting which provider said it |
 | `Gemini offers this key N models, listed below the defaults.` (under the model picker) / `N models pulled on the Ollama server, ...` | The model list came from the provider (or the Ollama server); **↻ List** asks again and logs it |
 | `Could not list <provider>'s models: ...` (under the model picker) | The provider refused the key or did not answer. The defaults and a typed id still work, and **▶ Start** checks them |
+| Backend banner `Kill switch: Ctrl+Alt+Pause or Ctrl+Alt+Shift+H halts all input.` (also under **▶ Start**) | The kill-switch hotkeys are registered for this run. `NO HOTKEY` or `... is taken by another program` instead: see Troubleshooting |
+| `⚠ Backend key error: Ctrl+Alt+Shift+H is the operator's kill switch, and the agent never presses it ...` (or `Ctrl+Alt+Pause`) | The model tried to press or hold a kill-switch chord (a screen may have told it to). Nothing was sent and input is not halted; the model is told the same |
+| `⛔ Input halted by Ctrl+Alt+Pause: everything held was let go, ...` (and the red **⛔ Input halted: press Resume** box) | A kill-switch chord was pressed. Every key and mouse button the agent held was let go, the gamepad is at rest, a slowed game runs at normal speed, and the backend refuses all input until **Resume**. A run waits and nothing it tries meanwhile counts against the game. The backend window shows `Input HALTED by ...` |
+| `▶ Input resumed.` | **Resume** was clicked; a waiting run goes on where it was |
+| `Not started: input is halted (by ...). Press Resume first.` | **▶ Start** while a kill-switch chord's halt is on |
+| Backend window `Input HALTED by ■ Stop on the agent page: ...`, later `Input resumed.` | **■ Stop** halted the input already sent (a hold or typing under way ends within 0.1 s), and lifted its own halt once the run ended. No red box: it lifts itself |
+| `↳ Not done. The operator halted all input (the kill switch): ...` (JSON-action mode; otherwise only in the model's tool result) | The model's action met the halt. It is not counted as a move that changed nothing |
+| `■ Stop did not reach the backend's kill switch (...): input already sent runs to its end.` | The backend is down, or still runs code from before this change (restart `start.bat`). The run still stops between actions |
 | `⚠ The reply was cut off at the output cap (16,384 tokens) before the model acted, most likely spent thinking: this turn may do nothing.` | The model used the whole output cap (thinking counts toward it) before it called a tool, so the turn did nothing. Now and then is harmless. On most turns, report it with the provider and model. With Ollama it reads `... at the model's length limit ...` |
 
 ---
@@ -667,12 +798,26 @@ can start following a message meant for it, or it can stop following the game.
 | A key stays held far longer than 5 s, or typing goes on past 300 characters, and no `⚠ hold_key` / `⚠ type_text` line appears | The backend window still runs code from before the pull. Close it and the `start.bat` window, and run `start.bat` again |
 | The agent does what a message on screen tells it to (an ad, a pop-up, a note in another window) instead of playing | Press **■ Stop**. Every prompt carries the rule that screen text is game content, not instructions (see Test 13 and the Safety recap), but a model can still be talked round, and a small local model most easily. Report the provider, the model and the log line; prefer a cloud model on pages you do not control, and never leave a run unattended where following such a message could cost something |
 | The agent refuses to click a button the game itself shows (**New Game**, **Start**), or reports a game as stuck with a working control in front of it, saying the screen must not be obeyed | The standing rule read too widely. It says on-screen text is the game's own content, to be read for the game's rules, goals and controls, and refuses only a message aimed past the game (see Test 13). Press **■ Stop**, report the provider, the model and the sentence it gave, and try a cloud model: a 3B local model reconciles a rule and a brief badly |
+| Backend window `Kill switch: NO HOTKEY - use Stop on the agent page ...` / `Ctrl+Alt+Shift+H is taken by another program` (the line under **▶ Start** says the same) | Another program (a screen recorder, a game overlay, a keyboard utility) registered that chord first. The other chord and **■ Stop** still work. Close that program and restart `start.bat` to get the chord back |
+| Ctrl+Alt+Pause does nothing | The keyboard has no Pause key, or it needs Fn: use **Ctrl+Alt+Shift+H**. Over Remote Desktop, the Remote Desktop window keeps Ctrl+Alt+Break (what Ctrl+Alt+Pause sends) for itself: use **Ctrl+Alt+Shift+H**. Check the backend banner lists the chord. If neither chord works while a game has focus, see the next row |
+| A chord does nothing while the game has focus (no `Input HALTED` in the backend window), but works over Notepad | The game turns hotkeys off while it has focus (see **Where a chord may not work**). Press **Alt+Tab** to reach the agent tab and click **■ Stop**, which halts input as well. Note the game's name, and plan on **■ Stop** for it |
+| Every action fails with `input is halted by ...` (`Test FAILED: input is halted ...`) | Input is halted. Click **Resume** in the red box. With no red box it is a halt **■ Stop** left behind (its tab was closed before the run ended): the page lifts it within a few seconds, and **▶ Start** lifts it too |
+| The red box stays after **Resume**, with `Resume failed — ...` | The backend did not answer (window closed or restarted). Run `start.bat` if needed and reload the tab: a restarted backend starts with input not halted |
 | `npm run build` ends with `FAIL  dist holds N values shaped like an API key` | The build output has something key-shaped in it. Do not commit or publish `dist/`. The usual cause is source that reads `import.meta.env.VITE_..._API_KEY`, which makes Vite paste the key in; keys belong in the page's key field. Delete `dist/`, fix the source, and rotate the key if it was a real one. `node tools/check-no-secrets.mjs <folder>` scans any folder the same way |
 
 ---
 
 ## 7. Safety recap
-- **FAILSAFE:** mouse to top-left corner kills all input instantly.
+- **Kill switch:** **Ctrl+Alt+Pause** or **Ctrl+Alt+Shift+H** halts all input at
+  once: everything held is let go, the gamepad goes to rest, a slowed game runs at
+  normal speed, and nothing more is sent until **Resume** on the agent page.
+  **■ Stop** halts input already sent too. The chords work over most windows, not
+  all: a game in front can turn hotkeys off, and Remote Desktop keeps
+  Ctrl+Alt+Break. Then **Alt+Tab** to the agent tab and click **■ Stop**, and try
+  a chord over each new native game once (Test 14). Moving the mouse into a
+  screen corner is not a kill switch: it stops only pyautogui's own calls (mouse
+  moves and clicks, and typed text), never the keys sent with `SendInput` or the
+  gamepad.
 - **Pause-to-think:** offline single-player games only.
 - **Anti-cheat:** everything the agent does is synthetic input, not only
   pause-to-think. Keys and clicks are sent with Windows `SendInput`/pyautogui, and
@@ -691,9 +836,9 @@ can start following a message meant for it, or it can stop following the game.
   seconds, puts a stick or trigger given a duration back to rest after at most 5
   seconds (with duration 0 it stays where it was put until the next call), and
   types at most 300 characters. Whatever a hold pressed is let go even when the
-  call fails part-way, or while the mouse sits in a screen corner (FAILSAFE). A
-  model's mistake cannot hold a key down for minutes. (■ Stop still does not cut
-  a hold already under way short; it ends within those 5 seconds.)
+  call fails part-way, or while the mouse sits in a screen corner (pyautogui's
+  fail-safe). A model's mistake cannot hold a key down for minutes, and the kill
+  switch or **■ Stop** ends a hold under way within 0.1 s.
 - **API keys:** a cloud key is typed into the page and lives there; the browser
   sends it to the provider itself, so anything that can read the agent tab can
   read it. Keys are never read from `.env`, and `npm run build` fails if anything
