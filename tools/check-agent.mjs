@@ -1260,6 +1260,10 @@ console.log("games loop decisions");
   says("not to type URLs", /url/i);
   says("not to download or install", /(download|install)/i);
   says("not to sign in or make an account", /(sign in|account)/i);
+  // Single-player only (src/agent/sitePolicy.js): no other player agreed to face
+  // a bot, and a ranked result takes a place real people play for.
+  says("not to join matches or queue for ranked play", /\bjoin\b[\s\S]*\bmatch/i);
+  says("not to queue for ranked play", /\bqueue\b[\s\S]*\branked\b/i);
   says("what to do instead: report the game as stuck", /stuck/i);
   // The prompt goes out with every request, and a 4k-context local model has to
   // hold it alongside a screenshot.

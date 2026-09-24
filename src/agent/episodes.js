@@ -21,6 +21,7 @@
 // this module.
 
 import { normalizeOutcome } from "./outcomes.js";
+import { sitePolicyLabel } from "./sitePolicy.js";
 
 // ── Versions ──────────────────────────────────────────────────────────────────
 
@@ -144,11 +145,13 @@ export function memoryHash(memoryText) {
 //   controlScheme  {id, label}             timing  {profile, label, confirmDelay,
 //   ollama         {relay, base} or null            actionPace, mouseSpeed, typingInterval}
 //   plugin         the plugin's short name, or null when the model plays
+//   sitePolicy     why this game may be played unattended: {kind: "local-bench",
+//                  url} or {kind: "acknowledged", …} (src/agent/sitePolicy.js)
 export const RUN_FIELDS = Object.freeze([
   "session", "startedAt", "page", "provider", "model", "controlScheme", "jsonMode", "captureSource",
   "frameWidth", "frameQuality", "imageCap", "windowTurns", "strategyInterval", "grid", "crop", "timing",
   "pauseToThink", "plugin", "useSolver", "skipResearch", "maxTokens", "gameDesc", "gameKey",
-  "gamesRequested", "ollama",
+  "gamesRequested", "ollama", "sitePolicy",
 ]);
 
 /** The body of run.json for a run: RUN_FIELDS, each null when not given. */
@@ -168,6 +171,7 @@ export function runHeader(run) {
     `timing ${t.label ?? t.profile ?? "?"} (confirm ${t.confirmDelay ?? "?"} ms, pace ${t.actionPace ?? "?"} ms)`,
     run?.plugin ? `plugin ${run.plugin}` : "no plugin",
     `"${run?.gameDesc ?? ""}", ${run?.gamesRequested ?? 1} game${run?.gamesRequested === 1 ? "" : "s"}`,
+    sitePolicyLabel(run?.sitePolicy),
   ];
   return `RUN ${run?.session ?? "?"} — ${parts.join(" · ")}`;
 }

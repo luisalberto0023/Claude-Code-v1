@@ -61,7 +61,9 @@ for (const skin of Object.keys(SKINS)) {
 
 // ── Real captures from minesweeper.online ─────────────────────────────────────
 // The part the drawn fixtures cannot do. These came off the real site through
-// the agent's own capture path, cursor included.
+// the agent's own capture path, cursor included. They stay as fixtures, but the
+// agent no longer plays there (the site's rules forbid it; src/agent/sitePolicy.js):
+// new runs use the local page, which tools/check-bench.mjs reads.
 console.log("\nreal captures");
 for (const name of listFrames()) {
   resetGrid();

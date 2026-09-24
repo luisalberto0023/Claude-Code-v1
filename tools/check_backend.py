@@ -549,6 +549,11 @@ def import_server(inputs, tmp):
     # printed into the checks' output.
     if hasattr(server, "_announce"):
         server._announce = lambda text: None
+    # The title of the window in front of this PC is what someone is doing in
+    # it, and has no place in the checks' output. Reading it is harmless, but the
+    # checks answer from FOREGROUND instead, which a test can set.
+    if hasattr(server, "_active_window_title"):
+        server._active_window_title = lambda: FOREGROUND["title"]
     # The backend refuses every request without its launch token. Importing it
     # sets none (only running it does), so the tests give it theirs.
     if hasattr(server, "TOKEN_HEADER"):
@@ -565,6 +570,10 @@ def import_server(inputs, tmp):
         server._ollama_open = no_ollama_in_checks(inputs)
     return server
 
+
+# What the backend under test reads as the title of the window in front
+# (_active_window_title). A test that sets it puts it back.
+FOREGROUND = {"title": "Test Game"}
 
 # The Ollama server the backend under test relays to: TEST-NET-1, an address
 # reserved for documentation that is never routed.
@@ -1456,6 +1465,7 @@ NOT_INPUT_ROUTES = {
     "/log/append", "/log/snapshot",        # files under logs/
     "/episode/run", "/episode/game", "/episode/turns",  # run records, under logs/ too
     "/memory/{game_key}",                  # game-agent-memory.json (POST and DELETE)
+    "/memory/{game_key}/acknowledgement",  # the same file: the operator's answers for a game
     "/llm/ollama", "/config/ollama-base",  # the model relay, and its server for the next start
     "/capture/select",                     # which screen region is captured; no window is moved or focused
     "/game/detach",                        # sets the game back to normal speed, as a halt does
@@ -1936,6 +1946,126 @@ def _(h):
     again = json.loads(json.dumps(saved))
     h.server._fold_legacy_outcomes(again)
     expect(again == saved, f"a second fold changed the data: {again} vs {saved}")
+    expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
+# ── Where a game may be played ────────────────────────────────────────────────
+# minesweeper.online's rules forbid what the agent does, and nothing looked at
+# which site was being played. The page now checks the window in front against
+# sites like it (GET /screen/foreground), and asks the operator once per game
+# whether it may be played unattended, which the backend keeps in the game's
+# memory (POST /memory/<game>/acknowledgement). src/agent/sitePolicy.js is the
+# page's side, checked by tools/check-site-policy.mjs.
+
+ACK = {"gameDesc": "Minesweeper", "singlePlayer": True, "account": "not-signed-in",
+       "rankings": "not-ranked", "termsCheckedOn": "2026-09-20", "terms": "the site's rules page",
+       "site": "example.org"}
+
+
+@test("GET /screen/foreground reads the title of the window in front, only with the token, and sends no input")
+def _(h):
+    try:
+        FOREGROUND["title"] = "New game - Minesweeper Online - Google Chrome"
+        status, body = h.api.get("/screen/foreground")
+        expect(status == 200 and body.get("ok") is True, f"status {status}: {body}")
+        expect(body.get("title") == FOREGROUND["title"], f"title: {body}")
+        FOREGROUND["title"] = "x" * 5000
+        status, body = h.api.get("/screen/foreground")
+        expect(len(body.get("title", "")) == h.server.FOREGROUND_TITLE_MAX, f"a long title came back {len(body.get('title', ''))} long")
+        status, body = h.api.get("/screen/foreground", headers={h.server.TOKEN_HEADER: None})
+        expect(status == 401 and "title" not in body, f"without the token: status {status}: {body}")
+    finally:
+        FOREGROUND["title"] = "Test Game"
+    expect(not h.inputs.calls, f"reading a title sent input: {h.inputs.names()}")
+
+
+@test("POST /memory/<game>/acknowledgement keeps the operator's answers without counting a session")
+def _(h):
+    path = memory_file(h, {"minesweeper": {"gameKey": "minesweeper", "gameDesc": "Minesweeper", "sessions": 4,
+                                           "bestScore": 300, "discoveries": ["corners first"]}})
+    status, body = h.api.post("/memory/minesweeper/acknowledgement", ACK)
+    expect(status == 200 and body.get("ok") is True, f"status {status}: {body}")
+    record = body.get("acknowledgement", {})
+    expect({k: record.get(k) for k in ("singlePlayer", "account", "rankings", "termsCheckedOn", "terms", "site")}
+           == {k: ACK[k] for k in ("singlePlayer", "account", "rankings", "termsCheckedOn", "terms", "site")},
+           f"record: {record}")
+    expect("gameDesc" not in record and isinstance(record.get("acknowledgedAt"), str)
+           and record["acknowledgedAt"][:4].isdigit(), f"record: {record}")
+    saved = json.loads(path.read_text(encoding="utf-8"))["minesweeper"]
+    expect(saved.get("sessions") == 4 and saved.get("bestScore") == 300 and saved.get("discoveries") == ["corners first"],
+           f"the rest of the entry changed: {saved}")
+    status, body = h.api.get("/memory/minesweeper")
+    expect(body.get("acknowledgement") == record, f"GET: {body}")
+
+    # A session saved afterwards keeps it; the model's update_memory cannot write one.
+    status, body = h.api.post("/memory/minesweeper", {"gameDesc": "Minesweeper", "outcome": "won",
+                                                      "acknowledgement": {**ACK, "rankings": "terms-allow-bots"}})
+    expect(status == 200, f"session save: status {status}: {body}")
+    saved = json.loads(path.read_text(encoding="utf-8"))["minesweeper"]
+    expect(saved.get("acknowledgement") == record and saved.get("sessions") == 5, f"after a session: {saved}")
+
+    # A game with no memory yet gets an entry with no sessions in it.
+    status, body = h.api.post("/memory/new-game/acknowledgement", {**ACK, "gameDesc": "New game", "terms": None,
+                                                                   "account": "dedicated-profile",
+                                                                   "rankings": "terms-allow-bots"})
+    expect(status == 200 and body.get("ok") is True, f"new game: status {status}: {body}")
+    saved = json.loads(path.read_text(encoding="utf-8"))["new-game"]
+    expect(saved.get("sessions") == 0 and saved.get("gameDesc") == "New game"
+           and saved.get("acknowledgement", {}).get("account") == "dedicated-profile"
+           and saved["acknowledgement"].get("terms") is None, f"new entry: {saved}")
+    expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
+@test("POST /memory/<game>/acknowledgement refuses answers the dialog cannot give, and writes nothing")
+def _(h):
+    path = memory_file(h)
+    import datetime as dt
+    tomorrow_plus = (dt.date.today() + dt.timedelta(days=3)).isoformat()
+    for field, bad in (("singlePlayer", False), ("account", "signed-in"), ("rankings", "ranked"),
+                       ("termsCheckedOn", tomorrow_plus), ("termsCheckedOn", "1999-12-31"),
+                       ("termsCheckedOn", "2026-02-30"), ("termsCheckedOn", ""), ("terms", "x" * 301),
+                       ("gameDesc", "")):
+        status, body = h.api.post("/memory/minesweeper/acknowledgement", {**ACK, field: bad})
+        fields = [d.get("loc", [])[-1] for d in body.get("detail", []) if isinstance(d, dict)]
+        expect(status == 422 and field in fields, f"{field}={bad!r}: status {status}: {body}")
+    for missing in ("singlePlayer", "account", "rankings", "termsCheckedOn"):
+        status, body = h.api.post("/memory/minesweeper/acknowledgement",
+                                  {k: v for k, v in ACK.items() if k != missing})
+        expect(status == 422, f"without {missing}: status {status}: {body}")
+    status, body = h.api.post("/memory/minesweeper/acknowledgement", ACK, headers={h.server.TOKEN_HEADER: None})
+    expect(status == 401, f"without the token: status {status}: {body}")
+    expect(not path.exists(), f"a refused acknowledgement was written: {path.read_text(encoding='utf-8') if path.exists() else ''}")
+    expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
+
+
+@test("A memory file that cannot be read is left as it is: answers and a session's save are refused with 409")
+def _(h):
+    # The page reads an unreadable file as no memory at all, so every game looks
+    # unanswered; saving the first answers over it would lose every other game.
+    path = memory_file(h)
+    name = h.server.MEMORY_FILE.name
+    for broken in (b'{"other-game": {"gameKey": "other-game", "sess', b"[1, 2]", b"\xff\xfe{\x00"):
+        path.write_bytes(broken)
+        status, body = h.api.post("/memory/minesweeper/acknowledgement", ACK)
+        expect(status == 409 and body.get("ok") is False and name in str(body.get("error")),
+               f"answers over {broken!r}: status {status}: {body}")
+        status, body = h.api.post("/memory/minesweeper", {"gameDesc": "Minesweeper", "outcome": "won"})
+        expect(status == 409 and body.get("ok") is False and name in str(body.get("error")),
+               f"a session over {broken!r}: status {status}: {body}")
+        expect(path.read_bytes() == broken, f"{broken!r} was overwritten: {path.read_bytes()[:200]!r}")
+        status, body = h.api.get("/memory/minesweeper")
+        expect(status == 200 and body == {}, f"GET over {broken!r}: status {status}: {body}")
+
+    # A file saved again from Notepad, with a byte-order mark, is read and kept.
+    path.write_bytes(b"\xef\xbb\xbf" + json.dumps({"other-game": {"gameKey": "other-game", "sessions": 7}}).encode("utf-8"))
+    status, body = h.api.post("/memory/minesweeper/acknowledgement", ACK)
+    expect(status == 200 and body.get("ok") is True, f"with a BOM: status {status}: {body}")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    expect(saved.get("other-game", {}).get("sessions") == 7 and "acknowledgement" in saved.get("minesweeper", {}),
+           f"with a BOM, on disk: {saved}")
+    # Saved in one step: no temporary file is left beside it.
+    left = [p.name for p in path.parent.iterdir() if p.name.startswith(name) and p.name != name]
+    expect(not left, f"left beside the memory file: {left}")
     expect(not h.inputs.calls, f"memory touched input: {h.inputs.names()}")
 
 

@@ -68,6 +68,17 @@ export function tokenScript(token) {
   return `window.__AGENT_TOKEN__ = ${JSON.stringify(safe)};`;
 }
 
+/**
+ * Whether `pagePath` (the path Vite serves an HTML page as) is the agent page:
+ * "/", "/index.html", or "/index.html" standing in for an address with no file
+ * of its own. The local test games under bench/ are HTML pages the dev server
+ * serves too, and a game has no business holding the token, so it gets none.
+ */
+export function isAgentPage(pagePath) {
+  const p = String(pagePath ?? "").split(/[?#]/)[0];
+  return p === "/" || p === "/index.html";
+}
+
 /** `viteVersion` is for tools/check-agent.mjs, to try a Vite that is too old. */
 export default function agentToken({ viteVersion = installedVite } = {}) {
   let file = path.resolve(TOKEN_FILE_NAME);
@@ -83,7 +94,8 @@ export default function agentToken({ viteVersion = installedVite } = {}) {
       }
       file = path.join(config.root, TOKEN_FILE_NAME);
     },
-    transformIndexHtml() {
+    transformIndexHtml(html, ctx) {
+      if (!isAgentPage(ctx?.path)) return [];
       return [{ tag: "script", children: tokenScript(readAgentToken(file)), injectTo: "head-prepend" }];
     },
   };

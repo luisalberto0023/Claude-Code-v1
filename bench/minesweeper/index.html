@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Minesweeper — game-agent bench</title>
+    <style>
+      /* White around the board, and nothing grey near it: the Minesweeper reader
+         finds the board as the largest block of flat grey on screen. */
+      body { margin: 0; background: #fff; color: #111; font: 14px/1.4 system-ui, "Segoe UI", sans-serif; }
+      main { padding: 20px 32px 32px; }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      p { margin: 4px 0; color: #333; }
+      nav { margin: 6px 0; }
+      nav a { color: #0645ad; margin-right: 14px; }
+      nav a[aria-current] { color: #111; font-weight: 700; text-decoration: none; }
+      #board { display: block; margin-top: 24px; image-rendering: pixelated; user-select: none; }
+      #status { min-height: 1.4em; margin-top: 12px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Minesweeper</h1>
+      <p>A local copy for testing the game agent: single-player, no account, no rankings.</p>
+      <nav id="levels" aria-label="Level"></nav>
+      <p>Board <span id="seed"></span> — add <code>?seed=</code> and a number to play a board again.</p>
+      <canvas id="board"></canvas>
+      <p id="status" role="status"></p>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

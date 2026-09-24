@@ -1421,6 +1421,28 @@ def screen_info():
     return {"width": SCREEN_W, "height": SCREEN_H, "platform": platform.system()}
 
 
+# The longest window title handed to the page. Titles are short; this only keeps
+# a strange one from filling a reply.
+FOREGROUND_TITLE_MAX = 512
+
+
+@app.get("/screen/foreground")
+def screen_foreground():
+    """The title of the window in front, and nothing else.
+
+    The page checks it against sites whose rules forbid automated play
+    (src/agent/sitePolicy.js): at Start, and every few seconds during a run,
+    when the window in front is whatever the agent last clicked. It is only
+    read: no window is focused, moved or shown. A title can say what someone is
+    doing in another window, so the page logs one only when it names a blocked
+    site, and this route needs the launch token like every other."""
+    return {
+        "ok": True,
+        "title": _active_window_title()[:FOREGROUND_TITLE_MAX],
+        "available": platform.system() == "Windows",
+    }
+
+
 # ── Session log files ──────────────────────────────────────────────────────────
 # The in-page log is capped and lives only in browser memory, so a long run loses
 # its early history and a crashed tab loses everything. Every line is mirrored to
@@ -1608,19 +1630,58 @@ def _fold_legacy_outcomes(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+class MemoryUnreadable(Exception):
+    """game-agent-memory.json exists but does not hold every game's memory, in
+    words for the operator."""
+
+
+# Every write reads the whole file, changes one game and writes the whole file
+# back, so a write holds this from its read to its save: two at once would lose
+# one's change, and replace_file uses one temporary name per process.
+_memory_lock = threading.Lock()
+
+
+def _load_for_update() -> Dict[str, Any]:
+    """Every game's memory, to change and save: {} when there is no file yet,
+    MemoryUnreadable when there is one that cannot be read. Saving {} plus one
+    game over a file that did not parse (cut short by a save the backend window
+    was closed during, say) would throw away every other game's memory, tuned
+    weights and the operator's answers included."""
+    try:
+        # utf-8-sig: a file saved again from Notepad may start with a BOM.
+        text = MEMORY_FILE.read_text(encoding="utf-8-sig")
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError) as e:
+        raise MemoryUnreadable(f"{MEMORY_FILE.name} cannot be read ({e})") from None
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise MemoryUnreadable(f"{MEMORY_FILE.name} is not valid JSON ({e})") from None
+    if not isinstance(data, dict):
+        raise MemoryUnreadable(f"{MEMORY_FILE.name} does not hold a JSON object")
+    return _fold_legacy_outcomes(data)
+
+
 def _load_all() -> Dict[str, Any]:
-    if MEMORY_FILE.exists():
-        try:
-            data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-        except Exception:
-            return {}
-        return _fold_legacy_outcomes(data)
-    return {}
+    """Every game's memory, to read: {} when there is none, or none readable."""
+    try:
+        return _load_for_update()
+    except MemoryUnreadable:
+        return {}
+
+
+def _memory_unreadable(e: MemoryUnreadable) -> JSONResponse:
+    # Not overwritten: the operator decides what to keep from it.
+    return JSONResponse({"ok": False, "error": f"{e}: nothing was saved, and the file was left as it is. "
+                                               "Fix it or move it aside, then try again"}, status_code=409)
 
 
 def _save_all(data: Dict[str, Any]) -> None:
+    """Write every game's memory, in one step (replace_file): a save cut short
+    leaves the old file, never half of one. Called holding _memory_lock."""
     _fold_legacy_outcomes(data)
-    MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    replace_file(MEMORY_FILE, json.dumps(data, indent=2, ensure_ascii=False))
 
 
 def slugify(text: str) -> str:
@@ -1658,12 +1719,11 @@ def memory_get(game_key: str):
     return data.get(game_key, {})
 
 
-@app.post("/memory/{game_key}")
-def memory_patch(game_key: str, patch: MemoryPatch):
-    data = _load_all()
-    entry = data.get(game_key, {
+def _new_entry(game_key: str, game_desc: str) -> Dict[str, Any]:
+    """A game's memory entry before its first session."""
+    return {
         "gameKey": game_key,
-        "gameDesc": patch.gameDesc,
+        "gameDesc": game_desc,
         "sessions": 0,
         "bestScore": None,
         "scoreHistory": [],
@@ -1675,8 +1735,25 @@ def memory_patch(game_key: str, patch: MemoryPatch):
         "discoveries": [],
         "avoidPatterns": [],
         "lastPlayed": None,
-    })
+    }
 
+
+@app.post("/memory/{game_key}")
+def memory_patch(game_key: str, patch: MemoryPatch):
+    with _memory_lock:
+        try:
+            data = _load_for_update()
+        except MemoryUnreadable as e:
+            return _memory_unreadable(e)
+        entry = data[game_key] if game_key in data else _new_entry(game_key, patch.gameDesc)
+        _apply_patch(entry, patch)
+        data[game_key] = entry
+        _save_all(data)
+    return {"ok": True, "entry": entry}
+
+
+def _apply_patch(entry: Dict[str, Any], patch: MemoryPatch) -> None:
+    """One session's MemoryPatch, added to a game's memory entry in place."""
     entry["sessions"] = entry.get("sessions", 0) + 1
 
     if patch.outcome:
@@ -1731,9 +1808,66 @@ def memory_patch(game_key: str, patch: MemoryPatch):
 
     entry["lastPlayed"] = datetime.datetime.utcnow().isoformat() + "Z"
 
-    data[game_key] = entry
-    _save_all(data)
-    return {"ok": True, "entry": entry}
+
+# ── Where a game may be played ─────────────────────────────────────────────────
+# Before a game's first run the page asks the operator, once, whether it may be
+# played unattended at all: single-player; not signed in, or in a browser
+# profile of its own; results not posted to public rankings, or the site's
+# terms allow bots; and the date the terms were checked (src/agent/sitePolicy.js
+# says why, and SETUP.md "Which games the agent may play" is the policy). The
+# answer is kept in the game's memory entry as "acknowledgement", so it is asked
+# once per game and dated, and Clear Memory forgets it with the rest.
+#
+# Only this route writes it. The model's update_memory goes through MemoryPatch,
+# which has no such field (pydantic drops fields it does not know), so what a
+# screen talks a model into cannot acknowledge anything.
+
+# The same numbers as ACK_TERMS_MAX, ACK_EARLIEST and ACK_NAME_MAX in
+# src/agent/sitePolicy.js (tools/check-site-policy.mjs compares them). The page
+# cuts a longer game name short, since here it only labels a new entry.
+ACK_TERMS_MAX = 300
+ACK_EARLIEST = "2000-01-01"
+ACK_NAME_MAX = 200
+
+
+class Acknowledgement(BaseModel):
+    gameDesc: str = Field(min_length=1, max_length=ACK_NAME_MAX)
+    singlePlayer: Literal[True]
+    account: Literal["not-signed-in", "dedicated-profile"]
+    rankings: Literal["not-ranked", "terms-allow-bots"]
+    termsCheckedOn: datetime.date
+    terms: Optional[str] = Field(None, max_length=ACK_TERMS_MAX)
+    site: Optional[str] = Field(None, max_length=253)
+
+    @field_validator("termsCheckedOn")
+    @classmethod
+    def _a_real_day(cls, value: datetime.date) -> datetime.date:
+        # A day ahead is allowed for a page whose clock sits in a later time zone.
+        if value > datetime.date.today() + datetime.timedelta(days=1):
+            raise ValueError("is after today")
+        if value < datetime.date.fromisoformat(ACK_EARLIEST):
+            raise ValueError(f"is before {ACK_EARLIEST}")
+        return value
+
+
+@app.post("/memory/{game_key}/acknowledgement")
+def memory_acknowledge(game_key: str, ack: Acknowledgement):
+    """Keep the operator's answers for this game. Not a session: nothing else in
+    the entry changes. A memory file that cannot be read is refused (409), not
+    replaced: it would look to the page as if no game had been answered for,
+    and the first answers saved would overwrite every game's memory."""
+    with _memory_lock:
+        try:
+            data = _load_for_update()
+        except MemoryUnreadable as e:
+            return _memory_unreadable(e)
+        entry = data[game_key] if game_key in data else _new_entry(game_key, ack.gameDesc)
+        record = ack.model_dump(mode="json", exclude={"gameDesc"})
+        record["acknowledgedAt"] = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+        entry["acknowledgement"] = record
+        data[game_key] = entry
+        _save_all(data)
+    return {"ok": True, "acknowledgement": record}
 
 
 # ── Run records: which code played what, and how it went ─────────────────────
@@ -2290,10 +2424,11 @@ def config_ollama_base(b: OllamaBaseBody):
 
 @app.delete("/memory/{game_key}")
 def memory_clear(game_key: str):
-    data = _load_all()
-    if game_key in data:
-        del data[game_key]
-        _save_all(data)
+    with _memory_lock:
+        data = _load_all()
+        if game_key in data:
+            del data[game_key]
+            _save_all(data)
     return {"ok": True}
 
 

@@ -30,6 +30,12 @@ import {
 } from "./agent/episodes.js";
 import { startTurn, backendPhase, sendsInput } from "./agent/turnClock.js";
 import {
+  LOCAL_MINESWEEPER, SITE_WATCH_MS, ACK_TERMS_MAX, ACK_ACCOUNT, ACK_RANKINGS, ACK_ACCOUNT_CHOICES, ACK_RANKINGS_CHOICES,
+  blockedSite, blockedSiteMessage,
+  localBench, localDate, ackProblem, ackBody, readAck, ackSiteChange, ackSiteChangeMessage,
+  sitePolicyRecord, sitePolicyLabel, olderBackendNote,
+} from "./agent/sitePolicy.js";
+import {
   LOG_QUEUE_MAX, RECORD_QUEUE_MAX, newQueue, onScreen, logLineBatches, recordBatches, drainQueue, keepRecord, flushNotes,
 } from "./agent/logQueue.js";
 import { PROVIDERS } from "./llm/providers.js";
@@ -1272,7 +1278,12 @@ export default function GameAgent() {
 
   // Game config
   const [gameDesc, setGameDesc] = useState("2048");
+  // Read at ▶ Start: a site whose rules forbid automated play is refused, and a
+  // local bench page needs no acknowledgement (src/agent/sitePolicy.js).
   const [gameUrl, setGameUrl] = useState("");
+  // The questions asked before a game's first run, while they are open:
+  // {gameKey, gameDesc, url, form, error, saving}, or null.
+  const [ackDialog, setAckDialog] = useState(null);
 
   // Timing
   const [timingProfile, setTimingProfile] = useState("arcade");
@@ -3115,6 +3126,13 @@ Reply with ONLY a JSON object, no other text:
   const testSolver = useCallback(async () => {
     const plug = findPlugin(gameDesc);
     if (!plug) { addLog(`No solver plugin matches "${gameDesc}".`, "warn"); return; }
+    // Reading a board and naming the next move is what minesweeper.online's
+    // rules call a board analyser, so a blocked site (src/agent/sitePolicy.js)
+    // is refused here as at ▶ Start, before the board is read. The window in
+    // front is this page, where the button was clicked, so it is not asked.
+    const blocked = blockedSite({ desc: gameDesc, url: gameUrl,
+      windows: useNativeCapture && selectedWindowTitle ? [{ title: selectedWindowTitle, where: "the window chosen for capture" }] : [] });
+    if (blocked) { addLog(blockedSiteMessage(blocked, { refused: "Solver test not run" }), "error"); return; }
     const canvas = solverCanvasRef.current;
     if (!canvas || !videoRef.current) { addLog("Start screen capture first.", "warn"); return; }
     const frame = captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
@@ -3153,7 +3171,7 @@ Reply with ONLY a JSON object, no other text:
     }
     const btn = plug.findRestartButton?.(canvas);
     addLog(btn ? `restart button found at image ${btn.x},${btn.y}` : "restart button not found by colour", btn ? "success" : "warn");
-  }, [gameDesc, addLog]);
+  }, [gameDesc, gameUrl, useNativeCapture, selectedWindowTitle, addLog]);
 
   // ── agentTurn ────────────────────────────────────────────────────────────────
   // One model turn. Returns a turn result (src/agent/turnResult.js):
@@ -3514,6 +3532,55 @@ Reply with ONLY a JSON object, no other text:
     }
   }, [providerKey, model, addLog, setGameSpeed]);
 
+  // ── Where the game is played ─────────────────────────────────────────────────
+  // Checked at ▶ Start, before anything costs a request (src/agent/sitePolicy.js).
+  // A site whose rules forbid automated play is refused, named in the game name,
+  // the URL field, the window in front or the window chosen for capture. A local
+  // bench page may be played; any other game only once the operator has answered
+  // the questions about it, which its memory keeps. Returns
+  //   {ok: true, policy}                  play; policy goes in the run's records
+  //   {ok: false, message, type, ask?}    do not; ask opens the questions
+  // Reads window titles and memory; sends no input and focuses nothing.
+  const checkSite = useCallback(async (nativeMode) => {
+    const front = await backend("/screen/foreground");
+    const windows = [];
+    if (front?.ok && typeof front.title === "string") windows.push({ title: front.title, where: "the window in front" });
+    if (nativeMode && selectedWindowTitle) windows.push({ title: selectedWindowTitle, where: "the window chosen for capture" });
+    const blocked = blockedSite({ desc: gameDesc, url: gameUrl, windows });
+    if (blocked) return { ok: false, message: blockedSiteMessage(blocked), type: "error" };
+    if (!front?.ok && !front?.refused) {
+      addLog(`Could not read which window is in front (${olderBackendNote(backendFailure(front))}): ` +
+        "only the game name and the URL field were checked.", "warn");
+    }
+
+    const bench = localBench(gameUrl);
+    if (bench) return { ok: true, policy: sitePolicyRecord({ bench }) };
+    const gameKey = slugify(gameDesc);
+    if (!gameKey) {
+      return { ok: false, type: "error",
+        message: "Not started: give the game a name with a letter or a digit in it. Its memory, and the answers asked before its first run, are kept under that name." };
+    }
+    const mem = await loadMemory(gameKey);
+    if (!mem || mem.ok === false) {
+      return { ok: false, type: "error",
+        message: `Not started: could not read this game's memory to see whether it may be played (${backendFailure(mem)}).` };
+    }
+    const ack = readAck(mem);
+    if (ack) {
+      // The answers are this game's, whatever the site; their terms date is
+      // the site's they were given for. Said, and named on the RUN line.
+      const change = ackSiteChange(ack, gameUrl);
+      if (change) addLog(ackSiteChangeMessage(change, gameDesc), "warn");
+      return { ok: true, policy: sitePolicyRecord({ ack, url: gameUrl }) };
+    }
+    return {
+      ok: false, type: "info",
+      message: `First run of "${gameDesc.trim()}": answer the questions on the page before it starts (asked once for this game).`,
+      ask: { gameKey, gameDesc: gameDesc.trim(), url: gameUrl,
+        form: { singlePlayer: false, account: "", rankings: "", termsCheckedOn: "", terms: "" }, error: null, saving: false },
+    };
+  }, [gameDesc, gameUrl, selectedWindowTitle, addLog]);
+
   // ── Which code and settings this run is ────────────────────────────────────
   // The RUN line that opens the run's log, and run.json (src/agent/episodes.js):
   // both commits, said loudly when they differ, the provider, model and
@@ -3551,7 +3618,17 @@ Reply with ONLY a JSON object, no other text:
     const haltProblem = haltStartProblem(readHaltState(haltReply));
     if (haltProblem) { startingRef.current = false; addLog(haltProblem, "error"); return; }
     if (readHaltState(haltReply)?.halted) applyHaltState(await backend("/session/resume", { reason: STOP_HALT }));
+
+    // Where the game is played: a site whose rules forbid automated play is
+    // refused, and a game's first run waits for the operator's answers (see
+    // checkSite). Before the model check, so a refusal costs no request.
+    const site = await checkSite(nativeMode);
     startingRef.current = false;
+    if (!site.ok) {
+      addLog(site.message, site.type);
+      if (site.ask) setAckDialog(site.ask);
+      return;
+    }
 
     // Lock in the chosen control scheme for this run
     activeToolsRef.current = buildActiveTools(controlScheme, gridEnabled);
@@ -3644,6 +3721,7 @@ Reply with ONLY a JSON object, no other text:
         relay: ollamaViaBackend,
         base: ollamaViaBackend ? (ollamaRelay?.base ?? null) : (tidyOllamaBase(ollamaHost) || OLLAMA_DEFAULT_BASE),
       },
+      sitePolicy: site.policy,
     };
 
     setRunning(true);
@@ -4453,7 +4531,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
       waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState,
-      stampRun, queueRecord, getTiming, timingProfile, maxTokens]);
+      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
@@ -4472,6 +4550,62 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       return reply;
     });
   }, [addLog, applyHaltState]);
+
+  // ── A blocked site in front during a run ─────────────────────────────────────
+  // At ▶ Start the window in front is the agent page, where Start was clicked.
+  // During a run it is whatever the agent clicked last, and that window gets its
+  // keys, so it is asked about as the run starts and then every second (the
+  // solver sends its first clicks within one or two): a site whose rules forbid
+  // automated play (src/agent/sitePolicy.js) stops the run as ■ Stop does. A
+  // paused run is still watched.
+  useEffect(() => {
+    if (!running) return undefined;
+    let live = true;
+    let timer = null;
+    const look = async () => {
+      const front = await backend("/screen/foreground");
+      if (!live) return;
+      const blocked = front?.ok ? blockedSite({ windows: [{ title: front.title, where: "the window in front" }] }) : null;
+      if (blocked && !stopRef.current) {
+        addLog(blockedSiteMessage(blocked, { running: true }), "error");
+        stopAgent();
+        return;
+      }
+      timer = setTimeout(look, SITE_WATCH_MS);
+    };
+    look();
+    return () => { live = false; clearTimeout(timer); };
+  }, [running, addLog, stopAgent]);
+
+  // ── The questions before a game's first run ─────────────────────────────────
+  // Opened by ▶ Start (checkSite). Saving them starts the run; the backend keeps
+  // them in the game's memory, so they are not asked again for it.
+  const setAckForm = useCallback((change) => {
+    setAckDialog(d => d && { ...d, form: { ...d.form, ...change }, error: null });
+  }, []);
+
+  const cancelAck = useCallback(() => {
+    setAckDialog(null);
+    addLog("Not started: the questions for this game were not answered.", "info");
+  }, [addLog]);
+
+  const confirmAck = useCallback(async () => {
+    const d = ackDialog;
+    if (!d || d.saving) return;
+    const problem = ackProblem(d.form);
+    if (problem) { setAckDialog({ ...d, error: problem }); return; }
+    setAckDialog({ ...d, saving: true, error: null });
+    const reply = await backend(`/memory/${encodeURIComponent(d.gameKey)}/acknowledgement`,
+      ackBody(d.form, { gameDesc: d.gameDesc, url: d.url }));
+    if (!reply?.ok) {
+      setAckDialog({ ...d, saving: false, error: `Not saved — ${olderBackendNote(backendFailure(reply))}` });
+      return;
+    }
+    setAckDialog(null);
+    const ack = readAck({ acknowledgement: reply.acknowledgement });
+    addLog(`Saved for "${d.gameDesc}": ${sitePolicyLabel(sitePolicyRecord({ ack }))}. Not asked again for this game.`, "success");
+    startAgent();
+  }, [ackDialog, addLog, startAgent]);
 
   const togglePause = useCallback(() => {
     pauseRef.current = !pauseRef.current;
@@ -4735,7 +4869,12 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
         <div style={{ padding: "8px 10px", borderBottom: `1px solid ${C.border}` }}>
           <div style={{ fontSize: 11, color: C.textDim, marginBottom: 4 }}>GAME</div>
           <input placeholder="Game name (e.g. 2048)" value={gameDesc} onChange={e => setGameDesc(e.target.value)} style={inputStyle()} />
-          <input placeholder="URL (optional)" value={gameUrl} onChange={e => setGameUrl(e.target.value)} style={inputStyle({ marginTop: 4 })} />
+          <input placeholder="URL (optional)" value={gameUrl} onChange={e => setGameUrl(e.target.value)}
+            spellCheck={false} style={inputStyle({ marginTop: 4 })} />
+          <div style={{ fontSize: 9, color: C.dim, marginTop: 3, lineHeight: 1.35 }}>
+            Checked at ▶ Start: sites whose rules forbid bots are refused, and a game's first run asks a few questions once.
+            Minesweeper: <span style={{ color: C.textDim }}>{LOCAL_MINESWEEPER}</span> (local, no questions).
+          </div>
         </div>
 
         {/* Control scheme */}
@@ -5023,7 +5162,9 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                 const failure = backendFailure(await clearMemory(slugify(gameDesc)));
                 if (failure) { addLog(`Memory not cleared — ${failure}`, "error"); return; }
                 setMemoryData(null);
-                addLog("Memory cleared.", "warn");
+                // The answers to the questions before a game's first run live in
+                // its memory too (checkSite), so they went with it.
+                addLog("Memory cleared, including any answers on where this game may be played (asked again at the next ▶ Start).", "warn");
               }}
                 style={{ ...btnStyle(C.border), fontSize: 11 }}>Clear Memory</button>
             )}
@@ -5262,6 +5403,88 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
           ))}
         </div>
       </div>
+      {/* The questions before a game's first run (checkSite, confirmAck). A modal,
+          like the decision below: ▶ Start waits on the answers, and nothing runs
+          until they are saved or cancelled. */}
+      {ackDialog && (
+        <div style={{
+          position: "fixed", inset: 0, zIndex: 1000,
+          background: "rgba(0,0,0,0.62)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <div role="dialog" aria-modal="true" aria-label="Before the first run of this game" style={{
+            width: 540, maxWidth: "92vw", maxHeight: "92vh", overflowY: "auto", background: C.panel,
+            border: `1px solid ${C.accentL}`, borderRadius: 10, padding: 22,
+            boxShadow: "0 18px 50px rgba(0,0,0,0.55)", fontSize: 12, lineHeight: 1.5,
+          }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.accentL, marginBottom: 6 }}>
+              Before the first run of "{ackDialog.gameDesc}"
+            </div>
+            <div style={{ color: C.text, marginBottom: 10 }}>
+              The agent plays unattended only on local copies, open-source or self-written games, or sites whose
+              terms allow automation: never signed in, never ranked, never with other players. Confirm this game
+              fits. The answers go in this game's memory (<b>{ackDialog.gameKey}</b>) and the run's records, and are
+              not asked again for it; Clear Memory forgets them.
+            </div>
+            <div style={{ color: C.textDim, marginBottom: 12 }}>
+              For Minesweeper, put <b>{LOCAL_MINESWEEPER}</b> in the URL field instead: the local copy needs no answers.
+            </div>
+
+            <label style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", marginBottom: 10 }}>
+              <input type="checkbox" checked={ackDialog.form.singlePlayer}
+                onChange={e => setAckForm({ singlePlayer: e.target.checked })} style={{ marginTop: 3 }} />
+              <span><b>Single-player.</b> The agent plays alone: no match, lobby or queue with other people.</span>
+            </label>
+
+            <div role="radiogroup" aria-label="Account" style={{ marginBottom: 10 }}>
+              <div style={{ color: C.dim, fontSize: 11, marginBottom: 3 }}>ACCOUNT</div>
+              {Object.entries(ACK_ACCOUNT_CHOICES).map(([value, text]) => (
+                <label key={value} style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", marginBottom: 3 }}>
+                  <input type="radio" name="ack-account" value={value} checked={ackDialog.form.account === value}
+                    onChange={() => setAckForm({ account: value })} style={{ marginTop: 3 }} />
+                  <span title={ACK_ACCOUNT[value]}>{text}</span>
+                </label>
+              ))}
+            </div>
+
+            <div role="radiogroup" aria-label="Rankings" style={{ marginBottom: 10 }}>
+              <div style={{ color: C.dim, fontSize: 11, marginBottom: 3 }}>RANKINGS</div>
+              {Object.entries(ACK_RANKINGS_CHOICES).map(([value, text]) => (
+                <label key={value} style={{ display: "flex", gap: 8, alignItems: "flex-start", cursor: "pointer", marginBottom: 3 }}>
+                  <input type="radio" name="ack-rankings" value={value} checked={ackDialog.form.rankings === value}
+                    onChange={() => setAckForm({ rankings: value })} style={{ marginTop: 3 }} />
+                  <span title={ACK_RANKINGS[value]}>{text}</span>
+                </label>
+              ))}
+            </div>
+
+            <label style={{ display: "block", marginBottom: 8 }}>
+              <span style={{ color: C.dim, fontSize: 11 }}>I CHECKED THE GAME'S OR SITE'S TERMS ON</span>
+              <input type="date" value={ackDialog.form.termsCheckedOn} max={localDate()}
+                onChange={e => setAckForm({ termsCheckedOn: e.target.value })}
+                style={inputStyle({ marginTop: 3, width: 180, colorScheme: "dark" })} />
+            </label>
+            <label style={{ display: "block", marginBottom: 10 }}>
+              <span style={{ color: C.dim, fontSize: 11 }}>WHICH TERMS (A LINK OR A NAME, OPTIONAL)</span>
+              <input type="text" value={ackDialog.form.terms} maxLength={ACK_TERMS_MAX} spellCheck={false}
+                onChange={e => setAckForm({ terms: e.target.value })} style={inputStyle({ marginTop: 3 })} />
+            </label>
+
+            {ackDialog.error && (
+              <div role="alert" style={{ color: C.red, marginBottom: 10 }}>{ackDialog.error}</div>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button onClick={cancelAck} disabled={ackDialog.saving}
+                style={{ ...btnStyle(C.border, ackDialog.saving), fontSize: 13, padding: "8px 14px" }}>Cancel</button>
+              <button onClick={confirmAck} disabled={ackDialog.saving}
+                style={{ ...btnStyle(C.accent, ackDialog.saving), fontSize: 13, padding: "8px 14px", fontWeight: 700 }}>
+                {ackDialog.saving ? "Saving…" : "Save and start"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* A stopping point the player should decide. Rendered as a modal over the
           whole app: the previous version put this inline in the log, where it
           scrolled past unnoticed while the run waited on it. */}

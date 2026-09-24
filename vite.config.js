@@ -4,13 +4,17 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import agentToken, { TOKEN_FILE_NAME } from "./tools/vite-agent-token.mjs";
 import { gitVersion, agentVersion } from "./tools/git-version.mjs";
+import benchPages from "./tools/vite-bench.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig(({ command }) => ({
   // Puts the backend's launch token in the page (see the plugin for why there),
   // and the commit the page runs, read again for every page load in npm run dev.
-  plugins: [react(), agentToken(), agentVersion({ root: ROOT })],
+  // The local test games under bench/ (a Minesweeper, for now) are served at
+  // /bench/<name>/, and the token goes only in the agent page, never in a game's
+  // (tools/vite-bench.mjs, tools/vite-agent-token.mjs).
+  plugins: [react(), agentToken(), agentVersion({ root: ROOT }), benchPages()],
   // The commit a build runs, fixed into it when it is built, so every run says
   // which code it was (src/agent/episodes.js). Not in npm run dev: there a pull
   // changes the files Vite serves, and a commit read when Vite started would go
