@@ -24,7 +24,11 @@ The agent is tested on a separate computer that only gets code through
   plugin saves, and the per-game allowance),
   change detection in `tools/check-motion.mjs` (the motion map on the real
   captures in `tools/frames`, the legacy hash beside it, and every wait after
-  an action judged where it acted),
+  an action judged where it acted), the count of actions that changed nothing
+  in `tools/check-noops.mjs` (every action type counted by its signature, a
+  click that opens a square never counted, an action never sent or never seen
+  not counted and a run of those pausing play, the stuck rule, and the page's
+  wiring),
   model request shapes, model lists and
   the model check at Start in `tools/check-llm.mjs`, the key scanner's own test in
   `tools/check-secrets.mjs`, the web-game policy in `tools/check-site-policy.mjs`

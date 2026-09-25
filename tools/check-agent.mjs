@@ -750,12 +750,13 @@ console.log("input limits");
   }).filter(Boolean);
   check(`every hold and type the model asks for tells it what was cut (${calls.length} calls)`, calls.length >= 7 && !unreported.length,
     unreported.length ? unreported.join("  |  ") : `found ${calls.length}, expected at least 7 — has the tool code changed shape?`);
-  // execute_sequence answers with one line per step, changed or not.
+  // execute_sequence answers with one line per step, changed or not: what the
+  // step did (noteEffect's words, src/agent/noops.js), then what was cut.
   // replyNote, not limitNote: a step that was halted must not be told to hold longer.
   const noted = code.match(/const (\w+) = replyNote\(r\);\s*const (\w+) = \1 \?/);
-  const stepLines = [...code.matchAll(/summary\.push\(`\$\{executed\}: \$\{t\}[^`]*?(no change|changed)(\$\{\w+\})?`\)/g)];
+  const stepLines = [...code.matchAll(/summary\.push\(`\$\{executed\}: \$\{t\}[^`]*? \$\{\w+\.step\}(\$\{\w+\})?`\)/g)];
   check("execute_sequence puts what was cut on each step's line",
-    !!noted && stepLines.length === 2 && stepLines.every(m => m[2] === `\${${noted[2]}}`),
+    !!noted && stepLines.length === 1 && stepLines.every(m => m[1] === `\${${noted[2]}}`),
     show({ note: noted?.[0] ?? null, lines: stepLines.map(m => m[0]) }));
 }
 

@@ -372,6 +372,10 @@ export function compare(before, after, noise = null, { wide = false } = {}) {
 // the view as a whole.
 export const POINT_KINDS = Object.freeze(["click", "drag"]);
 export const RESTART_KIND = "restart";
+// judge()'s answer when a look was missing, so there was nothing to compare: not
+// "the action changed nothing", which the no-op count (src/agent/noops.js) must
+// not be told.
+export const NO_FRAME = "no frame to compare";
 
 // An action's target points, in the frame's pixels: `at` may be one point or a
 // list (a drag's start and end). Points that are not numbers are left out.
@@ -415,7 +419,7 @@ export function usesWideFloor(action) {
  * with one (null otherwise).
  */
 export function judge(result, action = {}) {
-  if (!result) return { changed: false, why: "no frame to compare", peak: 0, nearest: null };
+  if (!result) return { changed: false, why: NO_FRAME, peak: 0, nearest: null };
   const kind = action?.kind ?? "any";
   const share = pct(result.changedFrac);
   if (kind === RESTART_KIND) {

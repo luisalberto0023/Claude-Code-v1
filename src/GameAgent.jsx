@@ -47,6 +47,10 @@ import {
 import {
   prepareSnapshot, modelReply, snapshotText, gameEndHeading, noOpSnapshot, frameDropped, FRAME_DROPPED_WARNING,
 } from "./agent/snapshots.js";
+import {
+  actionSignature, noteAction, stuckVerdict, effectText, stepText, noOpLine, noOpNudge, noOpReminder, noOpReminderDue,
+  notSent, unseen, blindPause,
+} from "./agent/noops.js";
 import { PROVIDERS } from "./llm/providers.js";
 import {
   anthropicRequest, openaiRequest, geminiRequest, ollamaChatBody, fromOpenAI, fromGemini, cutOffNote, usageTokens,
@@ -148,7 +152,10 @@ async function backend(path, body = null, { signal, method } = {}) {
     return { ...reply, ok: false, error: refused.message, detail: reply?.detail ?? refused.message, refused: refused.kind };
   } catch (e) {
     if (signal?.aborted) throw e;
-    return { ok: false, error: e.message };
+    // No answer at all: nothing the request asked for was done. `unreachable`
+    // says so to the no-op count (src/agent/noops.js, notSent), which must not
+    // take an action that never reached the game as one that changed nothing.
+    return { ok: false, error: e.message, unreachable: true };
   } finally {
     timed?.();
   }
@@ -1470,9 +1477,13 @@ export default function GameAgent() {
   const strategyIntervalRef = useRef(1);
   const forceStrategyRef = useRef(false); // force a vision turn (e.g. after stuck)
   const noToolsRef = useRef(false);
-  const lastActionNoOpRef = useRef(null);      // description of the last no-op move
-  const lastFailedMovesRef = useRef(new Set()); // moves that did nothing on this board
+  // Actions that changed nothing (src/agent/noops.js), kept by executeTool's
+  // noteEffect for every action type, and by the solver for its own moves; and
+  // actions whose effect is not known (never sent, or no frame to judge by).
+  const lastActionNoOpRef = useRef(null);      // the last action's signature, if it changed nothing
+  const lastFailedMovesRef = useRef(new Set()); // signatures that changed nothing since the screen last changed
   const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
+  const unknownEffectsRef = useRef(0);         // consecutive actions whose effect is not known (blindPause)
   const changeTallyRef = useRef(newTally());   // this run's actions, and where the two change detectors disagreed
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
@@ -2178,6 +2189,35 @@ export default function GameAgent() {
       return markHalted(toolResult(haltedToolText(res)));
     };
 
+    // After every action sent, of every type and every step of a sequence:
+    // whether it changed the screen (`confirm`, its wait's verdict) goes into
+    // the count of actions that changed nothing (src/agent/noops.js), keyed on
+    // the action's signature, which the next turn's nudge, its image skip and
+    // the stuck rule read. Only press_key used to be counted, so a click, drag or
+    // gamepad game never got a nudge and was never called stuck. An action judged
+    // while input was halted is not counted. Nor is one whose effect is not
+    // known: `reply`, the backend's, says it never reached the game (the backend
+    // down, restarting or refusing the page), or there was no frame to judge it
+    // by. A backend hiccup would otherwise end a game as stuck. Those are
+    // counted on their own instead, and a run of them pauses play (the games
+    // loop, blindPause). Returns what to tell the model: `text` for a tool's
+    // result, `step` for a sequence's line. `at` is where the action acted in
+    // the frame's pixels, when its input does not say (click_grid's point).
+    const noteEffect = (tool, input, confirm, { at = null, reply = null } = {}) => {
+      setLastConfirm(confirm);
+      const action = changeAction(tool, input, at);
+      const signature = actionSignature(tool, input);
+      const next = noteAction(
+        { streak: noOpStreakRef.current, failed: lastFailedMovesRef.current, lastNoOp: lastActionNoOpRef.current, unknown: unknownEffectsRef.current },
+        { signature, confirm, reply, halted: haltedRef.current });
+      noOpStreakRef.current = next.streak;
+      lastFailedMovesRef.current = next.failed;
+      lastActionNoOpRef.current = next.lastNoOp;
+      unknownEffectsRef.current = next.unknown;
+      if (next.counted && !confirm?.changed) addLog(noOpLine(next), "info", { fileOnly: true });
+      return { text: effectText(confirm, { action, streak: next.streak, reply }), step: stepText(confirm, { action, reply }) };
+    };
+
     // A pointer action moves the pointer onto its target (screen x, y) FIRST,
     // takes its baseline there once the screen has held still, and only then
     // clicks, scrolls or drags, without moving it again. A capture that draws the
@@ -2231,12 +2271,10 @@ export default function GameAgent() {
       });
       if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("click", toolInput) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("click", toolInput, confirm, { reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm });
       await pace(timing.actionPace);
-      return toolResult(res.ok
-        ? `Clicked. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
-        : `Error: ${res.error}`);
+      return toolResult(res.ok ? `Clicked. ${effect.text}` : `Error: ${res.error}`);
     }
 
     if (toolName === "click_grid") {
@@ -2263,11 +2301,11 @@ export default function GameAgent() {
       });
       if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("click_grid", toolInput, { x: imgX, y: imgY }) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("click_grid", toolInput, confirm, { at: { x: imgX, y: imgY }, reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm, imgX, imgY });
       await pace(timing.actionPace);
       return toolResult(res.ok
-        ? `Clicked cell ${toolInput.cell.toUpperCase()} (image ${imgX},${imgY}). Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`
+        ? `Clicked cell ${toolInput.cell.toUpperCase()} (image ${imgX},${imgY}). ${effect.text}`
         : `Error: ${res.error}`);
     }
 
@@ -2294,10 +2332,10 @@ export default function GameAgent() {
       const settling = Date.now();
       await settleAt(lookNow, ends);
       const confirm = await waitChange(lookNow, __base, { maxMs: Math.max(0, timing.confirmDelay - (Date.now() - settling)), action: changeAction("drag", toolInput) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("drag", toolInput, confirm, { reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm });
       await pace(timing.actionPace);
-      return toolResult(res.ok ? `Dragged. Screen ${confirm.changed ? "changed" : "unchanged"}.` : `Error: ${res.error}`);
+      return toolResult(res.ok ? `Dragged. ${effect.text}` : `Error: ${res.error}`);
     }
 
     if (toolName === "scroll") {
@@ -2307,10 +2345,11 @@ export default function GameAgent() {
       const __base = hovered.base;
       const res = await backend("/mouse/scroll", { x, y, amount: toolInput.amount });
       if (isHaltReply(res)) return halted(res);
-      await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1000), action: changeAction("scroll", toolInput) });
-      addAction(toolName, toolInput, res);
+      const confirm = await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1000), action: changeAction("scroll", toolInput) });
+      const effect = noteEffect("scroll", toolInput, confirm, { reply: res });
+      addAction(toolName, toolInput, { ...res, ...confirm });
       await pace(timing.actionPace);
-      return toolResult(res.ok ? "Scrolled." : `Error: ${res.error}`);
+      return toolResult(res.ok ? `Scrolled. ${effect.text}` : `Error: ${res.error}`);
     }
 
     // ── Keyboard actions ─────────────────────────────────────────────────────
@@ -2325,44 +2364,36 @@ export default function GameAgent() {
         addLog(`   key "${toolInput.key}" [${res.method ?? "?"}] → focused: "${res.focus}"`, "info");
       }
       const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("press_key", toolInput) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("press_key", toolInput, confirm, { reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm });
-      // Track no-op moves so the next turn can tell the model not to repeat them
-      if (confirm.changed) {
-        lastActionNoOpRef.current = null;
-        lastFailedMovesRef.current.clear();
-        noOpStreakRef.current = 0;
-      } else {
-        lastActionNoOpRef.current = `press_key ${toolInput.key}`;
-        lastFailedMovesRef.current.add(String(toolInput.key));
-        noOpStreakRef.current++;
-      }
       await pace(timing.actionPace);
-      return toolResult(res.ok
-        ? `Key pressed. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)}) — this direction is BLOCKED, try a different one`}.`
-        : `Error: ${res.error}`);
+      return toolResult(res.ok ? `Key pressed. ${effect.text}` : `Error: ${res.error}`);
     }
 
     if (toolName === "hold_key") {
       const __base = await snapshotHash(lookNow);
       const res = await backend("/keyboard/hold", { key: toolInput.key, duration: toolInput.duration });
       if (isHaltReply(res)) return halted(res);
-      await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1500), action: changeAction("hold_key", toolInput) });
-      addAction(toolName, toolInput, res);
+      const confirm = await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1500), action: changeAction("hold_key", toolInput) });
+      const effect = noteEffect("hold_key", toolInput, confirm, { reply: res });
+      addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
       await pace(timing.actionPace);
-      return toolResult(holdKeyResult(res, toolInput));
+      const held = holdKeyResult(res, toolInput);
+      return toolResult(res.ok === true ? `${held} ${effect.text}` : held);
     }
 
     if (toolName === "type_text") {
       const __base = await snapshotHash(lookNow);
       const res = await backend("/keyboard/type", { text: toolInput.text, interval: timing.typingInterval });
       if (isHaltReply(res)) return halted(res);
-      await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1500), action: changeAction("type_text", toolInput) });
-      addAction(toolName, toolInput, res);
+      const confirm = await waitChange(lookNow, __base, { maxMs: Math.min(timing.confirmDelay, 1500), action: changeAction("type_text", toolInput) });
+      const effect = noteEffect("type_text", toolInput, confirm, { reply: res });
+      addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
       await pace(timing.actionPace);
-      return toolResult(typeTextResult(res));
+      const typed = typeTextResult(res);
+      return toolResult(res.ok === true ? `${typed} ${effect.text}` : typed);
     }
 
     // ── Gamepad actions ──────────────────────────────────────────────────────
@@ -2371,12 +2402,12 @@ export default function GameAgent() {
       const res = await backend("/gamepad/button", { button: toolInput.button, hold: toolInput.hold ?? 0.08 });
       if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("gamepad_button", toolInput) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("gamepad_button", toolInput, confirm, { reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
       await pace(timing.actionPace);
       return toolResult(res.ok
-        ? withLimitNotes(`Pressed ${toolInput.button}. Screen ${confirm.changed ? `changed (dist ${confirm.dist.toFixed(1)})` : `unchanged (dist ${confirm.dist.toFixed(2)})`}.`, res)
+        ? withLimitNotes(`Pressed ${toolInput.button}. ${effect.text}`, res)
         : `Error: ${res.error}${res.available === false ? " (install vgamepad + ViGEmBus on Windows)" : ""}`);
     }
 
@@ -2389,12 +2420,12 @@ export default function GameAgent() {
       });
       if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("gamepad_stick", toolInput) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("gamepad_stick", toolInput, confirm, { reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
       await pace(timing.actionPace);
       return toolResult(res.ok
-        ? withLimitNotes(`Stick ${toolInput.stick} → (${toolInput.x}, ${toolInput.y}). Screen ${confirm.changed ? "changed" : "unchanged"}.`, res)
+        ? withLimitNotes(`Stick ${toolInput.stick} → (${toolInput.x}, ${toolInput.y}). ${effect.text}`, res)
         : `Error: ${res.error}`);
     }
 
@@ -2407,12 +2438,12 @@ export default function GameAgent() {
       });
       if (isHaltReply(res)) return halted(res);
       const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction("gamepad_trigger", toolInput) });
-      setLastConfirm(confirm);
+      const effect = noteEffect("gamepad_trigger", toolInput, confirm, { reply: res });
       addAction(toolName, toolInput, { ...res, ...confirm });
       logLimit(toolName, res);
       await pace(timing.actionPace);
       return toolResult(res.ok
-        ? withLimitNotes(`Trigger ${toolInput.trigger} → ${toolInput.value}. Screen ${confirm.changed ? "changed" : "unchanged"}.`, res)
+        ? withLimitNotes(`Trigger ${toolInput.trigger} → ${toolInput.value}. ${effect.text}`, res)
         : `Error: ${res.error}`);
     }
 
@@ -2439,9 +2470,9 @@ export default function GameAgent() {
     if (toolName === "execute_sequence") {
       const actions = Array.isArray(toolInput.actions) ? toolInput.actions.slice(0, 15) : [];
       let executed = 0;
-      let noChangeStreak = 0;
+      let noChangeStreak = 0;  // steps in a row seen to change nothing
+      let unseenSteps = 0;     // steps in a row with no frame to judge them by
       const summary = [];
-      let lastConfirmInfo = null;
 
       for (const a of actions) {
         if (stopRef.current) break;
@@ -2487,30 +2518,43 @@ export default function GameAgent() {
 
         const confirm = await waitChange(lookNow, __base, { maxMs: timing.confirmDelay, action: changeAction(t, inp) });
         executed++;
-        lastConfirmInfo = confirm;
+        // Each step counts as its own action, as it would sent on its own.
+        const effect = noteEffect(t, inp, confirm, { reply: r });
         addAction(`seq.${t}`, inp, { ok: r?.ok ?? false, ...confirm });
         logLimit(`seq.${t}`, r);
         // What the backend cut short (typed text, a button hold, or input halted)
         // goes on the step's line, as it goes in a single tool's result.
         const cut = replyNote(r);
         const cutNote = cut ? ` (${cut})` : "";
+        summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — ${effect.step}${cutNote}`);
 
-        if (!confirm.changed) {
-          noChangeStreak++;
-          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — no change${cutNote}`);
-          if (noChangeStreak >= 2) {
-            summary.push("ABORT: 2 consecutive no-change actions");
+        // The rest of the sequence was planned for a screen that is not there
+        // when a step never reached the game (the rest would not either), when
+        // two steps in a row changed nothing, or when two could not be seen. An
+        // unseen step is not one that changed nothing (src/agent/noops.js), so
+        // each is said as what it was, and neither streak counts the other.
+        if (notSent(r)) {
+          summary.push("Stopped here: that step never reached the game, and the rest would not either.");
+          break;
+        }
+        if (unseen(confirm)) {
+          if (++unseenSteps >= 2) {
+            summary.push("Stopped here: 2 steps in a row had no frame of the screen to compare.");
             break;
           }
         } else {
-          noChangeStreak = 0;
-          summary.push(`${executed}: ${t}(${JSON.stringify(inp).slice(0, 30)}) — changed${cutNote}`);
+          unseenSteps = 0;
+          if (confirm.changed) {
+            noChangeStreak = 0;
+          } else if (++noChangeStreak >= 2) {
+            summary.push("Stopped here: 2 steps in a row changed nothing on screen.");
+            break;
+          }
         }
 
         await pace(timing.actionPace);
       }
 
-      if (lastConfirmInfo) setLastConfirm(lastConfirmInfo);
       return toolResult(`Executed ${executed}/${actions.length} actions.\n${summary.join("\n")}`);
     }
 
@@ -3034,7 +3078,10 @@ Reply with ONLY a JSON object, no other text:
       solverBlockedRef.current.clear();
     } else {
       noOpStreakRef.current++;
-      lastFailedMovesRef.current.add(moveId);
+      // Under the signature the model's own press of that key is counted as
+      // (src/agent/noops.js), so that when the model takes over for a turn, one
+      // dead key is one action, not two ("up" and "press_key up").
+      lastFailedMovesRef.current.add(move.key ? actionSignature("press_key", { key: move.key }) : moveId);
       // Remember that this move did nothing so the next search picks something
       // else instead of repeating it.
       solverBlockedRef.current.add(moveId);
@@ -3370,7 +3417,13 @@ Reply with ONLY a JSON object, no other text:
     const strategyInterval = Math.max(1, strategyIntervalRef.current || 1);
     const forced = forceStrategyRef.current;
     forceStrategyRef.current = false;
-    const isStrategyTurn = forced || strategyInterval <= 1 || ((turnCountRef.current - 1) % strategyInterval === 0);
+    // The last action changed nothing on screen, whatever it was (a key, a
+    // click, the gamepad: src/agent/noops.js). The model has to SEE the screen
+    // again to pick something else, or it repeats the action that failed, so
+    // the turn after one is a vision turn whatever the strategy interval, and
+    // its image is never skipped as unchanged (a1Skip below).
+    const lastNoOp = lastActionNoOpRef.current;
+    const isStrategyTurn = forced || !!lastNoOp || strategyInterval <= 1 || ((turnCountRef.current - 1) % strategyInterval === 0);
 
     // Pause-to-think: freeze the game while we capture + reason (no-op unless enabled)
     await setGameSpeed(0);
@@ -3387,9 +3440,9 @@ Reply with ONLY a JSON object, no other text:
           { noise: _changeNoise, detector: _changeDetector, action: changeAction("turn"), threshold: LEGACY_THRESHOLD })
       : null;
     // A1: even on a strategy turn, skip the image if the screen is unchanged.
-    // But never skip right after a no-op action: the model needs to SEE the
-    // board again to pick a different move, otherwise it repeats the failed one.
-    const lastNoOp = lastActionNoOpRef.current;
+    // But never skip right after an action of any type that changed nothing
+    // (lastNoOp, above): the model needs to SEE the screen again to pick a
+    // different action, otherwise it repeats the failed one.
     const a1Skip = turnCountRef.current > 1 && !!sinceLast && !sinceLast.changed && !lastNoOp;
     const sendImage = !!frame && isStrategyTurn && !a1Skip;
     if (sinceLast) addLog(turnLine(sinceLast, { turn: turnCountRef.current, skipped: a1Skip }), "info", { fileOnly: true });
@@ -3400,10 +3453,14 @@ Reply with ONLY a JSON object, no other text:
       ? 'Reply with ONE JSON action that MOVES the game now, e.g. {"tool":"press_key","input":{"key":"up"}}.'
       : "First call analyse_game_state, then take your next action. Prefer execute_sequence for repetitive moves.";
     // Break repetition loops: a small model will otherwise re-issue the exact
-    // move that just did nothing, forever.
+    // action that just did nothing, forever. Said of any action, in words that
+    // fit any game: it used to call every key a "direction" that was "blocked".
+    // The turn's message goes only to the model, so the log file gets the
+    // nudge too, for the operator to see what the model was told.
     if (lastNoOp) {
-      const tried = [...lastFailedMovesRef.current].join(", ");
-      actNudge = `Your last move (${lastNoOp}) changed NOTHING — that direction is blocked. Do NOT repeat it.${tried ? ` Already failed here: ${tried}.` : ""} Pick a DIFFERENT direction now. ${actNudge}`;
+      const nudge = noOpNudge({ lastNoOp, failed: lastFailedMovesRef.current });
+      actNudge = `${nudge} ${actNudge}`;
+      addLog(`Told the model: ${nudge}`, "info", { fileOnly: true });
     }
 
     let turnMessage;
@@ -3875,6 +3932,7 @@ Reply with ONLY a JSON object, no other text:
     lastActionNoOpRef.current = null;
     lastFailedMovesRef.current = new Set();
     noOpStreakRef.current = 0;
+    unknownEffectsRef.current = 0;
     // No noise floor until the first game takes its own (calibrateChange), and a
     // fresh count of how the two change detectors compare.
     setChangeNoise(null);
@@ -4299,6 +4357,7 @@ REASONING STYLE (for analyse_game_state):
       noOpStreakRef.current = 0;
       lastFailedMovesRef.current = new Set();
       lastActionNoOpRef.current = null;
+      unknownEffectsRef.current = 0;
       stuckTriggerRef.current = 0;
       gameEndRef.current = null;
       solverScoreRef.current = 0;
@@ -4317,6 +4376,7 @@ REASONING STYLE (for analyse_game_state):
       let gameOutcome = null;
       let firstTurnSnapped = false; // the model's first turn of this game is saved once
       let noOpsSnapped = 0;         // the no-op step last saved in this streak (noOpSnapshot)
+      let noOpsReminded = 0;        // the reminder step last given in this streak (noOpReminderDue)
 
       // This game's noise floor for change detection, from idle frames taken
       // before anything is sent to it: what moves there on its own (a clock, an
@@ -4515,61 +4575,74 @@ REASONING STYLE (for analyse_game_state):
         await snapModel("first-turn", `Game ${gameIdx + 1}, first turn: the frame the model was shown, and what it made of it.`);
       }
 
+      // ── Acting blind ─────────────────────────────────────────────────────
+      // An action whose effect is not known (no frame of the screen to judge it
+      // by, or never sent) is not counted as changing nothing, so the stuck rule
+      // below never stops play that goes on without seeing the screen. This
+      // does: a run of them pauses play for the operator (src/agent/noops.js,
+      // blindPause). A pause, not "stuck": nothing is known about the game. The
+      // count starts again, so after Resume play gets as many before the next.
+      const blind = blindPause(unknownEffectsRef.current);
+      if (blind) {
+        unknownEffectsRef.current = 0;
+        pauseRef.current = true;
+        setPaused(true);
+        addLog(blind, "error");
+        continue;
+      }
+
       // ── Stuck detection ──────────────────────────────────────────────────
       // Based on whether ACTIONS actually changed the screen, not on comparing
       // turn-boundary frame hashes. Hash comparison was unreliable: a real 2048
       // move on a cropped board scores ~2-4, below the old 4.0 "similar"
       // threshold, so successful moves counted as no-progress and ended healthy
-      // sessions. A genuinely finished game is one where every direction we try
-      // does nothing — so require repeated no-ops across SEVERAL DIFFERENT
-      // actions before giving up, and reset as soon as anything works.
+      // sessions. A genuinely finished game is one where everything we try does
+      // nothing — so require repeated no-ops across SEVERAL DIFFERENT actions
+      // before giving up, and reset as soon as anything works. Every action type
+      // counts (executeTool's noteEffect), each by its signature, so the same
+      // dead square clicked four times is one action tried four times.
       const noOps = noOpStreakRef.current;
       const distinctFailed = lastFailedMovesRef.current.size;
+      // The 3rd and the 6th in a row are each reminded once, however the streak
+      // got there (noOpReminderDue): a sequence's steps each count, so one turn
+      // can take it from 2 to 4 and would skip an exact test for 3.
+      const reminder = noOpReminderDue(noOps, noOpsReminded);
+      noOpsReminded = reminder.given;
 
       if (noOps === 0) {
         stuckTriggerRef.current = 0; // progress — clear any earlier suspicion
       } else if (noOps >= 3) {
         // Nudge the model to reassess, and make sure it gets a fresh screenshot
         forceStrategyRef.current = true;
-        if (noOps === 3 || noOps === 6) {
-          convRef.current.push({
-            role: "user",
-            content: `${noOps} actions in a row changed nothing (tried: ${[...lastFailedMovesRef.current].join(", ") || "n/a"}). Try a DIFFERENT direction you have not just tried. If every direction is blocked, the game is over — call signal_game_end with outcome ${MODEL_OUTCOME_CHOICES}.`,
-          });
+        if (reminder.remind) {
+          convRef.current.push({ role: "user", content: noOpReminder({ streak: noOps, failed: lastFailedMovesRef.current }) });
           addLog(`No progress for ${noOps} actions — asking model to change approach.`, "warn");
         }
       }
 
-      // Give up only when the evidence is strong: either many different actions
-      // all failed, or a long run of failures regardless of variety.
-      const exhausted = noOps >= 4 && distinctFailed >= 3;
-      const hardStop = noOps >= 10;
+      // Give up only when the evidence is strong: either several different
+      // actions all failed, or a long run of failures regardless of variety
+      // (src/agent/noops.js, stuckVerdict).
+      const { exhausted, hardStop, reason: stuckBecause, logLine: stuckLine } = stuckVerdict({ streak: noOps, distinct: distinctFailed });
       if (exhausted || hardStop) {
         gameOutcome = "stuck";
-        stuckReason = exhausted
-          ? `no moves available: ${distinctFailed} different actions all changed nothing over ${noOps} actions`
-          : `no progress after ${noOps} actions in a row`;
-        addLog(
-          exhausted
-            ? `No moves available — ${distinctFailed} different directions all blocked over ${noOps} actions.`
-            : `No progress after ${noOps} consecutive actions.`,
-          "warn"
-        );
+        stuckReason = stuckBecause;
+        addLog(stuckLine, "warn");
         await snapModel("stuck", `Stuck: ${stuckReason}. Play on this game stopped here.`);
         break;
       }
 
       // The 3rd and the 6th action in a row that changed nothing are saved once
-      // each, however the streak got there (noOpSnapshot): one reply can press
-      // several keys, and a turn that presses none (an analysis, a click) leaves
-      // the streak where it was. A streak that stopped play was saved as "stuck"
-      // just above.
+      // each, however the streak got there (noOpSnapshot): one reply can send
+      // several actions (a sequence's steps each count), and a turn that sends
+      // none (an analysis only) leaves the streak where it was. A streak that
+      // stopped play was saved as "stuck" just above.
       const noOpShot = noOpSnapshot(noOps, noOpsSnapped);
       noOpsSnapped = noOpShot.saved;
       if (noOpShot.take) {
         await snapModel(`no-op-${noOpShot.take}`, `${noOps} actions in a row changed nothing ` +
           `(tried: ${[...lastFailedMovesRef.current].join(", ") || "n/a"}).` +
-          `${noOps === noOpShot.take ? " The model was asked to try something else." : ""}`);
+          `${reminder.remind ? " The model was asked to try something else." : ""}`);
       }
     }
 

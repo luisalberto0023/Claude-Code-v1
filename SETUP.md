@@ -545,8 +545,8 @@ and whether a restart worked.
   alone makes one), so on a still game most looks get none. The agent then
   counts the screen as the one it last saw, for the same capture (window, crop):
   nothing changed, so that is the screen. A missing look is never taken as the
-  "before" look either, which would answer every click `Screen unchanged`
-  whatever it did.
+  "before" look either, which would answer every click `That action changed
+  nothing on screen` whatever it did.
 - **What moves on its own is measured first.** Before the model's first turn in
   each game (never, in a game a solver plays to the end), before anything is sent
   to it, the agent waits for the screen to settle (at most 2 s) and takes two
@@ -576,6 +576,49 @@ and whether a restart worked.
 - **Cheaper looks.** The looks after each action no longer make a JPEG of the
   frame (every 150 ms, with the click grid on, they did), and the frame is read
   once per look instead of 64 times. Only the frame sent to the model is encoded.
+- **Every kind of action is counted when it changes nothing.** Clicks,
+  `click_grid`, drags, scrolls, key presses and holds, typing, the gamepad's
+  buttons, sticks and triggers, and each step of an `execute_sequence`. Only key
+  presses used to be counted, so a mouse or controller game was never called
+  stuck, and the turn after a click that missed could skip its screenshot.
+  - The model's tool result says what its action did, with the numbers it was
+    judged on: `Clicked. That action changed nothing on screen (motion map: nothing moved past the noise, peak 0.4 grey levels near the target).`
+    (from the second in a row, `That is N actions in a row counted as changing nothing.`
+    is added), or `Clicked. Screen changed (motion map: 7 cells changed at the target, peak 20.2 grey levels).`
+    With **Change detection** on `legacy hash`, the hash's `dist` is given
+    instead. It no longer says a key's "direction is BLOCKED". A click whose
+    only change was far from where it landed (`only away from the target
+    changed`) is still counted, but the model is told `That action changed nothing where it acted (...). If that change elsewhere was its effect, it worked.`
+  - The next turn tells the model `Your last action (click at 595,408) changed nothing on screen. Do not repeat it.`
+    and always sends a screenshot, even between **Vision every N turns**. The
+    turn's message goes only to the model, so the log file gets the same words
+    as a `Told the model: Your last action (...) ...` line.
+  - Actions are told apart by what they are: keys by name (`ArrowUp` and `up`
+    are one key), a `click_grid` by its cell, a stick by the direction it was
+    pushed, and a click within 16 px of one that already changed nothing counts
+    as that click. The model is still told the click it sent
+    (`Your last action (click at 148,100, the same spot as click at 132,100) ...`).
+    The log file gets a
+    `No-op N in a row: <action> changed nothing on screen (M different actions since the screen last changed).`
+    line for each.
+  - Play on a game stops as `stuck` after 4 actions in a row that changed
+    nothing across 3 different ones
+    (`No moves available — 3 different actions all changed nothing on screen over 4 actions.`),
+    or after 10 in a row whatever they were
+    (`No progress after 10 consecutive actions.`). The same dead square clicked
+    over and over is one action, so only the second rule ends that. The 3rd and
+    6th in a row also tell the model `N actions in a row changed nothing on screen (tried: ...)`,
+    once each, even when a sequence takes the streak past 3 or 6 in one turn.
+  - An action that met the kill switch is not counted either way. Nor is one
+    whose effect is not known: it never reached the game (the backend down,
+    restarting, or refusing the page; the model gets `Error: ...`), or there
+    was no frame to judge it by. A backend hiccup no longer ends a game as
+    `stuck`. Those are counted on their own instead: 10 in a row pause play
+    (`⏸ Paused: the agent could not tell what its last 10 actions did ...`),
+    since the agent is acting on a screen nobody looks at. Fix the capture or
+    the backend and press **▶ Resume**. In an `execute_sequence`, a step that
+    never reached the game stops the rest, and so do 2 steps in a row with no
+    frame (`Stopped here: 2 steps in a row had no frame of the screen to compare.`).
 
 ---
 
@@ -608,7 +651,10 @@ Confirm nothing broke. This should behave exactly like before.
 - ADVANCED → set **Vision every N turns** = `3`.
 - Play 2048 again with a token cap.
 - **Pass:** log shows `Tactical turn N (text-only)` between vision turns, and the
-  In/Out token counters climb noticeably slower than Test 0.
+  In/Out token counters climb noticeably slower than Test 0. A turn right after
+  an arrow key that moved nothing is a vision turn, not a tactical one (the model
+  has to see the board to pick another move), so a game against a wall has fewer
+  tactical turns.
 
 ### ✅ Test 3 — HUD crop
 - ADVANCED → check **Crop to game area (HUD mask)**.
@@ -649,9 +695,9 @@ Confirm nothing broke. This should behave exactly like before.
   in its own window, solver off, is one), the game's
   `Change detection for game 1 ...` line gives a noise floor (not `no noise
   floor`), clicks that open squares are answered `Screen changed`, and a click on
-  a square already open `Screen unchanged`. Repeat with ADVANCED **Change
-  detection** → `legacy hash`: a click that opens a large area is still
-  `Screen changed`. Report any `Change after click ...` line in the log file
+  a square already open `That action changed nothing on screen`. Repeat with
+  ADVANCED **Change detection** → `legacy hash`: a click that opens a large area
+  is still `Screen changed`. Report any `Change after click ...` line in the log file
   that says `no frame to compare`.
 
 ### ✅ Test 7 — Pause-to-think (single-player native only)
@@ -1099,8 +1145,8 @@ agent tab reloaded.
   with its `See:`/`Plan:` or its text, its actions, and ends with a
   `Frame (lowres): the ...×... JPEG sent to the model with turn 1 ...` line.
   **Record** whether the model's description in the `.txt` matches the frame.
-- **Actions that change nothing:** only key presses that change nothing are
-  counted for now (clicks are a later change), so this uses 2048. Do Test 0 with
+- **Actions that change nothing:** every action that changes nothing is counted
+  (Test 19 checks clicks); this part uses 2048's arrow keys. Do Test 0 with
   **Use built-in solver when available** on and let the game end, leaving the
   `Game over!` board up. Turn the solver off and **▶ Start** again on that board:
   every arrow key now changes nothing. **Pass:**
@@ -1145,9 +1191,9 @@ unchanged, but the RUN line compares the two commits).
   `Change detection for game 1 (decided by the motion map): noise floor from 2 idle frames 1.1 s apart: ...`
   appears before the first turn. If it says cells moved on their own, the box it
   gives should be the timer (top right), not the board. A click that opened
-  squares is answered `Clicked ... Screen changed (dist ...)` in the model's tool
-  result (JSON-action mode shows it as `↳ Clicked ...`); a click on a square
-  already open, `unchanged`. Watch the pointer: before each click it moves onto
+  squares is answered `Clicked. Screen changed (motion map: ...)` in the model's
+  tool result (JSON-action mode shows it as `↳ Clicked ...`); a click on a square
+  already open, `Clicked. That action changed nothing on screen (...)`. Watch the pointer: before each click it moves onto
   the square and rests there a moment, then clicks. The run ends with a
   `Change detection this run (...)` line.
 - **Record:** from `logs\agent-<session>.log`, the `Change after ...` lines
@@ -1165,6 +1211,61 @@ unchanged, but the RUN line compares the two commits).
 
 ---
 
+### ✅ Test 19 — A click that changes nothing is counted, not only a key
+Only key presses that changed nothing used to be counted. See **Every kind of
+action is counted when it changes nothing** under **How the agent tells whether
+an action did anything**. As after any pull, restart `start.bat` and reload the
+agent tab.
+- **Setup:** as Test 18: the local Minesweeper `?seed=42` in its own window, game
+  `Minesweeper`, the same **URL**, **Use built-in solver when available** off,
+  **Change detection** `motion map`, **Share Screen** → **Entire Screen**, crop
+  to the board. **▶ Start** and let the model play until the game ends or 20
+  turns, then **■ Stop**.
+- **Pass, a click that works:** a click that opens squares is answered
+  `Clicked. Screen changed (motion map: N cells changed at the target, ...)` in
+  the model's tool result (the log shows tool results as `↳ Clicked ...` in
+  JSON-action mode only; in either mode that click's `Change after click ...`
+  line in the log file says `decided by the motion map` and a change), and no
+  `Told the model: Your last action ...` line follows it in the log file.
+- **Pass, a click that does nothing:** sooner or later the model clicks a square
+  already open (if it never does in 20 turns, note that: `npm run check` covers
+  the counting, and this part can wait for a run that does). That click is answered
+  `Clicked. That action changed nothing on screen (motion map: nothing moved past the noise, peak ... grey levels near the target).`,
+  the log file has `No-op 1 in a row: click at X,Y changed nothing on screen (1 different action since the screen last changed).`,
+  and, at the start of the next turn, a line
+  `Told the model: Your last action (click at X,Y) changed nothing on screen. Do not repeat it. ...`
+  (the next turn's message to the model contains those words; the message
+  itself is not logged). That turn sends a screenshot: its `LLM replied in Ns (sent ...×... image, ...)`
+  line says so, and its `Turn N screen since the last turn: ...` line in the log
+  file ends `image sent if this turn sends one`, never `image skipped`.
+- **Pass, the same with fewer screenshots:** set ADVANCED **Vision every N
+  turns** to 3 and repeat. A turn right after a `No-op` line is never a
+  `Tactical turn N (text-only)`.
+- **Pass, stuck:** if the model keeps clicking squares already open, the 3rd in
+  a row adds `No progress for 3 actions — asking model to change approach.`
+  (`for 4 actions` when a sequence took the streak from 2 to 4 in one turn), and
+  play stops with
+  `No moves available — 3 different actions all changed nothing on screen over 4 actions.`
+  (or `No progress after 10 consecutive actions.` when it keeps to one spot), a
+  `stuck-lowres` snapshot, and `Game 1 finished — stuck`. That is the intended
+  end when the snapshot's `.jpg` shows the model clicking squares already open.
+  A game that stops `stuck` while its clicks were opening squares is the finding
+  to report, with its `Change after click ...` and `No-op` lines.
+- **Record:** how many `No-op` lines the run has, and whether the model clicked
+  somewhere else after each `Told the model: Your last action ...` line.
+- **Pass, the backend going away:** on this Minesweeper run (clicks only, so no
+  key is held down when the backend goes), close the backend window, not the
+  `start.bat` one. The log shows `⚠ Backend health check failed (2 consecutive) — auto-paused.`
+  within about 20 s. The actions sent meanwhile never reached the game (the model
+  is told `Error: ...`), so the log file has no `No-op` line for them, and the
+  game does not end `stuck` (no `No moves available` line). **■ Stop**, run
+  `start.bat` again and reload the tab.
+- **Gamepad (if Test 5 passed):** in a controller game, on a screen where a
+  button does nothing (a pause menu, say), `gamepad_button` is answered
+  `Pressed ... That action changed nothing on screen (...)` and counts the same way.
+
+---
+
 ## 5. What to watch in the log
 
 | Log line | Confirms |
@@ -1174,6 +1275,11 @@ unchanged, but the RUN line compares the two commits).
 | `Change after <action> (...): motion map ... \| legacy hash ... \| decided by the ...` (log file only) | Each action's wait for the screen to change, judged by both the motion map and the old 8×8 hash, and which one decided. `(they disagree: ...)` marks where they differ |
 | `Change detection this run (decided by the ...): N actions judged; both detectors agreed on ...` | The run's tally of the two. Many `only the motion map saw a change` on a click game is expected (the old measure could not see one square open); many `only the legacy hash` is worth reporting |
 | `Change detection switched to the legacy hash from the next action.` | ADVANCED **Change detection** was changed during a run |
+| `No-op N in a row: <action> changed nothing on screen (M different actions since the screen last changed).` (log file only) | An action of any kind (a click, a key, the gamepad, a sequence's step) was judged to have changed nothing, and counted. `(counted as click at X,Y)` after the action: a click within 16 px of one that already changed nothing, counted as that one. `changed nothing where it acted`: the motion map saw a change, but only far from the click. The model's next turn gets a screenshot |
+| `Told the model: Your last action (...) changed nothing on screen. Do not repeat it. ...` (log file only) | What the next turn's message told the model after an action that changed nothing (`..., the same spot as click at X,Y` for a click counted as an earlier one) |
+| `No progress for 3 actions — asking model to change approach.` (also at 6) | The 3rd (6th) action in a row changed nothing; the model is told `3 actions in a row changed nothing on screen (tried: ...)` and to try another place, key or control. Once each: a sequence that takes the streak past 3 (or 6) says it at the count it reached |
+| `⏸ Paused: the agent could not tell what its last 10 actions did (...)` | 10 actions in a row had no frame of the screen to judge them by, or never reached the backend. Those are not counted toward `stuck`, so play pauses instead. Check **Share Screen** (or the native capture) and the backend window, then **▶ Resume** |
+| `No moves available — N different actions all changed nothing on screen over M actions.` / `No progress after 10 consecutive actions.` | Play on this game stopped as `stuck`: at least 4 in a row across 3 different actions, or 10 in a row. A `stuck-lowres` snapshot follows with no plugin |
 | `Tactical turn N (text-only)` | B2 slow loop |
 | `→ click_grid(...)` | Discrete-grid clicking |
 | `→ gamepad_button(...)` / `gamepad_stick` | Gamepad output |
@@ -1281,8 +1387,10 @@ unchanged, but the RUN line compares the two commits).
 | Backend window: `Could not set up the page's token: ...` | `AGENT_TOKEN` is set but is not 32 to 256 letters, digits, `-` or `_`; or `.agent-token` cannot be written in the project folder (read-only folder, antivirus). Fix or clear `AGENT_TOKEN` and start again |
 | An old tab (opened before this update was pulled) shows errors on every action | It predates the token and never sends one. Reload it |
 | `start.bat` window: `error when starting dev server: Error: Vite 5.4.x is older than 5.4.12 and does not check the Host header ...` (and the backend window closes) | The Node packages were installed before Vite could keep the page's token from other sites, and `start.bat` installs them only when `node_modules` is missing. Run `npm install` in the project folder, then `start.bat` again |
-| Every click, even one that opened squares, is answered `Screen unchanged` | Look at the `Change after click at ...` lines in the log file: `only away from the target changed` means the change was found but not near where the click landed, so the clicks land somewhere other than where the model aimed (a scaled screen or a window share, see Test 1). `nothing moved past the noise` after the game's line said cells `moved on their own` over the board means the game was still animating when it was calibrated: report it with the log. Setting ADVANCED **Change detection** to `legacy hash` brings back the old measure meanwhile |
+| Every click, even one that opened squares, is answered `That action changed nothing on screen` (and a click game soon stops as `stuck`) | Look at the `Change after click at ...` lines in the log file: `only away from the target changed` means the change was found but not near where the click landed, so the clicks land somewhere other than where the model aimed (a scaled screen or a window share, see Test 1). `nothing moved past the noise` after the game's line said cells `moved on their own` over the board means the game was still animating when it was calibrated: report it with the log. Setting ADVANCED **Change detection** to `legacy hash` brings back the old measure meanwhile |
 | A click on a square already open, or on nothing, is answered `Screen changed` | Look at its `Change after click at ...` line. `N cells changed at the target` with a small bbox where the click landed: the pointer or a hover highlight was still changing when the "before" look was taken (it waits at most 0.6 s). Say which game, and whether the pointer shows in the frames the model gets (a `.jpg` under `logs\snapshots\<session>\`). `N% of the view changed away from the target`: something else on screen changed meanwhile |
+| A game stops `No moves available — ...` although the model's clicks (or keys, or pad presses) were doing something | Clicks count toward a stuck game now, not only keys. Look at the `No-op` lines in the log file and the `Change after ...` line before each. `only away from the target changed` for a click that did work means its effect was elsewhere on screen and small (a score, a line of text, under 2% of the view): report the game and those lines. `nothing moved past the noise` for an action that visibly worked means the effect was too faint or too late for the confirm delay: a slower Timing profile (**Puzzle**, **RPG**) waits longer for it |
+| The model clicks the same dead spot over and over, a few pixels apart each time | Each is counted as the same click (`(counted as click at X,Y)` on its `No-op` line), so the game stops after 10 in a row (`No progress after 10 consecutive actions.`), not after 4. The model is told at every turn which action changed nothing; a small local model may still not listen |
 | Moves that did nothing are answered `Screen changed`, so a blocked game is never called stuck | Something on screen moves by itself and was not moving while the game was calibrated (an advert, a clock that only starts with play). Crop to the game area (ADVANCED **Crop to game area (HUD mask)**) so the frame holds the game alone, and report the `Change after` lines |
 | `📷 Snapshot not saved — ...` | The backend refused or failed the write (the reason follows). Snapshots are only for troubleshooting; play is not affected |
 | A run with no plugin leaves `.txt` files in `logs\snapshots\<session>\` but no `.jpg` | The backend window runs code from before this change and drops the frame (the log says `📷 The backend did not save the frame ...` once a run): restart `start.bat`. If the `.txt` ends `No frame: nothing had been captured yet.`, capture was not running when it was saved |

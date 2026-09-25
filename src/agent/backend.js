@@ -25,6 +25,8 @@
  * answering for a route that failed on this request (uvicorn's "Internal Server
  * Error"), not a backend that is down: it is marked `crashed`, since the same
  * request will most likely fail the same way again (logQueue.js reads it).
+ * An empty body is marked `unreachable`: the request never reached a route, so
+ * an action sent that way was not done (noops.js, notSent, reads it).
  */
 export function readReply(status, text) {
   const body = typeof text === "string" ? text.trim() : "";
@@ -38,7 +40,11 @@ export function readReply(status, text) {
       ...(status >= 500 ? { crashed: true } : {}),
     };
   }
-  return { ok: false, error: `no reply from the backend (HTTP ${status}, empty); check that the backend window is running` };
+  return {
+    ok: false,
+    error: `no reply from the backend (HTTP ${status}, empty); check that the backend window is running`,
+    unreachable: true,
+  };
 }
 
 /**
