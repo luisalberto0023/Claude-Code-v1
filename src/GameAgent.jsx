@@ -3,6 +3,7 @@ import game2048 from "./plugins/game2048.js";
 import minesweeper from "./plugins/minesweeper.js";
 import { findClickableCandidates } from "./vision/buttons.js";
 import { motionMap, legacyHash, pixelsOf } from "./vision/motion.js";
+import { toScreen, toFrame, capturedScale, cropBox, croppedScale, shrunkScale } from "./vision/frameMap.js";
 import {
   CHANGE_DETECTORS, DEFAULT_DETECTOR, detectorOf, LEGACY_THRESHOLD, LEGACY_RESTART_THRESHOLD, CALIBRATION_GAP_MS,
   CALIBRATION_SETTLE_MS, changeAction, judgeLooks, watchForChange, calibrate, settleLook, changeLine, turnLine, calibrationLine,
@@ -17,7 +18,7 @@ import {
   requestTimeoutMs, relayTimeoutS, relayTimedOut, OLLAMA_400_RETRIES,
 } from "./agent/llmErrors.js";
 import {
-  settleModelCall, gameEnding, nextModelCheck, modelCheckTimeoutMs, turnFailure, MODEL_WAIT_CAP_MS,
+  settleModelCall, gameEnding, nextModelCheck, modelCheckTimeoutMs, turnFailure, MODEL_WAIT_CAP_MS, answerEveryCall,
 } from "./agent/turnResult.js";
 import {
   OLLAMA_DEFAULT_BASE, tidyOllamaBase, shownOllamaBase, ollamaServerNote, ollamaStartProblem, ollamaSavedMessage, ollamaModelsMessage,
@@ -47,6 +48,12 @@ import {
 import {
   prepareSnapshot, modelReply, snapshotText, gameEndHeading, noOpSnapshot, frameDropped, FRAME_DROPPED_WARNING,
 } from "./agent/snapshots.js";
+import {
+  PLAY_ON, NEXT_GAME, STOP, DECISION_WAIT_S, STUCK_LOOKS_PER_GAME, searchPlan, labelPrompt, controlList, readLabels,
+  genericDecision, askDecision, withAppeared, fallbackChoice, isRealChoice, actingChoice, choiceLabel, decisionText,
+  claimVerdict, claimNudge, claimRejectedLine, claimTaken, claimStands, claimDroppedLine, claimAcceptedLine, resumeNudge,
+  afterStuckChoice,
+} from "./agent/stuckScreen.js";
 import {
   actionSignature, noteAction, stuckVerdict, effectText, stepText, noOpLine, noOpNudge, noOpReminder, noOpReminderDue,
   notSent, unseen, blindPause,
@@ -403,9 +410,9 @@ function setFrameQuality(q) { FRAME_QUALITY = Math.max(0.3, Math.min(0.95, q)) |
 // be downscaled: at 1280 the digits lose the detail that tells 256 from 128.
 const SOLVER_CAPTURE_W = 4000;
 
-// Chosen for an unattended run: a won board is worth continuing, and continuing
-// cannot lose anything that has already been recorded.
-const DECISION_DEFAULT = "keep-going";
+// JPEG quality of the image the model gets when it is asked what the controls on
+// a stuck screen are: the words on a small button must survive the compression.
+const DECISION_IMAGE_QUALITY = 0.9;
 
 // How many times to re-read a board before treating the read as hopeless. Reads
 // fail mostly because the frame caught the board mid-redraw, so the answer is
@@ -439,7 +446,9 @@ function captureFrame(videoEl, canvasEl, scaleRef, maxW = null, { encode = true 
   canvasEl.height = imgH;
   const ctx = canvasEl.getContext("2d");
   ctx.drawImage(videoEl, 0, 0, imgW, imgH);
-  scaleRef.current = { imgW, imgH, realW, realH, scale: realW / imgW, offsetX: 0, offsetY: 0 };
+  // A browser share is of the whole screen (startCapture warns otherwise), so
+  // the frame's corner is the screen's: no offset (src/vision/frameMap.js).
+  scaleRef.current = capturedScale({ realW, realH, imgW, imgH });
 
   const frame = { imgW, imgH, realW, realH };
   if (encode) frame.data = canvasEl.toDataURL("image/jpeg", FRAME_QUALITY).split(",")[1];
@@ -465,9 +474,68 @@ function snapshotPng(canvas, text) {
   }
 }
 
+// ── The stuck-screen handler's picture of the controls ────────────────────────
+// A canvas of its own for each job, made once: the frame with the controls
+// outlined, and a smaller copy of it for the model.
+const _handlerCanvases = {};
+function handlerCanvas(name) {
+  if (!_handlerCanvases[name]) _handlerCanvases[name] = document.createElement("canvas");
+  return _handlerCanvases[name];
+}
+
+// A copy of `source` at most `maxW` wide with each control found on it
+// (buttons.js candidates {x, y, w, h}, or points {x, y}) outlined and numbered
+// as the model's list numbers them: the model then only has to read the labels,
+// and a snapshot shows what the finder found. Returns {canvas, k}, k the copy's
+// pixels per source pixel.
+function markCandidates(source, found, maxW = 1280) {
+  const target = handlerCanvas("marked");
+  const k = Math.min(1, maxW / source.width);
+  target.width = Math.max(1, Math.round(source.width * k));
+  target.height = Math.max(1, Math.round(source.height * k));
+  const ctx = target.getContext("2d");
+  ctx.drawImage(source, 0, 0, target.width, target.height);
+  ctx.save();
+  const fontPx = Math.max(11, Math.round(target.width / 90));
+  ctx.font = `bold ${fontPx}px monospace`;
+  ctx.textBaseline = "top";
+  ctx.lineWidth = 2;
+  found.forEach((b, i) => {
+    const w = (b.w ?? 0) * k, h = (b.h ?? 0) * k;
+    const x = (b.w ? b.x : b.x - 6 / k) * k - 3, y = (b.h ? b.y : b.y - 6 / k) * k - 3;
+    ctx.strokeStyle = "#ff00ff";
+    ctx.strokeRect(x, y, (w || 12) + 6, (h || 12) + 6);
+    const tag = String(i);
+    const tw = ctx.measureText(tag).width + 6;
+    const ty = y - fontPx - 4 >= 0 ? y - fontPx - 4 : y + (h || 12) + 8;
+    ctx.fillStyle = "#ff00ff";
+    ctx.fillRect(x, ty, tw, fontPx + 4);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(tag, x + 3, ty + 2);
+  });
+  ctx.restore();
+  return { canvas: target, k };
+}
+
+// A canvas as a base64 JPEG at most `maxW` wide, for the model. Returns
+// {data, k}, k the image's pixels per canvas pixel.
+function jpegOf(canvas, maxW) {
+  let source = canvas, k = 1;
+  if (canvas.width > maxW) {
+    k = maxW / canvas.width;
+    source = handlerCanvas("model");
+    source.width = maxW;
+    source.height = Math.max(1, Math.round(canvas.height * k));
+    source.getContext("2d").drawImage(canvas, 0, 0, source.width, source.height);
+  }
+  return { data: source.toDataURL("image/jpeg", DECISION_IMAGE_QUALITY).split(",")[1], k };
+}
+
 // Draw a base64 JPEG (from the backend's native capture) onto the canvas so the
 // perceptual-hash / change-detection code can run on it just like a browser frame.
-async function drawDataURLToCanvas(dataURL, canvasEl) {
+// At most `maxW` wide: the model's frame width unless the caller wants more (the
+// stuck-screen handler looks for buttons at the size the backend sent).
+async function drawDataURLToCanvas(dataURL, canvasEl, maxW = MAX_FRAME_W) {
   const img = new Image();
   await new Promise((resolve, reject) => {
     img.onload = resolve;
@@ -475,9 +543,9 @@ async function drawDataURLToCanvas(dataURL, canvasEl) {
     img.src = dataURL;
   });
   let imgW = img.width, imgH = img.height;
-  if (imgW > MAX_FRAME_W) {
-    imgH = Math.round(imgH * MAX_FRAME_W / imgW);
-    imgW = MAX_FRAME_W;
+  if (imgW > maxW) {
+    imgH = Math.round(imgH * maxW / imgW);
+    imgW = maxW;
   }
   canvasEl.width = imgW;
   canvasEl.height = imgH;
@@ -607,24 +675,17 @@ function downscaleCanvas(canvasEl, scaleRef, maxW) {
   tmp.getContext("2d").drawImage(canvasEl, 0, 0, newW, newH);
   canvasEl.width = newW; canvasEl.height = newH;
   canvasEl.getContext("2d").drawImage(tmp, 0, 0);
-  const s = scaleRef.current;
-  scaleRef.current = {
-    ...s,
-    imgW: newW, imgH: newH,
-    scale: newW ? s.realW / newW : 1,
-  };
+  scaleRef.current = shrunkScale(scaleRef.current, newW, newH);
 }
 
+// The margins are percentages; cropBox (src/vision/frameMap.js) turns them into
+// pixels, and skips a crop that would leave less than 16 px rather than break
+// the frame.
 function applyCrop(canvasEl, scaleRef, m) {
   if (!canvasEl || !canvasEl.width) return false;
-  const w = canvasEl.width, h = canvasEl.height;
-  const left = Math.round((Math.max(0, m.left ?? 0) / 100) * w);
-  const top = Math.round((Math.max(0, m.top ?? 0) / 100) * h);
-  const right = Math.round((Math.max(0, m.right ?? 0) / 100) * w);
-  const bottom = Math.round((Math.max(0, m.bottom ?? 0) / 100) * h);
-  const cw = w - left - right, ch = h - top - bottom;
-  if (cw < 16 || ch < 16) return false; // too aggressive — skip rather than break
-  if (left === 0 && top === 0 && right === 0 && bottom === 0) return false;
+  const box = cropBox(canvasEl.width, canvasEl.height, m);
+  if (!box) return false;
+  const { left, top, width: cw, height: ch } = box;
 
   const tmp = _tmpCanvas();
   tmp.width = cw; tmp.height = ch;
@@ -632,15 +693,7 @@ function applyCrop(canvasEl, scaleRef, m) {
   canvasEl.width = cw; canvasEl.height = ch;
   canvasEl.getContext("2d").drawImage(tmp, 0, 0);
 
-  const s = scaleRef.current;
-  const scale = (!s.scale || s.scale <= 0) ? 1 : s.scale;
-  scaleRef.current = {
-    imgW: cw, imgH: ch,
-    realW: Math.round(cw * scale), realH: Math.round(ch * scale),
-    scale,
-    offsetX: (s.offsetX ?? 0) + left * scale,
-    offsetY: (s.offsetY ?? 0) + top * scale,
-  };
+  scaleRef.current = croppedScale(scaleRef.current, box);
   return true;
 }
 
@@ -1470,6 +1523,14 @@ export default function GameAgent() {
   const activeToolsRef = useRef(buildActiveTools("browser-kbm")); // tools for the chosen scheme
   const captureSourceRef = useRef("browser"); // "browser" | "native"
   const nativeRegionRef = useRef(null); // the native capture region the backend confirmed (JSON), for the last look's key
+  const lastNativeFrameRef = useRef(null); // {reply, region}: the last frame native capture sent (drawFrame's full frame)
+  // The stuck-screen handler's own capture (analyseStuckScreen): the page's
+  // capture and crop at full size, where the controls on screen are looked for;
+  // and the look taken as each game began with no plugin ({look, scale}), which
+  // says whether a control was on screen all along (src/agent/stuckScreen.js).
+  const decisionCanvasRef = useRef(null);
+  const decisionScaleRef = useRef({ imgW: 0, imgH: 0, realW: 0, realH: 0, scale: 1, offsetX: 0, offsetY: 0 });
+  const gameStartLookRef = useRef(null);
   const pauseToThinkRef = useRef(false);
   const attachedRef = useRef(false);
   const gridEnabledRef = useRef(true);
@@ -1484,6 +1545,10 @@ export default function GameAgent() {
   const lastFailedMovesRef = useRef(new Set()); // signatures that changed nothing since the screen last changed
   const noOpStreakRef = useRef(0);             // consecutive actions that changed nothing
   const unknownEffectsRef = useRef(0);         // consecutive actions whose effect is not known (blindPause)
+  // Actions judged to have changed the screen, this page load (noteEffect): a
+  // claim that the game was over, turned down, is dropped once this has moved
+  // on (claimStands, src/agent/stuckScreen.js).
+  const screenChangesRef = useRef(0);
   const changeTallyRef = useRef(newTally());   // this run's actions, and where the two change detectors disagreed
   const restartPointRef = useRef(null);        // learned New Game button position
   const gameScoresRef = useRef([]);            // score of each completed game
@@ -1497,6 +1562,7 @@ export default function GameAgent() {
   const lastBoardRef = useRef(null);           // last board accepted as read
   const readClashRef = useRef(0);              // reads running against the last one
   const snapshotsRef = useRef(0);              // frames written this game
+  const decisionSnapshotsRef = useRef(0);      // the screen handler's frames written this game (their own allowance)
   const gameSnapshotsRef = useRef([]);         // files written this game, for its record
   // The frame last sent to the model and its last reply, which is what a
   // snapshot on the model's path saves (src/agent/snapshots.js). Set each turn
@@ -1512,10 +1578,11 @@ export default function GameAgent() {
   // every run (▶ Start); before the first, for this page load.
   const logSessionRef = useRef(runSessionId());
 
-  // Preselect what the agent would do on its own, so accepting is one click.
+  // Preselect what the agent would do on its own (the choice the dialog falls
+  // back to, fallbackChoice), so accepting is one click.
   useEffect(() => {
     if (!pendingDecision) { setDecisionSecondsLeft(null); return; }
-    setDecisionChoice(pendingDecision.recommended ?? pendingDecision.options?.[0]?.id ?? "next-game");
+    setDecisionChoice(pendingDecision.fallback ?? pendingDecision.recommended ?? pendingDecision.options?.[0]?.id ?? NEXT_GAME);
     const until = pendingDecision.deadline;
     if (!until) return;
     const tick = () => setDecisionSecondsLeft(Math.max(0, Math.ceil((until - Date.now()) / 1000)));
@@ -1629,10 +1696,11 @@ export default function GameAgent() {
   const snapshot = useCallback(async (tag, text, canvas = null) => {
     const shot = prepareSnapshot({
       tag, text, canvas, solverCanvas: solverCanvasRef.current, modelFrame: modelFrameRef.current,
-      taken: snapshotsRef.current, encodePng: snapshotPng,
+      taken: snapshotsRef.current, decisions: decisionSnapshotsRef.current, encodePng: snapshotPng,
     });
     if (!shot) return;
     snapshotsRef.current = shot.taken;
+    decisionSnapshotsRef.current = shot.decisions;
     for (const warning of shot.warnings) addLog(warning, "warn");
     try {
       const res = await backend("/log/snapshot", { session: logSessionRef.current, ...shot.body });
@@ -2006,23 +2074,29 @@ export default function GameAgent() {
 
   // ── Unified frame grab (browser screen-share OR backend native capture) ──────
   // The frame on canvasRef as the model gets it, cropped and scaled, but no more:
-  // no click grid and no JPEG made here. Returns {base, mutated}, mutated when
-  // the canvas no longer matches the backend's own JPEG (native capture), or
-  // null when there is no frame.
-  const drawFrame = useCallback(async () => {
+  // no click grid and no JPEG made here. Returns {base, mutated, cropped},
+  // mutated when the canvas no longer matches the backend's own JPEG (native
+  // capture), cropped when the crop was applied; or null when there is no frame.
+  //
+  // The stuck-screen handler (analyseStuckScreen) draws the same capture, crop
+  // included, on a canvas and scale of its own (`canvas`, `scale`), and `full`:
+  // not shrunk to the model's frame width, which with a local model is 512 px
+  // and leaves a button too small for the control finder to see. Native capture
+  // sends no frame while nothing on screen moves, which is exactly what a stuck
+  // screen does, so a full frame falls back to the last one the backend sent for
+  // this region: nothing has changed since, or it would have sent another.
+  const drawFrame = useCallback(async ({ canvas = canvasRef.current, scale = scaleRef, full = false } = {}) => {
     let base;
     if (captureSourceRef.current === "native") {
-      const r = await backend("/capture/frame");
-      if (!r || !r.ok || !r.image || !canvasRef.current) return null;
-      await drawDataURLToCanvas(`data:image/jpeg;base64,${r.image}`, canvasRef.current);
-      const imgW = canvasRef.current.width, imgH = canvasRef.current.height;
+      let r = await backend("/capture/frame");
+      if (r?.ok && r.image) lastNativeFrameRef.current = { reply: r, region: nativeRegionRef.current };
+      else if (full && lastNativeFrameRef.current?.region === nativeRegionRef.current) r = lastNativeFrameRef.current.reply;
+      if (!r || !r.ok || !r.image || !canvas) return null;
+      await drawDataURLToCanvas(`data:image/jpeg;base64,${r.image}`, canvas, full ? Infinity : MAX_FRAME_W);
+      const imgW = canvas.width, imgH = canvas.height;
       const realW = r.real_width ?? imgW, realH = r.real_height ?? imgH;
-      scaleRef.current = {
-        imgW, imgH, realW, realH,
-        scale: imgW ? realW / imgW : 1,
-        offsetX: r.real_left ?? 0,
-        offsetY: r.real_top ?? 0,
-      };
+      // The frame's corner is the captured region's corner on the screen.
+      scale.current = capturedScale({ realW, realH, imgW, imgH, offsetX: r.real_left ?? 0, offsetY: r.real_top ?? 0 });
       base = { data: r.image, imgW, imgH, realW, realH };
     } else {
       // When cropping, capture at FULL resolution and downscale after the crop.
@@ -2032,29 +2106,30 @@ export default function GameAgent() {
       // used to encode a JPEG of every capture, at up to 4096 px wide when
       // cropping, and again after the crop.
       const cropping = !!cropRef.current?.enabled;
-      base = captureFrame(videoRef.current, canvasRef.current, scaleRef, cropping ? 4096 : null, { encode: false });
+      base = captureFrame(videoRef.current, canvas, scale, full ? SOLVER_CAPTURE_W : cropping ? 4096 : null, { encode: false });
       if (!base) return null;
     }
 
-    let mutated = false;
+    let mutated = false, cropped = false;
     // HUD crop first (changes dimensions + scaleRef offsets) ...
-    if (cropRef.current?.enabled && canvasRef.current?.width) {
-      if (applyCrop(canvasRef.current, scaleRef, cropRef.current)) {
+    if (cropRef.current?.enabled && canvas?.width) {
+      if (applyCrop(canvas, scale, cropRef.current)) {
         mutated = true;
+        cropped = true;
       }
       // ... then bring it down to the target width, so the cropped game area
       // fills the frame at full budget instead of a fraction of it.
-      if (canvasRef.current.width > MAX_FRAME_W) {
-        downscaleCanvas(canvasRef.current, scaleRef, MAX_FRAME_W);
+      if (!full && canvas.width > MAX_FRAME_W) {
+        downscaleCanvas(canvas, scale, MAX_FRAME_W);
         mutated = true;
       }
       base = {
         ...base,
-        imgW: canvasRef.current.width, imgH: canvasRef.current.height,
-        realW: scaleRef.current.realW, realH: scaleRef.current.realH,
+        imgW: canvas.width, imgH: canvas.height,
+        realW: scale.current.realW, realH: scale.current.realH,
       };
     }
-    return { base, mutated };
+    return { base, mutated, cropped };
   }, []);
 
   // A frame for the model: drawFrame's, with the click grid drawn on and made a
@@ -2159,12 +2234,8 @@ export default function GameAgent() {
   const executeTool = useCallback(async (toolName, toolInput, toolId, { onBaseline = null } = {}) => {
     const timing = getTiming();
 
-    const scaled = (x, y) => {
-      const s = scaleRef.current;
-      const ox = s.offsetX ?? 0, oy = s.offsetY ?? 0;
-      const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
-      return { x: Math.round(ox + x * sc), y: Math.round(oy + y * sc) };
-    };
+    // The model's frame to the screen, by the rule every click shares (src/vision/frameMap.js).
+    const scaled = (x, y) => toScreen({ x, y }, scaleRef.current);
 
     const toolResult = (text) => ({
       type: "tool_result",
@@ -2214,6 +2285,7 @@ export default function GameAgent() {
       lastFailedMovesRef.current = next.failed;
       lastActionNoOpRef.current = next.lastNoOp;
       unknownEffectsRef.current = next.unknown;
+      if (next.counted && confirm?.changed) screenChangesRef.current++;
       if (next.counted && !confirm?.changed) addLog(noOpLine(next), "info", { fileOnly: true });
       return { text: effectText(confirm, { action, streak: next.streak, reply }), step: stepText(confirm, { action, reply }) };
     };
@@ -2630,6 +2702,12 @@ export default function GameAgent() {
       }
       gameEndRef.current = end;
       setGameResult({ outcome: end.outcome, finalScore: end.finalScore, reason: end.reason });
+      // With no plugin nothing measures the game, so the games loop weighs this
+      // as a claim before it ends anything (weighClaim, src/agent/stuckScreen.js).
+      if (!solverActiveRef.current) {
+        addLog(`The model says the game is over: ${end.outcome} — ${end.reason ?? ""}`, "info");
+        return toolResult(`Game end noted: ${end.outcome}. The agent checks the screen before it ends the game.`);
+      }
       addLog(`Game ended: ${end.outcome} — ${end.reason ?? ""}`, end.outcome === "won" ? "success" : "warn");
       return toolResult(`Game end recorded: ${end.outcome}`);
     }
@@ -2653,82 +2731,95 @@ export default function GameAgent() {
    * Asking a model to estimate coordinates instead is how agents end up clicking
    * nothing.
    *
-   * Returns a decision, or null when nothing clickable is on screen.
+   * With a plugin playing, the frame is the solver's own capture, which the
+   * plugin's readers (readOverlay, getLayout) were written for. With none, it is
+   * the page's own capture (drawFrame: the browser's share or native capture,
+   * with the crop) at full size, on a canvas of its own; it used to be the
+   * browser's share alone, whatever the capture, with the crop ignored. And only
+   * a frame cropped to the game is searched (searchPlan, src/agent/stuckScreen.js):
+   * a search of the whole screen found the browser's own buttons and links
+   * alongside the game's (5243749). With no crop, nothing is searched and the
+   * operator is asked instead.
+   *
+   * `purpose` is "stuck" (play stopped) or "claim" (the model said the game is
+   * over, and a control that ends a game would confirm it).
+   *
+   * Returns a decision (stuckScreen.js), or null when nothing clickable is on
+   * screen. A decision carries its frame's scale, so its options are clicked
+   * where they are (toScreen), and `canvas`: the frame with each control
+   * outlined and numbered, for its snapshots.
    */
-  const analyseStuckScreen = useCallback(async (plugin, apiKey) => {
-    const canvas = solverCanvasRef.current;
-    if (!canvas) return null;
-    captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
+  const analyseStuckScreen = useCallback(async (plugin, apiKey, { purpose = "stuck" } = {}) => {
+    let canvas, scale, plan;
+    if (plugin) {
+      canvas = solverCanvasRef.current;
+      if (!canvas) return null;
+      captureFrame(videoRef.current, canvas, solverScaleRef, SOLVER_CAPTURE_W);
+      scale = { ...solverScaleRef.current };
 
-    // A plugin that knows this game answers exactly and for free.
-    const known = plugin?.readOverlay?.(canvas);
-    if (known) {
-      return {
-        kind: known.kind,
-        summary: known.kind === "win"
-          ? `Won — reached the ${gameBestTileRef.current} tile. The game is offering to keep playing this board.`
-          : "The game is over and is offering to start again.",
-        options: known.options,
-        // Left for resolveDecision to work out from the options themselves.
-        needsHuman: null,
-        recommended: known.options.some(o => o.id === "keep-going") ? "keep-going" : "try-again",
-      };
+      // A plugin that knows this game answers exactly and for free.
+      const known = plugin.readOverlay?.(canvas);
+      if (known) {
+        return {
+          kind: known.kind,
+          summary: known.kind === "win"
+            ? `Won — reached the ${gameBestTileRef.current} tile. The game is offering to keep playing this board.`
+            : "The game is over and is offering to start again.",
+          options: known.options,
+          // Left for resolveDecision to work out from the options themselves.
+          needsHuman: null,
+          recommended: known.options.some(o => o.id === "keep-going") ? "keep-going" : "try-again",
+          fallback: NEXT_GAME, searched: true, where: "the plugin's reading of the overlay",
+          scale, canvas: markCandidates(canvas, known.options).canvas,
+        };
+      }
+      // Confine the search to the game when we know where it is: the board plus
+      // generous margins, since controls sit above it and overlays sit on it.
+      plan = searchPlan({ plugin: true, layout: plugin.getLayout?.(), frameWidth: canvas.width });
+    } else {
+      canvas = decisionCanvasRef.current ?? (decisionCanvasRef.current = document.createElement("canvas"));
+      const drawn = await drawFrame({ canvas, scale: decisionScaleRef, full: true });
+      scale = { ...decisionScaleRef.current };
+      plan = searchPlan({ drawn: !!drawn, cropped: !!drawn?.cropped });
+      if (!plan.search) {
+        addLog(`⚠ Not looking for the game's buttons: ${plan.why}.`, "warn");
+        return { ...askDecision({ why: plan.why, purpose, scale }), canvas: drawn ? canvas : null };
+      }
     }
 
-    // Otherwise: measure the controls, then ask what they are.
-    //
-    // Confine the search to the game when we know where it is. Searching the
-    // whole screen picked up browser chrome and page links alongside the game's
-    // own buttons, and the resulting list offered choices like "left" and
-    // "right" that had nothing to do with the game. The region is the board plus
-    // generous margins, since controls sit above it and overlays sit on it.
-    const layout = plugin?.getLayout?.();
-    let region = null;
-    if (layout?.boardRect && layout.capture?.w === canvas.width) {
-      const r = layout.boardRect;
-      region = {
-        x: Math.max(0, r.x - r.w * 0.35),
-        y: Math.max(0, r.y - r.h * 0.45),
-        w: r.w * 1.7,
-        h: r.h * 1.75,
-      };
+    const found = findClickableCandidates(canvas, plan.region);
+    if (!found.length) {
+      addLog(`Nothing that can be clicked was found in ${plan.where}.`, "info");
+      return null;
     }
-    const found = findClickableCandidates(canvas, region);
-    if (!found.length) return null;
-    addLog(`Stuck — found ${found.length} thing${found.length > 1 ? "s" : ""} that can be clicked. Looking at the screen…`, "info");
+    addLog(`${purpose === "claim" ? "Checking the screen —" : "Stuck —"} found ${found.length} thing${found.length > 1 ? "s" : ""} ` +
+      `that can be clicked in ${plan.where}. Looking at the screen…`, "info");
 
+    // The frame with each control outlined and numbered: the model then only
+    // has to name them, and the snapshots show what was found. It used to get
+    // the model's own frame, grabbed again at another size, with coordinates
+    // from this one.
+    const marked = markCandidates(canvas, found);
     let labelled = null;
     try {
-      const frame = await grabFrame();
-      const list = found.map((b, i) => `${i}: at ${b.cx},${b.cy}, ${b.w}x${b.h}px`).join("\n");
+      const image = jpegOf(marked.canvas, MAX_FRAME_W);
       // The screen rule goes in at the front rather than being appended by
       // callAI, so "Reply with ONLY a JSON object" stays the last line: this
       // reply is parsed as JSON. (callAI leaves a prompt that already has the
       // rule alone.)
-      const sys = `${SCREEN_RULE}
-
-You are looking at a game that has stopped responding to input.
-The clickable controls have already been located for you — do not guess coordinates,
-only say what each one is.
-Reply with ONLY a JSON object, no other text:
-{"situation":"<one short sentence describing what is on screen>",
- "buttons":[{"index":<number from the list>,"label":"<the words on that control>"}],
- "recommended":<index of the control that continues play, or null if unsure>,
- "needsHuman":<true if choosing wrongly would lose progress or end the run, else false>}`;
+      const sys = `${SCREEN_RULE}\n\n${labelPrompt(purpose)}`;
       const res = await callAI(
         providerKey, model, sys,
         [{
           role: "user",
           content: [
-            ...(frame ? [{ type: "image", source: { type: "base64", media_type: "image/jpeg", data: frame.data } }] : []),
-            { type: "text", text: `Controls found on screen:\n${list}\n\nWhat is happening, and what is each control?` },
+            { type: "image", source: { type: "base64", media_type: "image/jpeg", data: image.data } },
+            { type: "text", text: `Controls found on screen, outlined and numbered on the image:\n${controlList(found, marked.k * image.k)}\n\nWhat is happening, and what is each control?` },
           ],
         }],
         [], apiKey, null, { signal: stopCtrlRef.current.signal },
       );
-      const text = (res?.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n");
-      const m = text.match(/\{[\s\S]*\}/);
-      if (m) labelled = JSON.parse(m[0]);
+      labelled = readLabels((res?.content ?? []).filter(c => c.type === "text").map(c => c.text).join("\n"));
     } catch (e) {
       // The controls were measured from pixels, so a model that cannot label
       // them leaves a decision to ask about, not a game that has ended.
@@ -2737,24 +2828,14 @@ Reply with ONLY a JSON object, no other text:
       }
     }
 
-    const options = found.map((b, i) => {
-      const hit = labelled?.buttons?.find(x => Number(x.index) === i);
-      return {
-        id: `btn-${i}`,
-        label: hit?.label || `Button at ${b.cx},${b.cy}`,
-        x: b.cx, y: b.cy,
-      };
+    const decision = genericDecision({ found, labelled, scale, purpose, playOn: !plugin, verify: !plugin, where: plan.where });
+    // With no plugin: which of the controls were on screen all along ("New
+    // Game" above a 2048 board), and which appeared during this game.
+    const seen = plugin ? decision : withAppeared(decision, {
+      start: gameStartLookRef.current, now: { look: await lookNow(), scale: { ...scaleRef.current } }, noise: _changeNoise,
     });
-    const recIdx = Number.isInteger(labelled?.recommended) ? labelled.recommended : null;
-    return {
-      kind: "stuck",
-      summary: labelled?.situation || "The game has stopped responding and something is on screen.",
-      options,
-      // Anything not understood is worth asking about rather than clicking.
-      needsHuman: labelled?.needsHuman !== false || recIdx == null,
-      recommended: recIdx != null && options[recIdx] ? options[recIdx].id : null,
-    };
-  }, [addLog, providerKey, model, grabFrame]);
+    return { ...seen, canvas: marked.canvas };
+  }, [addLog, providerKey, model, drawFrame, lookNow]);
 
   /**
    * Handle a point where the game asks what to do next.
@@ -2763,41 +2844,83 @@ Reply with ONLY a JSON object, no other text:
    * often worth continuing, and that is a judgement call rather than something
    * the agent should make silently. Which is why it asks. An unattended run
    * still has to make progress though, so the wait is bounded and falls back to
-   * the configured default; setting a policy other than "ask" skips the question
-   * entirely.
+   * the recommended option (fallbackChoice, src/agent/stuckScreen.js).
    *
-   * Returns "keep-going", "next-game" or "stop".
+   * Every time it asks, and every time it clicks a control it found, it saves a
+   * snapshot: the frame with the controls outlined and numbered, and the list of
+   * them, which is how the control finder's hit rate is measured.
+   *
+   * Returns {choice, clicked, changed}: choice "keep-going", "next-game",
+   * "play-on" or "stop"; clicked, the option clicked; changed, whether the
+   * screen changed near it (checked only with no plugin: `verify`), or, for a
+   * control that ends the game, whether a new screen came up (`claimed`: the
+   * model had said the game is over, so a "Next" ends it too).
    */
   const resolveDecision = useCallback(async (decision) => {
     if (decision.kind === "win") addLog(`🏆 Won — reached the ${gameBestTileRef.current} tile.`, "success");
     addLog(decision.summary, "info");
+    const timing = getTiming();
+    const snap = (tag, heading, after = []) => snapshot(tag, decisionText(heading, decision, after), decision.canvas ?? null);
 
-    const clickOption = async (id) => {
-      const opt = decision.options.find(o => o.id === id);
-      if (!opt) return false;
-      const scale = solverScaleRef.current;
-      const sx = Math.round(opt.x / (scale.scale || 1));
-      const sy = Math.round(opt.y / (scale.scale || 1));
-      addLog(`Clicking "${opt.label}" at ${sx},${sy}.`, "info");
-      const res = await sendWhenLive("/mouse/click", { x: sx, y: sy, button: "left" });
-      if (res.stopped) return false;
-      await new Promise(r => setTimeout(r, 600));
-      return true;
+    // An option clicked where it is on the screen: its point in the decision's
+    // own frame, through that frame's scale (toScreen, src/vision/frameMap.js).
+    // This used to divide by the scale and drop the offsets. With no plugin
+    // (`verify`) the click is made as the model's are: the pointer onto the
+    // control first, the baseline once it has held still, then the click, and
+    // whether the screen changed near it is what the games loop goes on.
+    const clickOption = async (opt) => {
+      const { x, y } = toScreen(opt, decision.scale);
+      addLog(`Clicking "${opt.label}" at ${x},${y}.`, "info");
+      let base = null, at = null;
+      if (decision.verify) {
+        const moved = await sendWhenLive("/mouse/move", { x, y, duration: timing.mouseSpeed });
+        if (moved.stopped) return { clicked: false };
+        at = toFrame({ x, y }, scaleRef.current);
+        base = await settledBaseline(lookNow, at);
+      }
+      const res = await sendWhenLive("/mouse/click", decision.verify
+        ? { x, y, button: "left", clicks: 1, move_duration: 0 }
+        : { x, y, button: "left" });
+      if (res.stopped) return { clicked: false };
+      if (!decision.verify) {
+        await new Promise(r => setTimeout(r, 600));
+        return { clicked: true, changed: null };
+      }
+      if (!res.ok) {
+        addLog(`Click on "${opt.label}" failed: ${backendFailure(res)}`, "warn");
+        return { clicked: false };
+      }
+      // A control that ends the game (a restart, or a "Next" once the model has
+      // said the game is over: `claimed`) is taken to have started the next one
+      // when it changed the screen, so it is judged as attemptRestart judges a
+      // restart: a new screen, not a pressed state or a ripple near it.
+      const newGame = opt.kind === "restart" || (opt.kind === "next" && !!decision.claimed);
+      const confirm = newGame
+        ? await waitChange(lookNow, base, { maxMs: Math.max(timing.confirmDelay, 2500), threshold: LEGACY_RESTART_THRESHOLD, action: changeAction("restart") })
+        : await waitChange(lookNow, base, { maxMs: Math.max(timing.confirmDelay, 1500), action: changeAction("click", {}, at) });
+      addLog(confirm.changed
+        ? `The screen changed after "${opt.label}" (${confirm.motion?.why ?? "changed"}).`
+        : `"${opt.label}" was clicked, and the screen did not change.`, confirm.changed ? "info" : "warn");
+      return { clicked: true, changed: !!confirm.changed };
     };
 
     // "keep-going" continues the same game; anything else ends this game and the
-    // games loop takes over, which already knows how to start the next one.
+    // games loop takes over, which already knows how to start the next one. With
+    // no plugin, the loop goes by what the click did (afterStuckChoice).
     const finish = async (choice) => {
-      if (choice === "stop") return "stop";
-      if (choice === "next-game") return "next-game";
-      if (await clickOption(choice)) {
-        return choice === "keep-going" ? "keep-going" : "next-game";
+      if (choice === STOP || choice === NEXT_GAME || choice === PLAY_ON) return { choice };
+      const opt = decision.options.find(o => o.id === choice);
+      const click = opt ? await clickOption(opt) : { clicked: false };
+      if (click.clicked) {
+        await snap("decision-click", `Clicked ${choiceLabel(decision, choice)}.`,
+          click.changed == null ? [] : [click.changed ? "The screen changed after the click." : "The screen did not change after the click."]);
+        return { choice: choice === "keep-going" ? "keep-going" : NEXT_GAME, clicked: opt, changed: click.changed };
       }
-      addLog(`Could not act on "${choice}" — starting the next game instead.`, "warn");
-      return "next-game";
+      if (!stopRef.current) addLog(`Could not act on ${choiceLabel(decision, choice)} — starting the next game instead.`, "warn");
+      return { choice: NEXT_GAME };
     };
 
-    // Ask only when there is a real choice to make.
+    // Ask only when there is a real choice to make (isRealChoice).
     //
     // If every option throws the board away — "Try again", "New Game" — they
     // amount to the same thing and there is nothing to consult about, so the
@@ -2805,20 +2928,22 @@ Reply with ONLY a JSON object, no other text:
     // leads somewhere genuinely different and is the player's call. This comes
     // from what is on screen rather than a setting, so a game that offers a
     // checkpoint gets the question and a game that does not never interrupts.
-    const canContinue = decision.options.some(o => o.restarts === false);
-    const canRestart = decision.options.some(o => o.restarts !== false);
-    const realChoice = decision.needsHuman ?? (canContinue && canRestart);
-
-    if (!realChoice) {
-      const pick = decision.recommended ?? decision.options[0]?.id ?? "next-game";
+    if (!isRealChoice(decision)) {
+      const pick = actingChoice(decision);
       const opt = decision.options.find(o => o.id === pick);
       addLog(`Only one way forward here — taking it${opt ? `: ${opt.label}` : ""}.`, "info");
       return finish(pick);
     }
 
-    // Ask.
-    const waitSec = 90;
-    addLog(`Waiting for your choice (continues with the recommended option in ${waitSec}s)…`, "info");
+    // Ask. Nobody answering takes the recommended option's own id, else the
+    // decision's fallback: it used to be "keep-going" whatever was on offer.
+    const fallback = fallbackChoice(decision);
+    addLog(`Waiting for your choice (continues with ${choiceLabel(decision, fallback)} in ${DECISION_WAIT_S}s)…`, "info");
+    await snap("decision-ask", "The operator was asked what to do.",
+      [`If nobody answers in ${DECISION_WAIT_S}s: ${choiceLabel(decision, fallback)}.`]);
+    // ■ Stop answers an open dialog at once (stopAgent); one pressed before the
+    // dialog opened must not leave it waiting out its time.
+    if (stopRef.current) return { choice: STOP };
     setPendingDecision({
       kind: decision.kind,
       summary: decision.summary,
@@ -2826,7 +2951,9 @@ Reply with ONLY a JSON object, no other text:
       bestTile: gameBestTileRef.current,
       options: decision.options,
       recommended: decision.recommended,
-      deadline: Date.now() + waitSec * 1000,
+      fallback,
+      playOn: !!decision.playOn,
+      deadline: Date.now() + DECISION_WAIT_S * 1000,
     });
     setPhase("waiting");
 
@@ -2835,17 +2962,16 @@ Reply with ONLY a JSON object, no other text:
       decisionTimerRef.current = setTimeout(() => {
         if (decisionResolverRef.current) {
           decisionResolverRef.current = null;
-          const fallback = decision.recommended ?? DECISION_DEFAULT;
-          addLog(`No answer in ${waitSec}s — continuing with "${fallback}".`, "info");
+          addLog(`No answer in ${DECISION_WAIT_S}s — continuing with ${choiceLabel(decision, fallback)}.`, "info");
           resolve(fallback);
         }
-      }, waitSec * 1000);
+      }, DECISION_WAIT_S * 1000);
     });
     clearTimeout(decisionTimerRef.current);
     setPendingDecision(null);
     setPhase("playing");
     return finish(chosen);
-  }, [addLog, sendWhenLive]);
+  }, [addLog, sendWhenLive, snapshot, getTiming, lookNow]);
 
   // Record the biggest tile seen, from every board that reads successfully.
   //
@@ -3004,13 +3130,13 @@ Reply with ONLY a JSON object, no other text:
     // open, right to flag — so the plugin says what to do and this carries it
     // out, rather than assuming every game is driven the same way.
     const actions = move.actions ?? [{ type: "key", key: move.key }];
-    const scale = solverScaleRef.current.scale || 1;
+    // The solver's capture to the screen, by the rule every click shares
+    // (src/vision/frameMap.js). Its capture is of the whole screen, so this is
+    // the scale alone; it used to be written out here without the offsets.
+    const scale = solverScaleRef.current;
     for (const a of actions) {
       const res = a.type === "click"
-        ? await backend("/mouse/click", {
-            x: Math.round(a.x * scale), y: Math.round(a.y * scale),
-            button: a.button || "left",
-          })
+        ? await backend("/mouse/click", { ...toScreen(a, scale), button: a.button || "left" })
         : await backend("/keyboard/press", { key: a.key });
       // Input halted mid-move (the kill switch): the loop waits for Resume and
       // reads the board again then. Not a failed move, and not a blocked one.
@@ -3027,7 +3153,7 @@ Reply with ONLY a JSON object, no other text:
     // that was just played — which is the one whose new value matters most.
     const park = plugin.parkPoint?.(state);
     if (park) {
-      await backend("/mouse/move", { x: Math.round(park.x * scale), y: Math.round(park.y * scale) });
+      await backend("/mouse/move", toScreen(park, scale));
     }
 
     // Let the tiles animate, then re-read and compare — a real state check
@@ -3166,9 +3292,7 @@ Reply with ONLY a JSON object, no other text:
     const clickToRestart = async (x, y) => {
       const moved = await sendWhenLive("/mouse/move", { x, y, duration: timing.mouseSpeed });
       if (moved.stopped) return { base: null, res: moved };
-      const s = scaleRef.current;
-      const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
-      const base = await settledBaseline(lookNow, { x: (x - (s.offsetX ?? 0)) / sc, y: (y - (s.offsetY ?? 0)) / sc });
+      const base = await settledBaseline(lookNow, toFrame({ x, y }, scaleRef.current));
       const res = await sendWhenLive("/mouse/click", { x, y, button: "left", clicks: 1, move_duration: 0 });
       return { base, res };
     };
@@ -3204,10 +3328,7 @@ Reply with ONLY a JSON object, no other text:
         const pt = plug.findRestartButton(solverCanvasRef.current, null, tried);
         if (!pt) { if (attempt) addLog("No further restart buttons to try.", "warn"); break; }
         tried.push({ x: pt.x, y: pt.y });
-        const s = solverScaleRef.current;
-        const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
-        const x = Math.round((s.offsetX ?? 0) + pt.x * sc);
-        const y = Math.round((s.offsetY ?? 0) + pt.y * sc);
+        const { x, y } = toScreen(pt, solverScaleRef.current);
         addLog(`Restarting — clicking the ${pt.kind ?? "restart"} button at image ${pt.x},${pt.y} (screen ${x},${y}).`, "info");
         const { base, res } = await clickToRestart(x, y);
         if (res.stopped) return { ok: false };
@@ -3311,14 +3432,7 @@ Reply with ONLY a JSON object, no other text:
         if (await verify(base)) {
           // Remember where that click landed so later restarts skip the LLM.
           const m = txtOut.match(/image (\d+),(\d+)/);
-          if (m) {
-            const s = scaleRef.current;
-            const sc = (!s.scale || s.scale <= 0) ? 1 : s.scale;
-            restartPointRef.current = {
-              x: Math.round((s.offsetX ?? 0) + Number(m[1]) * sc),
-              y: Math.round((s.offsetY ?? 0) + Number(m[2]) * sc),
-            };
-          }
+          if (m) restartPointRef.current = toScreen({ x: Number(m[1]), y: Number(m[2]) }, scaleRef.current);
           addLog("✓ New game started.", "success");
           return { ok: true };
         }
@@ -3645,6 +3759,7 @@ Reply with ONLY a JSON object, no other text:
         actions: toolUses.map(tu => ({ tool: tu.name, input: tu.input })),
       });
       const toolResults = [];
+      let notRun = "the session was stopped";
       for (const tu of toolUses) {
         if (stopRef.current) break;
         addLog(`→ ${tu.name}(${JSON.stringify(tu.input)})`, "tool", { screen: 104 + tu.name.length });
@@ -3652,10 +3767,15 @@ Reply with ONLY a JSON object, no other text:
         noteTurn({ tools: 1 });
         const result = await executeTool(tu.name, tu.input, tu.id);
         toolResults.push(result);
-        if (gameEndRef.current) break;
+        if (gameEndRef.current) { notRun = `${tu.name} came before it in this reply`; break; }
       }
-      if (toolResults.length > 0) {
-        convRef.current.push({ role: "user", content: toolResults });
+      // Every call gets an answer, those not run included (answerEveryCall,
+      // src/agent/turnResult.js): a claim that the game is over can be turned
+      // down and play go on in this conversation, and a call left unanswered
+      // gets every later request refused.
+      const answered = answerEveryCall(toolUses, toolResults, notRun);
+      if (answered.length > 0) {
+        convRef.current.push({ role: "user", content: answered });
       }
     }
 
@@ -4279,7 +4399,9 @@ REASONING STYLE (for analyse_game_state):
     // reply, whole (snapshot, src/agent/snapshots.js). A plugin's solver takes
     // its own snapshots, from its own capture.
     const modelPlays = !activePlugin;
-    const snapModel = (tag, heading) => (modelPlays ? snapshot(tag, snapshotText(heading, lastReplyRef.current)) : null);
+    // `canvas`, when given, is the frame to save instead of the model's: the
+    // screen handler's, with the controls it found outlined and numbered.
+    const snapModel = (tag, heading, canvas = null) => (modelPlays ? snapshot(tag, snapshotText(heading, lastReplyRef.current), canvas) : null);
     const waitForTheModel = async (outage, lastError) => {
       await snapModel("model-unreachable",
         `The model did not answer (${lastError?.userText ?? "no answer"}). Play is paused, with the board left as it is, until it answers.`);
@@ -4303,6 +4425,59 @@ REASONING STYLE (for analyse_game_state):
       }
     };
 
+    // ── When play stops, with no plugin ──────────────────────────────────────
+    // The screen handler (analyseStuckScreen, resolveDecision) used to run only
+    // for a plugin. With none, play that stopped changing the screen met every
+    // game-over panel and dialog with "try something else" until it was called
+    // stuck, and the model's word that a game was over ended it, right or wrong.
+    // Now both look at the screen first (src/agent/stuckScreen.js).
+    //
+    // Play stopped (the stuck rule fired): look, act or ask, and say what the
+    // games loop does next (afterStuckChoice). `claim` is the model's last
+    // turned-down word that the game is over, `looks` how many times the handler
+    // got play going again this game.
+    const faceStuckScreen = async ({ claim, looks }) => {
+      if (looks >= STUCK_LOOKS_PER_GAME) {
+        addLog(`Not looking at the screen again: it got play going ${looks} times this game already.`, "warn");
+        return afterStuckChoice({ claim, why: `the screen handler had already got play going ${looks} times this game` });
+      }
+      const decision = await analyseStuckScreen(null, apiKey);
+      if (!decision || stopRef.current) {
+        return afterStuckChoice({ claim, why: decision ? null : "nothing that can be clicked was found on screen" });
+      }
+      // `claimed`: a "Next" clicked after the model said the game is over ends
+      // it, so it is judged as a restart is (resolveDecision's clickOption).
+      const after = afterStuckChoice({ result: await resolveDecision({ ...decision, claimed: !!claim }), claim, decision });
+      if (after.note) addLog(`${after.note[0].toUpperCase()}${after.note.slice(1)}.`, after.next === "play-on" ? "success" : "info");
+      return after;
+    };
+    // The model said the game is over (signal_game_end): weigh it as a claim
+    // (claimVerdict). A report that play cannot go on ("stuck", the standing
+    // screen rule's way out), or a claim the stuck rule already confirms, is
+    // taken without a look; otherwise the screen is searched for a control that
+    // ends a game. `rejected` is how many claims in a row were turned down.
+    const weighClaim = async (claim, rejected) => {
+      const stuck = stuckVerdict({ streak: noOpStreakRef.current, distinct: lastFailedMovesRef.current.size });
+      const atOnce = claimVerdict({ outcome: claim.outcome, stuck, rejected });
+      if (atOnce.accept) return { verdict: atOnce, decision: null };
+      const decision = await analyseStuckScreen(null, apiKey, { purpose: "claim" });
+      return { verdict: claimVerdict({ outcome: claim.outcome, stuck, decision, rejected }), decision };
+    };
+    // A claim taken once nothing responds any more: the game's result is the
+    // model's, with its score and reason, as if it had been taken at once.
+    const takeClaim = (claim) => {
+      gameEndRef.current = claim;
+      setGameResult({ outcome: claim.outcome, finalScore: claim.finalScore, reason: claim.reason });
+      if (claim.finalScore != null) {
+        currentScoreRef.current = claim.finalScore;
+        scoreSourceRef.current = claim.scoreSource ?? "model";
+        setCurrentScore(claim.finalScore);
+      }
+    };
+    // Set when a control the handler clicked ended a game by starting the next
+    // one: the games loop then does not restart it again.
+    let nextGameStarted = false;
+
     solverActiveRef.current = !!activePlugin;
     // Read when the model reports a win: the game name can be edited during a
     // run, so the plugin is fixed here rather than looked up again then.
@@ -4317,7 +4492,7 @@ REASONING STYLE (for analyse_game_state):
     // once each game's record is queued, not as each game's play begins: the
     // restart between two games can pause for a model that stopped answering,
     // and that snapshot belongs to the game it starts, in its record and count.
-    const newGameSnapshots = () => { gameSnapshotsRef.current = []; snapshotsRef.current = 0; };
+    const newGameSnapshots = () => { gameSnapshotsRef.current = []; snapshotsRef.current = 0; decisionSnapshotsRef.current = 0; };
     newGameSnapshots();
 
     // A session usually starts on the board left behind by the last one, which
@@ -4377,6 +4552,14 @@ REASONING STYLE (for analyse_game_state):
       let firstTurnSnapped = false; // the model's first turn of this game is saved once
       let noOpsSnapped = 0;         // the no-op step last saved in this streak (noOpSnapshot)
       let noOpsReminded = 0;        // the reminder step last given in this streak (noOpReminderDue)
+      // The screen handler with no plugin (faceStuckScreen, weighClaim): how many
+      // times it got play going again this game, how many of the model's claims
+      // that the game is over it turned down in a row, and the last of those
+      // while it stands ({claim, changesAt}, claimStands).
+      let screenLooks = 0;
+      let rejectedClaims = 0;
+      let pendingClaim = null;
+      gameStartLookRef.current = null;
 
       // This game's noise floor for change detection, from idle frames taken
       // before anything is sent to it: what moves there on its own (a clock, an
@@ -4411,7 +4594,7 @@ REASONING STYLE (for analyse_game_state):
             addLog("The game stopped responding and nothing on screen can be clicked.", "warn");
             break;
           }
-          const choice = await resolveDecision(decision);
+          const { choice } = await resolveDecision(decision);
           if (choice === "keep-going") {
             solverBlockedRef.current = new Set();
             noOpStreakRef.current = 0;
@@ -4435,7 +4618,7 @@ REASONING STYLE (for analyse_game_state):
           if (gameBestTileRef.current >= 2048) {
             const decision = await analyseStuckScreen(activePlugin, apiKey);
             if (decision) {
-              const choice = await resolveDecision({ ...decision, kind: "win", needsHuman: true });
+              const { choice } = await resolveDecision({ ...decision, kind: "win", needsHuman: true });
               if (choice === "keep-going") {
                 solverBlockedRef.current = new Set();
                 noOpStreakRef.current = 0;
@@ -4497,7 +4680,7 @@ REASONING STYLE (for analyse_game_state):
             addLog("Moves are not changing the board — looking at what is on screen.", "warn");
             const decision = await analyseStuckScreen(activePlugin, apiKey);
             if (decision) {
-              const choice = await resolveDecision(decision);
+              const { choice } = await resolveDecision(decision);
               if (choice === "keep-going") {
                 solverBlockedRef.current = new Set();
                 noOpStreakRef.current = 0;
@@ -4547,6 +4730,10 @@ REASONING STYLE (for analyse_game_state):
       if (!changeCalibrated) {
         changeCalibrated = true;
         await calibrateChange(gameIdx + 1);
+        // With no plugin, the screen as this game begins: a control on it now
+        // ("New Game" above a 2048 board) says nothing later about the game
+        // having ended (withAppeared, src/agent/stuckScreen.js).
+        if (modelPlays && !stopRef.current) gameStartLookRef.current = { look: await lookNow(), scale: { ...scaleRef.current } };
         // Paused or halted while it looked: wait here, as at the top of the loop.
         while ((pauseRef.current || haltedRef.current) && !stopRef.current) await new Promise(r => setTimeout(r, 500));
         if (stopRef.current) break;
@@ -4559,6 +4746,47 @@ REASONING STYLE (for analyse_game_state):
       // answers again, go round and play on (pause and solver included); a
       // session given up or stopped leaves play with no outcome of its own.
       if (turn.loop === "retry") continue;
+      // With no plugin, the model's word that the game is over is a claim, and
+      // is weighed first (weighClaim, src/agent/stuckScreen.js): taken when a
+      // control that ends a game appeared on screen, or when nothing the model
+      // does changes the screen any more. Otherwise play goes on, and the model
+      // is told why. Nothing measures a game with no plugin, and a model once
+      // "won" a 2048 game it had never played.
+      let claimSeen = null;
+      if (turn.loop === "end-game" && modelPlays) {
+        // ■ Stop came before the claim could be weighed: the game ends as Stop
+        // ends one, with no result taken from the model's unchecked word (its
+        // score and reason included).
+        if (stopRef.current) { gameEndRef.current = null; setGameResult(null); break; }
+        const claim = { ...gameEndRef.current };
+        claimSeen = await weighClaim(claim, rejectedClaims);
+        const { verdict, decision } = claimSeen;
+        if (!verdict.accept) {
+          rejectedClaims++;
+          gameEndRef.current = null;
+          setGameResult(null);
+          addLog(claimRejectedLine({ outcome: claim.outcome, why: verdict.why, rejected: rejectedClaims }), "warn");
+          await snapModel("claim-rejected",
+            decisionText(`The model said the game is over (${claim.outcome}), and it was not ended.`, decision), decision?.canvas);
+          if (verdict.giveUp) {
+            gameOutcome = "stuck";
+            stuckReason = `the model said ${rejectedClaims} times in a row that the game was over (last: ${claim.outcome}), and nothing on screen confirmed it`;
+            addLog(`Ending this game as stuck: ${stuckReason}.`, "warn");
+            break;
+          }
+          // It stands until an action of the model's changes the screen.
+          pendingClaim = { claim, changesAt: screenChangesRef.current };
+          convRef.current.push({ role: "user", content: claimNudge({ outcome: claim.outcome, verdict }) });
+          // The model is told to look at the screen again, so the next turn
+          // sends it: not skipped as unchanged since the last turn.
+          forceStrategyRef.current = true;
+          lastTurnLookRef.current = null;
+          continue;
+        }
+        // A restart control that confirmed it is where the next game starts from.
+        if (verdict.control?.kind === "restart") restartPointRef.current = toScreen(verdict.control, decision.scale);
+        addLog(claimAcceptedLine(verdict), verdict.how === "reported-stuck" ? "warn" : "info");
+      }
       if (turn.loop === "end-game") {
         gameOutcome = turn.outcome;
         if (turn.finalScore != null) {
@@ -4566,13 +4794,23 @@ REASONING STYLE (for analyse_game_state):
           scoreSourceRef.current = gameEndRef.current?.scoreSource ?? "model";
           setCurrentScore(turn.finalScore);
         }
-        await snapModel("game-end", gameEndHeading({ ...turn, reason: gameEndRef.current?.reason }));
+        await snapModel("game-end", gameEndHeading({ ...turn, reason: gameEndRef.current?.reason }) + claimTaken(claimSeen),
+          claimSeen?.decision?.canvas);
         break;
       }
       if (turn.loop !== "play") break;
       if (!firstTurnSnapped) {
         firstTurnSnapped = true;
         await snapModel("first-turn", `Game ${gameIdx + 1}, first turn: the frame the model was shown, and what it made of it.`);
+      }
+      // A claim turned down stands only until the model's actions change the
+      // screen (claimStands, src/agent/stuckScreen.js): the game was not over
+      // then, and the count of claims in a row starts again. Kept, it gave the
+      // game its outcome and score whenever play next stalled.
+      if (pendingClaim && !claimStands(pendingClaim, screenChangesRef.current)) {
+        addLog(claimDroppedLine(pendingClaim.claim), "info");
+        pendingClaim = null;
+        rejectedClaims = 0;
       }
 
       // ── Acting blind ─────────────────────────────────────────────────────
@@ -4625,10 +4863,40 @@ REASONING STYLE (for analyse_game_state):
       // (src/agent/noops.js, stuckVerdict).
       const { exhausted, hardStop, reason: stuckBecause, logLine: stuckLine } = stuckVerdict({ streak: noOps, distinct: distinctFailed });
       if (exhausted || hardStop) {
-        gameOutcome = "stuck";
-        stuckReason = stuckBecause;
         addLog(stuckLine, "warn");
-        await snapModel("stuck", `Stuck: ${stuckReason}. Play on this game stopped here.`);
+        // With no plugin, the screen is looked at before the game is called
+        // stuck (faceStuckScreen): a game-over panel, a dialog, a win that offers
+        // to keep going. A control clicked that changed the screen gets play
+        // going again, and one that ends a game has ended this one and started
+        // the next. A claim that the game was over, turned down before and still
+        // standing (nothing has responded since), is taken now.
+        const faced = modelPlays ? await faceStuckScreen({ claim: pendingClaim?.claim ?? null, looks: screenLooks }) : afterStuckChoice();
+        if (faced.next === "play-on") {
+          screenLooks++;
+          pendingClaim = null;
+          rejectedClaims = 0;
+          noOpStreakRef.current = 0; lastFailedMovesRef.current = new Set(); lastActionNoOpRef.current = null;
+          noOpsReminded = 0;
+          noOpsSnapped = 0;
+          // A screenshot with the next turn, as the nudge asks the model to look
+          // again ("keep playing" changed nothing on screen to show).
+          forceStrategyRef.current = true;
+          lastTurnLookRef.current = null;
+          convRef.current.push({ role: "user", content: resumeNudge(faced.modelNote) });
+          continue;
+        }
+        gameOutcome = faced.outcome;
+        stuckReason = gameOutcome === "stuck" ? faced.stuckReason ?? stuckBecause : null;
+        if (pendingClaim) takeClaim(pendingClaim.claim);
+        // The next game is already under way; a restart control it was started
+        // from is remembered for later restarts (a "Next" is not).
+        if (faced.startedNext) {
+          nextGameStarted = true;
+          if (faced.restartPoint) restartPointRef.current = faced.restartPoint;
+        }
+        if (faced.next === "stop") stopRef.current = true;
+        const facedNote = faced.note ? `${faced.note}. ` : "";
+        await snapModel("stuck", `Stuck: ${stuckBecause}. ${facedNote}Play on this game stopped here, as ${gameOutcome}.`);
         break;
       }
 
@@ -4693,8 +4961,12 @@ REASONING STYLE (for analyse_game_state):
       if (!moreToPlay || stopRef.current) break;
 
       // Restart for the next game
+      // A control the screen handler clicked may have started the next game
+      // already (afterStuckChoice): it is not restarted a second time.
       setPhase("restarting");
-      const restart = await restartGame();
+      const restart = nextGameStarted ? { ok: true } : await restartGame();
+      if (nextGameStarted) addLog("The next game was started by the control clicked on the last screen.", "info");
+      nextGameStarted = false;
       setPhase("playing");
       if (session.abortReason || stopRef.current) break;
       if (!restart.ok) {
@@ -4856,10 +5128,13 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       gamesPerSession, attemptRestart, useSolver, solverTurn,
       providerKey, apiKeyInput, gameDesc, skipResearch, agentTurn, runResearch, executeTool, grabFrame, addLog, analyseStuckScreen, resolveDecision,
       waitForModel, model, ollamaHost, ollamaViaBackend, capabilities, fetchCapabilities, applyHaltState,
-      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite, snapshot, changeDetector, calibrateChange]);
+      stampRun, queueRecord, getTiming, timingProfile, maxTokens, checkSite, snapshot, changeDetector, calibrateChange, lookNow]);
 
   const stopAgent = useCallback(() => {
     stopRef.current = true;
+    // A decision the operator is being asked about ends with the session, now,
+    // rather than when its dialog times out.
+    answerDecision(STOP);
     // Ends a model request in flight, and a wait for the model, now: a Stop
     // that has to sit out a ten-minute local-model request is not a stop.
     stopCtrlRef.current.abort();
@@ -4874,7 +5149,7 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
       else if (!reply?.refused) addLog(`■ Stop did not reach the backend's kill switch (${backendFailure(reply)}): input already sent runs to its end.`, "warn");
       return reply;
     });
-  }, [addLog, applyHaltState]);
+  }, [addLog, applyHaltState, answerDecision]);
 
   // ── A blocked site in front during a run ─────────────────────────────────────
   // At ▶ Start the window in front is the agent page, where Start was clicked.
@@ -4940,9 +5215,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
 
   const restartAgent = useCallback(() => {
     stopRef.current = true;
+    answerDecision(STOP);
     stopCtrlRef.current.abort();
     setTimeout(() => startAgent(), 300);
-  }, [startAgent]);
+  }, [startAgent, answerDecision]);
 
   const handleProviderChange = useCallback((key) => {
     setProviderKey(key);
@@ -5846,7 +6122,9 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
             <div style={{ fontSize: 17, fontWeight: 700, color: C.accentL, marginBottom: 6 }}>
               {pendingDecision.kind === "win"
                 ? `Game won — reached the ${pendingDecision.bestTile} tile`
-                : "The game is waiting for a decision"}
+                : pendingDecision.playOn
+                  ? "Play has stopped — what should the agent do?"
+                  : "The game is waiting for a decision"}
             </div>
             <div style={{ fontSize: 12, color: C.text, marginBottom: 4, lineHeight: 1.5 }}>
               {pendingDecision.summary}
@@ -5875,8 +6153,10 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   {o.label}{o.id === pendingDecision.recommended ? "  (recommended)" : ""}
                 </option>
               ))}
-              <option value="next-game">Start the next game</option>
-              <option value="stop">Stop the session</option>
+              {/* With no plugin: no click, and the model plays on. */}
+              {pendingDecision.playOn && <option value={PLAY_ON}>Keep playing (no click)</option>}
+              <option value={NEXT_GAME}>Start the next game</option>
+              <option value={STOP}>Stop the session</option>
             </select>
 
             <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -5895,6 +6175,9 @@ Be specific and game-actionable. Each discovery and mistake should be under 100 
                   ? `auto in ${decisionSecondsLeft}s`
                   : "waiting"}
               </span>
+            </div>
+            <div style={{ fontSize: 11, color: C.dim, marginTop: 8 }}>
+              If nobody answers: {choiceLabel(pendingDecision, pendingDecision.fallback ?? NEXT_GAME)}.
             </div>
           </div>
         </div>

@@ -28,7 +28,14 @@ The agent is tested on a separate computer that only gets code through
   in `tools/check-noops.mjs` (every action type counted by its signature, a
   click that opens a square never counted, an action never sent or never seen
   not counted and a run of those pausing play, the stuck rule, and the page's
-  wiring),
+  wiring), what happens when play stops in `tools/check-stuck.mjs` (the one
+  frame-to-screen rule every click the page works out goes through, the control
+  finder searching only the crop with no plugin, sign-in, download, payment and
+  online-play controls never clicked by the agent itself, the dialog's fallback
+  to the recommended control, the model's claim that a game is over weighed
+  against the screen and dropped once the screen responds (a "stuck" report
+  taken as it is), the handler reached from the no-plugin stuck branch, and the
+  dialog rendered),
   model request shapes, model lists and
   the model check at Start in `tools/check-llm.mjs`, the key scanner's own test in
   `tools/check-secrets.mjs`, the web-game policy in `tools/check-site-policy.mjs`

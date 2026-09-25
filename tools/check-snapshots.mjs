@@ -84,6 +84,28 @@ console.log("the allowance");
   const endings = ["stuck", "game-end", "game-over", "gave-up"].map(tag => sn.prepareSnapshot({ tag, modelFrame, taken, encodePng }));
   check("an ending is still taken once the allowance is used up, and does not count",
     endings.every(s => s && s.taken === 6), show(endings.map(s => s?.taken)));
+  // The screen handler's decisions (src/agent/stuckScreen.js) measure the
+  // control finder, so they do not use up the game's allowance.
+  const decisions = ["decision-ask", "decision-click", "claim-rejected"].map(tag => sn.prepareSnapshot({ tag, modelFrame, taken, encodePng }));
+  check("the screen handler's decisions are taken once the allowance is used up, and do not count toward it",
+    sn.DECISION_TAGS.length === 3 && decisions.every(s => s && s.taken === 6 && s.decisions === 1)
+      && !sn.DECISION_TAGS.some(sn.isEnding) && !sn.ENDING_TAGS.some(sn.isDecision),
+    show(decisions.map(s => [s?.taken, s?.decisions])));
+  // They have an allowance of their own: with a plugin, a "Keep going" that
+  // does not close 2048's overlay would otherwise ask and click, and save both,
+  // on every pass.
+  let decided = 0;
+  const cycle = [];
+  for (let i = 0; i < sn.DECISION_SNAPSHOTS_PER_GAME + 4; i++) {
+    const shot = sn.prepareSnapshot({ tag: i % 2 ? "decision-click" : "decision-ask", modelFrame, taken: 0, decisions: decided, encodePng });
+    cycle.push(!!shot);
+    if (shot) decided = shot.decisions;
+  }
+  check(`the screen handler's decisions stop after ${sn.DECISION_SNAPSHOTS_PER_GAME} a game, and leave the game's allowance alone`,
+    decided === sn.DECISION_SNAPSHOTS_PER_GAME && cycle.filter(Boolean).length === sn.DECISION_SNAPSHOTS_PER_GAME
+      && sn.prepareSnapshot({ tag: "first-turn", modelFrame, taken: 0, decisions: decided, encodePng })?.taken === 1
+      && sn.prepareSnapshot({ tag: "stuck", modelFrame, taken: 6, decisions: decided, encodePng }) !== null,
+    show({ decided, cycle }));
 }
 
 // ── Which frame ───────────────────────────────────────────────────────────────
@@ -234,10 +256,13 @@ console.log("the page");
   };
 
   once("snapshot() takes a canvas, and sends what prepareSnapshot builds from the solver's capture, the model's frame and this game's count",
-    /const snapshot = useCallback\(async \(tag, text, canvas = null\) => \{\s*const (\w+) = prepareSnapshot\(\{\s*tag,\s*text,\s*canvas,\s*solverCanvas: solverCanvasRef\.current,\s*modelFrame: modelFrameRef\.current,\s*taken: snapshotsRef\.current,\s*encodePng: snapshotPng\s*\}\);\s*if \(!\1\) return;\s*snapshotsRef\.current = \1\.taken;[\s\S]{0,200}?backend\("\/log\/snapshot", \{ session: logSessionRef\.current, \.\.\.\1\.body \}\)/g);
-  check("the allowance is counted in one place only (prepareSnapshot)",
-    count(/snapshotsRef\.current = /g) === 2 && /snapshotsRef\.current = 0;/.test(code) && !/snapshotsRef\.current(\+\+| >=)/.test(code),
-    "snapshotsRef is counted somewhere else too");
+    /const snapshot = useCallback\(async \(tag, text, canvas = null\) => \{\s*const (\w+) = prepareSnapshot\(\{\s*tag,\s*text,\s*canvas,\s*solverCanvas: solverCanvasRef\.current,\s*modelFrame: modelFrameRef\.current,\s*taken: snapshotsRef\.current,\s*decisions: decisionSnapshotsRef\.current,\s*encodePng: snapshotPng\s*\}\);\s*if \(!\1\) return;\s*snapshotsRef\.current = \1\.taken;\s*decisionSnapshotsRef\.current = \1\.decisions;[\s\S]{0,200}?backend\("\/log\/snapshot", \{ session: logSessionRef\.current, \.\.\.\1\.body \}\)/g);
+  // The screen handler's decisions have an allowance of their own
+  // (DECISION_SNAPSHOTS_PER_GAME), kept the same way.
+  check("the allowances are counted in one place only (prepareSnapshot)",
+    count(/\bsnapshotsRef\.current = /g) === 2 && /\bsnapshotsRef\.current = 0;/.test(code) && !/snapshotsRef\.current(\+\+| >=)/.test(code)
+      && count(/decisionSnapshotsRef\.current = /g) === 2 && /decisionSnapshotsRef\.current = 0;/.test(code),
+    "snapshotsRef or decisionSnapshotsRef is counted somewhere else too");
   const snap = from("const snapshot = useCallback(", "const addAction = useCallback(");
   check("a frame the backend dropped is said once a run, and ▶ Start clears that",
     /if \(frameDropped\((\w+)\.body, res\.files\) && !frameDroppedSaidRef\.current\) \{\s*frameDroppedSaidRef\.current = true;\s*addLog\(FRAME_DROPPED_WARNING, "warn"\);\s*\}/.test(snap)
@@ -262,12 +287,16 @@ console.log("the page");
     "the reset is not in startAgent's reset, before research");
 
   const loop = from("const session = { outage: null, abortReason: null };", "const thisGame = gameEnding(");
+  // `canvas`: the screen handler's frame, with the controls it found outlined
+  // (src/agent/stuckScreen.js), saved in place of the model's when given.
   once("with no plugin only, a snapshot on the model's path saves the model's last reply under a heading",
-    /const modelPlays = !activePlugin;\s*const snapModel = \(tag, heading\) => modelPlays \? snapshot\(tag, snapshotText\(heading, lastReplyRef\.current\)\) : null;/g);
+    /const modelPlays = !activePlugin;\s*const snapModel = \(tag, heading, canvas = null\) => modelPlays \? snapshot\(tag, snapshotText\(heading, lastReplyRef\.current\), canvas\) : null;/g);
   check("a pause for a model that stopped answering is saved before the wait",
     /const waitForTheModel = async \(outage, lastError\) => \{\s*await snapModel\(\s*"model-unreachable",[\s\S]{0,300}?\);\s*return waitForModel\(apiKey, outage, lastError\);\s*\};/.test(loop));
-  check("the model ending the game is saved, with its outcome, score and reason",
-    /if \(turn\.loop === "end-game"\) \{[\s\S]{0,400}?await snapModel\("game-end", gameEndHeading\(\{ \.\.\.turn, reason: gameEndRef\.current\?\.reason \}\)\);\s*break;\s*\}/.test(loop));
+  check("the model ending the game is saved, with its outcome, score and reason, and how its claim was taken",
+    /if \(turn\.loop === "end-game"\) \{[\s\S]{0,400}?await snapModel\(\s*"game-end",\s*gameEndHeading\(\{ \.\.\.turn, reason: gameEndRef\.current\?\.reason \}\) \+ claimTaken\(claimSeen\),\s*claimSeen\?\.decision\?\.canvas\s*\);\s*break;\s*\}/.test(loop));
+  check("a claim that the game is over, turned down, is saved with the controls found",
+    /await snapModel\(\s*"claim-rejected",\s*decisionText\([\s\S]{0,200}?\),\s*(\w+)\?\.canvas\s*\);/.test(loop));
   check("the first turn of each game that got through is saved once",
     /let firstTurnSnapped = false;/.test(loop)
       && /if \(turn\.loop !== "play"\) break;\s*if \(!firstTurnSnapped\) \{\s*firstTurnSnapped = true;\s*await snapModel\("first-turn", /.test(loop));
@@ -275,14 +304,16 @@ console.log("the page");
     /let noOpsSnapped = 0;/.test(loop)
       && /const (\w+) = noOpSnapshot\(noOps, noOpsSnapped\);\s*noOpsSnapped = \1\.saved;\s*if \(\1\.take\) \{\s*await snapModel\(`no-op-\$\{\1\.take\}`, [\s\S]{0,300}?\);\s*\}\s*\}/.test(loop)
       && loop.indexOf('await snapModel("stuck"') > 0 && loop.indexOf('await snapModel("stuck"') < loop.indexOf("noOpSnapshot(noOps"));
+  // With no plugin the screen handler has its turn first (faceStuckScreen), and
+  // only a game it did not get going again is saved as stuck.
   check("play stopping as stuck is saved, before it leaves the game",
-    /if \(exhausted \|\| hardStop\) \{\s*gameOutcome = "stuck";[\s\S]{0,700}?await snapModel\("stuck", `Stuck: \$\{stuckReason\}[^`]*`\);\s*break;\s*\}/.test(loop));
-  once("those are all the model-path snapshots", /\bsnapModel\(/g, 5);
+    /if \(exhausted \|\| hardStop\) \{[\s\S]{0,1200}?gameOutcome = (\w+)\.outcome;[\s\S]{0,500}?await snapModel\(\s*"stuck",\s*`Stuck: \$\{stuckBecause\}[^`]*`\s*\);\s*break;\s*\}/.test(loop));
+  once("those are all the model-path snapshots", /\bsnapModel\(/g, 6);
 
   // The restart between two games (restartGame) can pause for the model, and
   // that snapshot is the next game's: it is in its record and its count.
   const games = from("const session = { outage: null, abortReason: null };", 'finalOutcome = "aborted";');
-  const resetAt = games.search(/const newGameSnapshots = \(\) => \{\s*gameSnapshotsRef\.current = \[\];\s*snapshotsRef\.current = 0;\s*\};\s*newGameSnapshots\(\);/);
+  const resetAt = games.search(/const newGameSnapshots = \(\) => \{\s*gameSnapshotsRef\.current = \[\];\s*snapshotsRef\.current = 0;\s*decisionSnapshotsRef\.current = 0;\s*\};\s*newGameSnapshots\(\);/);
   check("a game's snapshots start before the games loop, and again as soon as the game before is recorded",
     resetAt > 0 && resetAt < games.indexOf("for (let gameIdx = 0;")
       && /queueRecord\("game", gameRecord\(\{[\s\S]*?snapshots: gameSnapshotsRef\.current,[\s\S]*?\}\)\);\s*newGameSnapshots\(\);/.test(games)
@@ -292,12 +323,17 @@ console.log("the page");
 
   // Every tag the page names: endings are exempt from the allowance, so only
   // the ending tags may be ENDING_TAGS, and every ending must be one.
-  const tags = [...code.matchAll(/\b(?:snapshot|snapModel)\(\s*(?:"([^"]+)"|`([^`$]+)\$)/g)].map(m => m[1] ?? m[2]);
+  const tags = [...code.matchAll(/\b(?:snapshot|snapModel|snap)\(\s*(?:"([^"]+)"|`([^`$]+)\$)/g)].map(m => m[1] ?? m[2]);
   const endingsUsed = tags.filter(sn.isEnding).sort();
   check("the endings the page saves are the exempt ones, and nothing else is",
     show(endingsUsed) === show(["game-end", "game-over", "gave-up", "stuck"]) && tags.includes("first-turn")
       && tags.includes("no-op-") && tags.includes("model-unreachable"),
     show(tags));
+  // The screen handler's decisions are exempt too (DECISION_TAGS), and are
+  // exactly the ones it saves: asking, clicking, and a claim turned down.
+  const decisionsUsed = tags.filter(sn.isDecision).sort();
+  check("the screen handler's decisions the page saves are the exempt ones",
+    show(decisionsUsed) === show([...sn.DECISION_TAGS].sort()), show(tags));
 }
 
 // ── The backend and the docs ──────────────────────────────────────────────────

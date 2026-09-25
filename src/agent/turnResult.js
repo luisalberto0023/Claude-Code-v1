@@ -291,3 +291,22 @@ export function gameEnding({ outcome = null, abortReason = null, stopped = false
     abortReason: `play on a game stopped without an outcome (${JSON.stringify(outcome)})`,
   };
 }
+
+/**
+ * The tool results for a reply's tool calls (`toolUses`, its tool_use blocks),
+ * with one for every call: `results` are those that ran, and each call left
+ * without one is answered "Not run", saying why (`why`). The page runs a
+ * reply's calls in order and stops after signal_game_end, or at ■ Stop, so the
+ * calls after that got no result of their own. Anthropic, OpenAI and Gemini
+ * all refuse a conversation holding a call with no answer (HTTP 400, which
+ * gives a cloud session up), and with no plugin a claim that the game is over
+ * can be turned down and play go on in the same conversation.
+ */
+export function answerEveryCall(toolUses = [], results = [], why = "an earlier call in this reply ended the turn") {
+  const answered = new Set(results.map(r => r?.tool_use_id));
+  const missing = toolUses.filter(tu => tu?.id && !answered.has(tu.id));
+  return [
+    ...results,
+    ...missing.map(tu => ({ type: "tool_result", tool_use_id: tu.id, content: [{ type: "text", text: `Not run: ${why}.` }] })),
+  ];
+}

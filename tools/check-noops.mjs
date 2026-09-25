@@ -503,10 +503,14 @@ console.log("GameAgent.jsx");
     waits === ACTION_TOOLS.length + 1 && noted === waits);
   check("inside executeTool only noteEffect keeps the count",
     [...tools.matchAll(/(noOpStreakRef|lastFailedMovesRef|lastActionNoOpRef|unknownEffectsRef)\.current(\s*=[^=]|\+\+|\.add|\.clear)/g)].length === 4);
-  check("elsewhere only the solver's own moves, the blind pause, and the resets at ▶ Start and each game, touch it",
+  // The screen handler getting play going again with no plugin (a control
+  // clicked that changed the screen, or the operator's "keep playing",
+  // src/agent/stuckScreen.js) starts the count again, as a new game does.
+  check("elsewhere only the solver's own moves, the blind pause, the resets at ▶ Start and each game, and play going again after the screen handler, touch it",
     count(/noOpStreakRef\.current\+\+/g) === 1 && count(/lastFailedMovesRef\.current\.add\(/g) === 1
-      && count(/lastActionNoOpRef\.current = null;/g) === 2 && count(/lastActionNoOpRef\.current = /g) === 3
-      && count(/unknownEffectsRef\.current = 0;/g) === 3 && count(/unknownEffectsRef\.current = /g) === 4);
+      && count(/lastActionNoOpRef\.current = null;/g) === 3 && count(/lastActionNoOpRef\.current = /g) === 4
+      && count(/unknownEffectsRef\.current = 0;/g) === 3 && count(/unknownEffectsRef\.current = /g) === 4
+      && /if \((\w+)\.next === "play-on"\) \{[^}]*?noOpStreakRef\.current = 0;\s*lastFailedMovesRef\.current = new Set\(\);\s*lastActionNoOpRef\.current = null;[\s\S]{0,400}?continue;\s*\}/.test(code));
   check("the solver's dead key goes in the shared set as the model's press of it, so the two are one action",
     /lastFailedMovesRef\.current\.add\(move\.key \? actionSignature\("press_key", \{ key: move\.key \}\) : moveId\);/.test(code)
       && /solverBlockedRef\.current\.add\(moveId\);/.test(code));
@@ -533,7 +537,11 @@ console.log("GameAgent.jsx");
       && /if \(reminder\.remind\) \{\s*convRef\.current\.push\(\{ role: "user", content: noOpReminder\(\{ streak: noOps, failed: lastFailedMovesRef\.current \}\) \}\);/.test(loop)
       && !/noOps === 3 \|\| noOps === 6/.test(loop)
       && /let noOpsReminded = 0;/.test(code)
-      && /stuckReason = (\w+);\s*addLog\((\w+), "warn"\);/.test(loop));
+      // With no plugin the screen handler has its turn before the game is
+      // called stuck (check-stuck.mjs); the stuck rule's reason stands unless
+      // it says another.
+      && /if \(exhausted \|\| hardStop\) \{\s*addLog\(stuckLine, "warn"\);/.test(loop)
+      && /stuckReason = gameOutcome === "stuck" \? (\w+)\.stuckReason \?\? stuckBecause : null;/.test(loop));
   check("...and pauses play, before the stuck rule, after a run of actions whose effect is not known",
     /const blind = blindPause\(unknownEffectsRef\.current\);\s*if \(blind\) \{\s*unknownEffectsRef\.current = 0;\s*pauseRef\.current = true;\s*setPaused\(true\);\s*addLog\(blind, "error"\);\s*continue;\s*\}/.test(loop)
       && loop.indexOf("blindPause(") < loop.indexOf("stuckVerdict("));

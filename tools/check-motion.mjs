@@ -832,7 +832,9 @@ const between = (from, to) => {
       && /if \(!fileOnly\) setLog\(/.test(code));
   check("each game is calibrated from idle frames before the model's first turn in it, and a solver's game not at all",
     /setChangeNoise\(null\);\s*let changeCalibrated = false;\s*\n\s*while \(!stopRef\.current\) \{/.test(code)
-      && /if \(!changeCalibrated\) \{\s*changeCalibrated = true;\s*await calibrateChange\(gameIdx \+ 1\);\s*(?:\/\/[^\n]*\s*)*while \(\(pauseRef\.current \|\| haltedRef\.current\) && !stopRef\.current\) await [^\n]*\s*if \(stopRef\.current\) break;\s*\}\s*const turnStarted = Date\.now\(\);\s*const result = await agentTurn\(/.test(code)
+      // With no plugin the look as the game begins is kept for the screen
+      // handler (src/agent/stuckScreen.js, withAppeared), once calibrated.
+      && /if \(!changeCalibrated\) \{\s*changeCalibrated = true;\s*await calibrateChange\(gameIdx \+ 1\);\s*(?:\/\/[^\n]*\s*)*(?:if \(modelPlays && !stopRef\.current\) gameStartLookRef\.current = \{ look: await lookNow\(\), scale: \{ \.\.\.scaleRef\.current \} \};\s*(?:\/\/[^\n]*\s*)*)?while \(\(pauseRef\.current \|\| haltedRef\.current\) && !stopRef\.current\) await [^\n]*\s*if \(stopRef\.current\) break;\s*\}\s*const turnStarted = Date\.now\(\);\s*const result = await agentTurn\(/.test(code)
       && [...code.matchAll(/await calibrateChange\(/g)].length === 1
       && /const taken = await calibrate\(lookNow, \{ stopped: \(\) => stopRef\.current \}\);\s*if \(stopRef\.current\) return;\s*setChangeNoise\(taken\.noise\);/.test(code));
   check("a run starts with no floor and a fresh tally, and closes with the tally",

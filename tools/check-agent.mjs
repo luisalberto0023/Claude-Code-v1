@@ -1161,6 +1161,53 @@ console.log("turn results");
   }
 }
 
+// ── Every tool call in a reply is answered ────────────────────────────────────
+// The page runs a reply's calls in order and stops after signal_game_end (or
+// at ■ Stop), so the calls after it got no result. Every provider refuses a
+// conversation with a call left unanswered (HTTP 400, fatal to a cloud
+// session), and with no plugin a claim that the game is over can be turned
+// down and play go on in the same conversation (src/agent/stuckScreen.js).
+console.log("tool calls answered");
+{
+  const req = await import(pathToFileURL(path.join(ROOT, "src", "llm", "requests.js")).href);
+  const uses = [
+    { type: "tool_use", id: "toolu_end", name: "signal_game_end", input: { outcome: "lost", reason: "board full" } },
+    { type: "tool_use", id: "toolu_click", name: "click", input: { x: 100, y: 200 } },
+    { type: "tool_use", id: "toolu_mem", name: "update_memory", input: { discoveries: ["x"] } },
+  ];
+  const ran = [{ type: "tool_result", tool_use_id: "toolu_end", content: [{ type: "text", text: "Game end noted: lost." }] }];
+  const answered = turns.answerEveryCall(uses, ran, "signal_game_end came before it in this reply");
+  check("a reply of [signal_game_end, click, update_memory] that stopped after the first has every call answered, in order",
+    same(answered.map(r => r.tool_use_id), ["toolu_end", "toolu_click", "toolu_mem"]) && answered[0] === ran[0]
+      && answered.slice(1).every(r => r.type === "tool_result" && r.content[0].text === "Not run: signal_game_end came before it in this reply."),
+    show(answered));
+  check("...and a reply that ran whole gets nothing added",
+    same(turns.answerEveryCall(uses.slice(0, 1), ran), ran) && same(turns.answerEveryCall([], []), []));
+
+  // The conversation as the page leaves it once the claim is turned down: the
+  // reply, the results, then the nudge; and the next turn's request, built by
+  // src/llm/requests.js for each cloud provider, answers every call.
+  const conversation = [
+    { role: "user", content: "Turn 7." },
+    { role: "assistant", content: [{ type: "text", text: "Game over." }, ...uses] },
+    { role: "user", content: answered },
+    { role: "user", content: "The agent did not end the game on your signal_game_end (lost): ..." },
+  ];
+  const ids = ["toolu_end", "toolu_click", "toolu_mem"];
+  const anthropic = JSON.parse(req.anthropicRequest({ model: "m", system: "s", messages: conversation, apiKey: "k" }).init.body).messages;
+  const openai = JSON.parse(req.openaiRequest({ model: "m", system: "s", messages: conversation, apiKey: "k" }).init.body).messages;
+  const gemini = JSON.parse(req.geminiRequest({ model: "m", system: "s", messages: conversation, apiKey: "k" }).init.body).contents;
+  const anthropicAnswers = anthropic.flatMap(m => Array.isArray(m.content) ? m.content : []).filter(c => c.type === "tool_result").map(c => c.tool_use_id);
+  const openaiCalls = openai.flatMap(m => m.tool_calls ?? []).map(c => c.id);
+  const openaiAnswers = openai.filter(m => m.role === "tool").map(m => m.tool_call_id);
+  const geminiCalls = gemini.flatMap(m => m.parts).filter(p => p.functionCall).map(p => p.functionCall.name);
+  const geminiAnswers = gemini.flatMap(m => m.parts).filter(p => p.functionResponse).map(p => p.functionResponse.name);
+  check("the next request answers every call, for Anthropic, OpenAI and Gemini",
+    same(anthropicAnswers, ids) && same(openaiCalls, ids) && same(openaiAnswers, ids)
+      && same(geminiCalls, ["signal_game_end", "click", "update_memory"]) && same(geminiAnswers, geminiCalls),
+    show({ anthropicAnswers, openaiCalls, openaiAnswers, geminiCalls, geminiAnswers }));
+}
+
 // ── What the loop does with a model call, and which games get a result ────────
 // settleModelCall and gameEnding are what the games loop in GameAgent.jsx runs
 // (that wiring is checked further down), so what the loop does for each kind of
@@ -1313,8 +1360,10 @@ console.log("games loop decisions");
   check("the JSON-action protocol stays the last thing in a playing prompt",
     /withScreenRule\(\w+\)\s*\+\s*\(noToolsMode \? buildJsonProtocol\(/.test(source),
     "expected the briefs built as `withScreenRule(brief) + (noToolsMode ? buildJsonProtocol(…) : \"\")`");
+  // The stuck-screen prompt is labelPrompt (src/agent/stuckScreen.js), which
+  // ends with its JSON format; tools/check-stuck.mjs checks that it does.
   check("the prompts whose reply is parsed as JSON state the rule before their format line",
-    /\$\{SCREEN_RULE\}\s*\n\s*\nYou are looking at a game that has stopped responding/.test(source) &&
+    /`\$\{SCREEN_RULE\}\\n\\n\$\{labelPrompt\(purpose\)\}`/.test(source) &&
       /`\$\{SCREEN_RULE\}\\n\\nYou are a game session analyst/.test(source),
     "expected the stuck-screen and post-session analysis prompts to open with ${SCREEN_RULE}");
 }
@@ -1824,7 +1873,7 @@ if (agent) {
   // Before the games loop, and again as soon as a game is recorded, so the
   // restart between two games puts its snapshots in the game it starts.
   once("the list starts empty for each game",
-    /const newGameSnapshots = \(\) => \{\s*gameSnapshotsRef\.current = \[\];\s*snapshotsRef\.current = 0;\s*\};\s*newGameSnapshots\(\);/g);
+    /const newGameSnapshots = \(\) => \{\s*gameSnapshotsRef\.current = \[\];\s*snapshotsRef\.current = 0;\s*decisionSnapshotsRef\.current = 0;\s*\};\s*newGameSnapshots\(\);/g);
   once("and empties again once the game before is recorded",
     /stopped: gameOutcome == null && stopRef\.current,?\s*\}\)\);\s*newGameSnapshots\(\);/g);
   once("the flush sends log lines and records through the bounded queue, putting back what did not get through",
@@ -1958,8 +2007,21 @@ if (agent) {
   // game's outcome, and anything that is not "play" leaves play with no outcome.
   const turnsPlayed = [...code.matchAll(/\bagentTurn\(/g)].length;
   check("agentTurn is called in one place only", turnsPlayed === 1, `found ${turnsPlayed}`);
+  // With no plugin, a game the model says is over is weighed as a claim first
+  // (weighClaim, src/agent/stuckScreen.js), in a block of its own between
+  // "retry" and "end-game" that only a game-ended turn enters. What that block
+  // may do (play on, or end the game as stuck) is checked in check-stuck.mjs.
   wiring("every turn of play is settled by settleModelCall, and only its decision ends play",
-    /const (\w+) = await agentTurn\([^;]*\);\s*const (\w+) = await settleModelCall\(\1, session,[^;]*\);\s*if \(\2\.loop === "retry"\) continue;\s*if \(\2\.loop === "end-game"\) \{\s*gameOutcome = \2\.outcome;[\s\S]{0,500}?break;\s*\}\s*if \(\2\.loop !== "play"\) break;/g);
+    /const (\w+) = await agentTurn\([^;]*\);\s*const (\w+) = await settleModelCall\(\1, session,[^;]*\);\s*if \(\2\.loop === "retry"\) continue;\s*(?:let claimSeen = null;\s*if \(\2\.loop === "end-game" && modelPlays\) \{[\s\S]{0,2500}?\}\s*)?if \(\2\.loop === "end-game"\) \{\s*gameOutcome = \2\.outcome;[\s\S]{0,600}?break;\s*\}\s*if \(\2\.loop !== "play"\) break;/g);
+
+  // A reply's calls not run (after signal_game_end, or at ■ Stop) are answered
+  // too (answerEveryCall, checked above): the conversation may go on after a
+  // claim that is turned down.
+  const modelTurn = code.slice(code.indexOf("const playModelTurn = useCallback("), code.indexOf("const agentTurn = useCallback("));
+  wiring("the tool-calling turn answers every call in the reply, those not run after signal_game_end or ■ Stop included",
+    /if \(gameEndRef\.current\) \{\s*notRun = `[^`]*`;\s*break;\s*\}\s*\}\s*const (\w+) = answerEveryCall\(toolUses, toolResults, notRun\);\s*if \(\1\.length > 0\) \{\s*convRef\.current\.push\(\{ role: "user", content: \1 \}\);\s*\}/g);
+  check("...and its results go into the conversation that way only",
+    modelTurn.length > 0 && !/content: toolResults\b/.test(modelTurn), "playModelTurn pushes toolResults on their own");
 
   // A restart that asked the model and got no answer is settled the same way.
   const restarts = [...code.matchAll(/\battemptRestart\(/g)].length;

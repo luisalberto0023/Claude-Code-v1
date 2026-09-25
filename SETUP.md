@@ -449,7 +449,7 @@ beside another.
   | `logs/runs/<session>/run.json` | What the run was: both commits, provider, model, control scheme, JSON-action mode, frame width, image cap, turn window, timing profile with its confirm delay, `changeDetection` (`motion` or `legacy`, see **How the agent tells whether an action did anything**), plugin or none, game, games requested, and `sitePolicy` (the answers given before the game's first run, or the local bench page it played) |
   | `logs/episodes.jsonl` | One line per game played, for every run, in one file: outcome, turns, duration, score and where it came from (`measured` by the agent itself, the `model`'s word, or `none`), why it was stuck, snapshot files, a short hash of the memory it played with, and `stopped` when **■ Stop** ended it |
   | `logs/turns/<session>.jsonl` | One line per turn: where its time went (`capture_ms`, `llm_ms`, `backend_ms`, `confirm_ms`, `pace_ms`, and `other_ms` for the rest), tokens in, out and cached where the provider reports them, inputs sent, whether the screen changed, and a reply the page could not use (`schemaViolation`) |
-  | `logs/snapshots/<session>/` | Frames next to what the agent made of them, as `<time>-<tag>.png` or `.jpg` plus a `.txt`. With a plugin, the solver's full-resolution capture when a board read fails or clashes, on a guess, and when the game ends (`game-over`, `gave-up`), as before. With **no plugin**, the frame last sent to the model, saved as sent (a `.jpg` at the width the model got, with its crop and click grid, tagged `lowres`) at: the first turn of each game (`first-turn`), the 3rd and 6th action in a row that changed nothing (`no-op-3`, `no-op-6`), each pause for a model that stopped answering (`model-unreachable`), play stopping as stuck (`stuck`) and the model ending the game (`game-end`). The `.txt` holds the model's last reply whole: `See:`, `Plan:`, its text and every action with its input, and a `Frame (lowres): ...` line saying which turn the frame was sent with. At most 6 a game; how a game ended is always saved |
+  | `logs/snapshots/<session>/` | Frames next to what the agent made of them, as `<time>-<tag>.png` or `.jpg` plus a `.txt`. With a plugin, the solver's full-resolution capture when a board read fails or clashes, on a guess, and when the game ends (`game-over`, `gave-up`), as before. With **no plugin**, the frame last sent to the model, saved as sent (a `.jpg` at the width the model got, with its crop and click grid, tagged `lowres`) at: the first turn of each game (`first-turn`), the 3rd and 6th action in a row that changed nothing (`no-op-3`, `no-op-6`), each pause for a model that stopped answering (`model-unreachable`), play stopping as stuck (`stuck`) and the model ending the game (`game-end`). The `.txt` holds the model's last reply whole: `See:`, `Plan:`, its text and every action with its input, and a `Frame (lowres): ...` line saying which turn the frame was sent with. The screen handler's frames (see **When play stops: the screen handler**) are the frame it searched, with each control found outlined and numbered (a `.png`), and a `.txt` listing the controls: `decision-ask` (you were asked), `decision-click` (a control was clicked) and, with no plugin, `claim-rejected` (the model's claim that the game was over, turned down). At most 6 a game; how a game ended is always saved, and the screen handler's have 12 a game of their own |
 
   A session given up (`aborted`) writes no game line: the game did not finish, the
   agent did. A turn the model did not answer is still a turn line, with `result`
@@ -619,6 +619,117 @@ and whether a restart worked.
     the backend and press **▶ Resume**. In an `execute_sequence`, a step that
     never reached the game stops the rest, and so do 2 steps in a row with no
     frame (`Stopped here: 2 steps in a row had no frame of the screen to compare.`).
+  - With no plugin, the screen is looked at before a game is called `stuck`
+    (next section).
+
+### When play stops: the screen handler, with or without a plugin
+With a plugin (2048, Minesweeper), a game that stopped answering always got the
+screen handler: it measured the controls on screen from pixels, asked the model
+only what each one was, and clicked one or asked you. With no plugin (every game
+the agent has never seen, the case it is for) none of that ran: moves that
+changed nothing ended the game as `stuck` with a game-over panel in front of it,
+and the model's `signal_game_end` ended the game whatever the screen showed. Now,
+with no plugin:
+
+- **When the stuck rule fires** (4 actions in a row across 3 different ones, or
+  10), the agent looks at the screen before it ends the game.
+  - **Only inside the crop.** It searches the frame the model gets (the
+    browser's share or DirectX capture, with ADVANCED **Crop to game area (HUD
+    mask)**), at full size. With no crop it searches nothing and clicks nothing:
+    a search of the whole screen finds the browser's own tabs, buttons and links
+    alongside the game's. It logs
+    `⚠ Not looking for the game's buttons: no crop is set, so the agent does not look for the game's buttons itself: ...`
+    and asks you instead (the dialog below). **Set a crop for any game played
+    without a plugin.**
+  - **The model names the controls; pixels place them.**
+    `Stuck — found 2 things that can be clicked in the crop. Looking at the screen…`
+    The model gets the frame with each control outlined and numbered in magenta,
+    and says what each one is (a restart, a next level, a continue, a refused
+    one, or something else). It is never asked where they are.
+  - **It never clicks a sign-in, download, payment or online-play control
+    itself.** A control whose words (or the model) say it signs in, makes an
+    account, downloads, installs, pays, or plays online or ranked (`Sign in`,
+    `Continue with Google`, `Download to continue`, `Buy`, `Play Online`, `Join
+    match`) is `refused`. With one on screen the agent asks you, and nobody
+    answering starts the next game, never that control.
+  - **It acts, or asks.** When the controls all throw the game away (`Try
+    again`, `New Game`) or only carry on (`OK`, `Continue`), and the model's pick
+    is a restart, a next level or a continue, it clicks that pick:
+    `Only one way forward here — taking it: Try again.`, then
+    `Clicking "Try again" at X,Y.` When one keeps the game and another may throw
+    it away (`Keep going` and `Try again`), when the pick is anything else (a
+    menu, a link, a control with no label: on a game nobody vetted, the click most
+    likely to leave single-player play), when a refused control is on screen, or
+    when the model could not say, a dialog
+    asks you: **Play has stopped — what should the agent do?**, with the controls,
+    **Keep playing (no click)**, **Start the next game** and **Stop the session**.
+    The model's pick is preselected, and the dialog says what happens if nobody
+    answers in 90 s (`If nobody answers: "Try again".`): the model's pick, or the
+    next game when it picked nothing. It used to fall back to "keep-going", which
+    no control on an unknown screen is called, so it started the next game
+    instead. **■ Stop** closes the dialog at once.
+  - **What came of the click decides what follows.** The click is made as the
+    model's are (the pointer onto the control first) and judged by the motion map
+    near it. A control that carries on (`OK`, `Continue`, or a `Next level` when
+    the model had not said the game was over) and changed the screen: play goes
+    on in the same game
+    (`"OK" was clicked and the screen changed.`), the count of actions that
+    changed nothing starts again, and the model is told play had stopped (by what
+    the control does, never its label). A restart (`Try again`) is judged as a
+    restart is, by a new screen (2% of the view), not by a pressed state near it;
+    one that changed the screen: this game is over and the next
+    one has started (`"Try again" ended this game and started the next.`), so
+    the games loop does not click restart again
+    (`The next game was started by the control clicked on the last screen.`). A
+    click that changed nothing: the game ends `stuck`. It gets play going again
+    at most 3 times a game (`Not looking at the screen again: ...`).
+- **The model's word that a game is over is a claim.** Nothing measures a game
+  with no plugin, so `signal_game_end` no longer ends it at once
+  (`The model says the game is over: lost — ...`; the model is told
+  `Game end noted`). The agent looks at the screen as above
+  (`Checking the screen — found ...`) and ends the game only when a control whose
+  own words end a game (`Try again`, `New game`, `Restart`, `Next`; the model
+  calling a `Main menu` a restart is not enough) appeared during this
+  game (`The game is over: the screen shows "Try again" (restart).`), or when the
+  stuck rule already says nothing responds. A control that was on screen as the
+  game began (2048's **New Game** above the board) says nothing about it ending,
+  and a control counts as appeared only when most of it changed (the pointer
+  resting on it does not). Otherwise:
+  `The model said the game is over (lost), but ... Not ended: playing on (1 of 3 claims in a row turned down).`
+  The model is told why (without quoting any label off the screen), told not to
+  start a new game itself, and plays on. If its moves then change nothing, the
+  game ends with the model's outcome once the handler has had its turn. If a move
+  changes the screen, the game was not over: the claim is dropped
+  (`The screen responded after the model said the game was over (lost), so that claim is dropped and play goes on.`)
+  and gives the game nothing. The third claim turned down in a row ends the game
+  as `stuck`.
+- **A report that play cannot go on is taken as it is.** The standing screen
+  rule tells the model to report the game `stuck` when play cannot go on without
+  signing in, downloading or the like. `signal_game_end` with `stuck` ends the
+  game at once, as before
+  (`Ending this game as stuck, as the model reported: play cannot go on.`), with
+  the model's reason in the game's record and a `game-end` snapshot.
+- **Every ask and every click is saved,** with the frame that was searched and
+  each control found outlined and numbered on it (a `.png`), and a `.txt` listing
+  each control: its label, what it does, whether it appeared during the game,
+  where it is in the frame and on the screen, and the model's pick. `decision-ask`
+  (you were asked), `decision-click` (a control was clicked), `claim-rejected`
+  (a claim was turned down). They do not count toward the 6 a game, and have 12
+  a game of their own (with a plugin, a `Keep going` that does not close the
+  overlay would otherwise save an ask and a click on every pass). Comparing
+  each `.png` with its list is how the control finder is measured: a box on
+  something that is not a control, or a control with no box, is the finding.
+- **Clicks land where the control is.** Every click the page works out itself (a
+  decision's option, the solver's move, a restart button) now goes from the frame
+  to the screen by one rule: multiply by the frame's scale, add its offset (the
+  crop's corner, or the window's with DirectX capture). The decision's click used
+  to divide by the scale and drop the offset, which only worked while the frame
+  was the whole screen at full size.
+- **With a plugin, as before:** the solver's own capture, the plugin's reading of
+  its overlay first (2048's win and game over). A control found by pixels
+  instead is clicked without asking when there is no real choice, by the same
+  rule as above; the model saying a wrong choice would lose progress still asks.
+  Its asks and clicks are saved too.
 
 ---
 
@@ -1154,9 +1265,15 @@ agent tab reloaded.
   `📷 Saved ... no-op-3-lowres.txt` line (and `no-op-6` if it gets that far), each
   once however many turns the streak stays there, and
   a run that ends `No moves available ...` or `No progress after ...` saves a
-  `stuck-lowres` pair. If the model calls `signal_game_end` instead, a
-  `game-end-lowres` pair, whose `.txt` starts `The model ended the game: ...`.
-  If it clicks **Try again** and plays on, that is fine: **■ Stop** after a few turns.
+  `stuck-lowres` pair (with a crop set, the screen handler looks first and may
+  click **Try again**: see Test 20). If the model calls `signal_game_end`, its
+  claim is weighed first: on this board **Try again** was already there as the
+  game began, so a claim made before the moves stopped responding is turned down
+  (a `claim-rejected` pair), and the game ends with the model's outcome once the
+  stuck rule fires (a `stuck-lowres` pair). A claim made once nothing responds is
+  taken at once: a `game-end-lowres` pair, whose `.txt` starts
+  `The model ended the game: ...`. If it clicks **Try again** and plays on, that
+  is fine: **■ Stop** after a few turns.
 - **The budget:** close the backend window and the `start.bat` window. Open a
   Command Prompt in the project folder and run `set AGENT_LOG_BUDGET_MB=1`, then
   `start.bat`. **Pass:** the banner says `Kept within 1 MB (from AGENT_LOG_BUDGET_MB): ...`. Reload the tab,
@@ -1246,11 +1363,23 @@ agent tab.
   (`for 4 actions` when a sequence took the streak from 2 to 4 in one turn), and
   play stops with
   `No moves available — 3 different actions all changed nothing on screen over 4 actions.`
-  (or `No progress after 10 consecutive actions.` when it keeps to one spot), a
+  (or `No progress after 10 consecutive actions.` when it keeps to one spot),
+  then the screen handler's look at the crop
+  (`Nothing that can be clicked was found in the crop.`: this page has no
+  buttons, only its face; see Test 20), a
   `stuck-lowres` snapshot, and `Game 1 finished — stuck`. That is the intended
   end when the snapshot's `.jpg` shows the model clicking squares already open.
   A game that stops `stuck` while its clicks were opening squares is the finding
   to report, with its `Change after click ...` and `No-op` lines.
+- **Pass, a mine and a claim:** if the model opens a mine and calls
+  `signal_game_end` (`lost`), nothing on this page can confirm it (the finder
+  does not see the face), so it is turned down:
+  `The model said the game is over (lost), but nothing that can be clicked was found on screen. Not ended: playing on (1 of 3 claims in a row turned down).`
+  The model is told not to start a new game itself. Its next clicks change
+  nothing on the lost board, and when the stuck rule fires the game ends `lost`,
+  not `stuck`. If it clicks the face anyway, the board resets and the log says
+  `The screen responded after the model said the game was over (lost), so that claim is dropped ...`:
+  note that, since the two games are then recorded as one.
 - **Record:** how many `No-op` lines the run has, and whether the model clicked
   somewhere else after each `Told the model: Your last action ...` line.
 - **Pass, the backend going away:** on this Minesweeper run (clicks only, so no
@@ -1263,6 +1392,58 @@ agent tab.
 - **Gamepad (if Test 5 passed):** in a controller game, on a screen where a
   button does nothing (a pause menu, say), `gamepad_button` is answered
   `Pressed ... That action changed nothing on screen (...)` and counts the same way.
+
+---
+
+### ✅ Test 20 — With no plugin, a stuck screen is looked at before the game is called stuck
+The screen handler used to run only with a plugin. See **When play stops: the
+screen handler, with or without a plugin** under Launch. As after any pull,
+restart `start.bat` and reload the agent tab.
+- **Setup:** do Test 0 with **Use built-in solver when available** on and let the
+  game end, leaving 2048's `Game over!` board with **Try again** up. Turn the
+  solver off. **Share Screen** → **Entire Screen**, then ADVANCED **Crop to game
+  area (HUD mask)** with **Preview** until the preview holds the score boxes,
+  **New Game** and the board, and none of the browser's tabs or toolbar. **Games
+  per session** 2. **▶ Start**.
+- **Pass, stuck then Try again:** every arrow key now changes nothing, so within
+  a few turns `No moves available — ...` is followed by
+  `Stuck — found 2 things that can be clicked in the crop. Looking at the screen…`
+  (the number may differ), `Only one way forward here — taking it: Try again.`
+  (or **New Game**: both start a new game), `Clicking "Try again" at X,Y.`, the
+  pointer moving onto **Try again**, `The screen changed after "Try again" (...)`,
+  `"Try again" ended this game and started the next.` and a
+  `📷 Saved ... decision-click.txt` line. Then `Game 1 finished — stuck` (or the
+  outcome the model gave, if it had called `signal_game_end`: `lost`), and game 2
+  starts on the fresh board with
+  `The next game was started by the control clicked on the last screen.`, no
+  second restart click. **■ Stop** after a few turns of game 2.
+- **Record:** open the `decision-click` `.png` under `logs\snapshots\<session>\`:
+  each control found has a numbered magenta box. Note any box on something that
+  is not a control, and any control with no box. Its `.txt` lists each one with
+  its label, `restart`, `on screen since the game began` (both were there when
+  this game began), and where it is on the screen: the screen point for
+  **Try again** should be on the button.
+- **Pass, a claim:** if the model calls `signal_game_end` on that board before
+  its moves stop responding, the log shows `The model says the game is over: ...`,
+  `Checking the screen — found ...`, then
+  `The model said the game is over (lost), but "New Game" and "Try again" were already on screen when this game began, so that says nothing about it ending. Not ended: playing on (1 of 3 claims in a row turned down).`
+  (the names in the order found) and a `claim-rejected` snapshot. The game still
+  ends as above once the moves stop responding, as `lost`.
+- **Pass, no crop:** turn the crop off and repeat from the setup. The log says
+  `⚠ Not looking for the game's buttons: no crop is set, ...`, nothing is
+  clicked, a `decision-ask` snapshot of the whole screen is saved, and the dialog
+  **Play has stopped — what should the agent do?** opens with **Keep playing (no
+  click)**, **Start the next game**, **Stop the session** and
+  `If nobody answers: start the next game.` Choose **Keep playing (no click)**:
+  `The operator said to keep playing.`, and the model plays on. When it opens
+  again, press **■ Stop**: the dialog closes and the run stops at once (it used
+  to wait out its 90 s).
+- **Native capture (if Test 6 passed):** repeat the first part with DirectX
+  capture of the browser window, the window not maximised (so its corner is not
+  the screen's), and the crop set. The click must land on **Try again**: a
+  window's corner is where the old decision click went wrong.
+- **With the solver on:** Test 0 plays as before; at a 2048 win the dialog asks
+  as before, with **Keep going** preselected and `If nobody answers: "Keep going".`
 
 ---
 
@@ -1279,7 +1460,23 @@ agent tab.
 | `Told the model: Your last action (...) changed nothing on screen. Do not repeat it. ...` (log file only) | What the next turn's message told the model after an action that changed nothing (`..., the same spot as click at X,Y` for a click counted as an earlier one) |
 | `No progress for 3 actions — asking model to change approach.` (also at 6) | The 3rd (6th) action in a row changed nothing; the model is told `3 actions in a row changed nothing on screen (tried: ...)` and to try another place, key or control. Once each: a sequence that takes the streak past 3 (or 6) says it at the count it reached |
 | `⏸ Paused: the agent could not tell what its last 10 actions did (...)` | 10 actions in a row had no frame of the screen to judge them by, or never reached the backend. Those are not counted toward `stuck`, so play pauses instead. Check **Share Screen** (or the native capture) and the backend window, then **▶ Resume** |
-| `No moves available — N different actions all changed nothing on screen over M actions.` / `No progress after 10 consecutive actions.` | Play on this game stopped as `stuck`: at least 4 in a row across 3 different actions, or 10 in a row. A `stuck-lowres` snapshot follows with no plugin |
+| `No moves available — N different actions all changed nothing on screen over M actions.` / `No progress after 10 consecutive actions.` | The stuck rule fired: at least 4 in a row across 3 different actions, or 10 in a row. With no plugin the screen handler looks at the screen next (the lines below); a game it does not get going again stops as `stuck`, with a `stuck-lowres` snapshot |
+| `Stuck — found N things that can be clicked in the crop. Looking at the screen…` | With no plugin: the screen handler found N controls inside the crop and is asking the model what each is. See **When play stops: the screen handler** |
+| `⚠ Not looking for the game's buttons: no crop is set, so the agent does not look for the game's buttons itself: ...` | With no plugin and no crop, nothing is searched or clicked, and the dialog asks you. Set ADVANCED **Crop to game area (HUD mask)** to let it look |
+| `Nothing that can be clicked was found in the crop.` | The handler searched the crop and found no control; the game ends as `stuck` (`... nothing that can be clicked was found on screen.` in the `stuck` snapshot) |
+| `Only one way forward here — taking it: <label>.` then `Clicking "<label>" at X,Y.` | No real choice (every control restarts, or only one carries on): the model's pick is clicked, at X,Y on the screen |
+| `The screen changed after "<label>" (...)` / `"<label>" was clicked, and the screen did not change.` | Whether the click did anything, by the motion map near the control. One that changed nothing ends the game as `stuck` |
+| `"<label>" was clicked and the screen changed.` / `The operator said to keep playing.` | Play goes on in the same game; the count of actions that changed nothing starts again, and the model is told play had stopped |
+| `"<label>" ended this game and started the next.` then `The next game was started by the control clicked on the last screen.` | A restart control (`Try again`, `New Game`) changed the screen: the game is recorded, and the next one plays on the new board with no second restart click |
+| `Not looking at the screen again: it got play going 3 times this game already.` | The handler got this game going 3 times and it stopped again: it ends as `stuck` (or as the model said) |
+| `Waiting for your choice (continues with "<label>" in 90s)…` | The dialog is open (a real choice, a screen not understood, or no crop). With no answer, it takes what it names: the model's pick, `start the next game`, or a plugin's `"Keep going"` |
+| `The model says the game is over: <outcome> — ...` | With no plugin, the model's `signal_game_end`: a claim, weighed next. With a plugin it is `Game ended: ...` as before |
+| `Checking the screen — found N things ...` then `The game is over: the screen shows "<label>" (restart).` (or `... nothing the model did changed the screen any more.`) | The claim was confirmed, and the game ends with the model's outcome. A restart control that confirmed it is clicked to start the next game (`Restarting — clicking remembered New Game button…`). A claim made as **■ Stop** was pressed is not weighed, and gives the game no result of the model's |
+| `The model said the game is over (<outcome>), but <why>. Not ended: playing on (N of 3 claims in a row turned down).` | The claim was not confirmed (no control that ends a game appeared, the screen was not searched, or nothing was found). The model is told why, and not to start a new game itself, and plays on; a `claim-rejected` snapshot is saved |
+| `The screen responded after the model said the game was over (<outcome>), so that claim is dropped and play goes on.` | A move after a claim that was turned down changed the screen: the game was not over, the claim gives it nothing, and the count of claims in a row starts again |
+| `Ending this game as stuck, as the model reported: play cannot go on.` | The model called `signal_game_end` with `stuck` (the standing screen rule's way out of a sign-in wall or a download): taken as it is, as before |
+| `Ending this game as stuck: the model said 3 times in a row that the game was over (last: ...), and nothing on screen confirmed it.` | The third claim turned down in a row, with no move in between that changed the screen |
+| `📷 Saved what the agent saw → ...\snapshots\<session>\<time>-decision-ask.txt` (also `decision-click`, `claim-rejected`) | The frame the screen handler searched (a `.png`), with each control found outlined and numbered, and the list of them in the `.txt`: saved each time it asks you, clicks a control, or turns a claim down. Not counted toward the 6 a game; at most 12 a game of their own |
 | `Tactical turn N (text-only)` | B2 slow loop |
 | `→ click_grid(...)` | Discrete-grid clicking |
 | `→ gamepad_button(...)` / `gamepad_stick` | Gamepad output |
@@ -1392,6 +1589,12 @@ agent tab.
 | A game stops `No moves available — ...` although the model's clicks (or keys, or pad presses) were doing something | Clicks count toward a stuck game now, not only keys. Look at the `No-op` lines in the log file and the `Change after ...` line before each. `only away from the target changed` for a click that did work means its effect was elsewhere on screen and small (a score, a line of text, under 2% of the view): report the game and those lines. `nothing moved past the noise` for an action that visibly worked means the effect was too faint or too late for the confirm delay: a slower Timing profile (**Puzzle**, **RPG**) waits longer for it |
 | The model clicks the same dead spot over and over, a few pixels apart each time | Each is counted as the same click (`(counted as click at X,Y)` on its `No-op` line), so the game stops after 10 in a row (`No progress after 10 consecutive actions.`), not after 4. The model is told at every turn which action changed nothing; a small local model may still not listen |
 | Moves that did nothing are answered `Screen changed`, so a blocked game is never called stuck | Something on screen moves by itself and was not moving while the game was calibrated (an advert, a clock that only starts with play). Crop to the game area (ADVANCED **Crop to game area (HUD mask)**) so the frame holds the game alone, and report the `Change after` lines |
+| With no plugin, every stuck game opens the dialog (`⚠ Not looking for the game's buttons: no crop is set ...`), and an unattended run waits 90 s each time | No crop is set, so the agent will not search the screen for the game's buttons (it would find the browser's too). Set ADVANCED **Crop to game area (HUD mask)** to the game with **Preview**; then it clicks what it finds itself when there is no real choice |
+| The agent clicked something outside the game (a browser tab, a link) after `Stuck — found ...` | It searches only inside the crop, so the crop takes in more than the game. Tighten it with **Preview**. Report the `decision-click` snapshot: its `.png` shows every control found, numbered |
+| `Stuck — found ...` misses the game's button (`Nothing that can be clicked was found in the crop.` with a button in view), or boxes something that is not a control | The control finder looks for a solid block with a label on it, at least 44 px wide and wider than tall. A round or icon-only button is not found yet. Report the `decision-ask` / `decision-click` `.png` and `.txt`: that is the finding, and the numbers measure the finder |
+| `The model said the game is over (...), but "..." was already on screen when this game began ...` although the game really was over | The run started on a finished board, so its **Try again** counts as there from the start. The moves stop responding within a few turns and the game then ends with the model's outcome. Start runs on a fresh board to avoid it |
+| `The game is over: the screen shows "New Game" (restart).` for a **New Game** that sits on screen all game, while the game was not over | Most of that button looked different when the claim was weighed than when the game began: usually a hover highlight, because the restart click left the pointer on it as the game began. The pointer alone no longer counts; a highlight across the whole button still does. Report the `game-end` snapshot (its `.txt` lists the controls, each marked new or not) |
+| `"<label>" was clicked, and the screen did not change.` for a control that visibly worked | The change came later than the confirm delay (at least 1.5 s here), or far from the control. Report the `decision-click` snapshot and the `Change after click ...` line from the log file; a slower Timing profile (**Puzzle**, **RPG**) waits longer |
 | `📷 Snapshot not saved — ...` | The backend refused or failed the write (the reason follows). Snapshots are only for troubleshooting; play is not affected |
 | A run with no plugin leaves `.txt` files in `logs\snapshots\<session>\` but no `.jpg` | The backend window runs code from before this change and drops the frame (the log says `📷 The backend did not save the frame ...` once a run): restart `start.bat`. If the `.txt` ends `No frame: nothing had been captured yet.`, capture was not running when it was saved |
 | An older run's log or snapshots are gone from `logs\` | The log folder's budget deleted them (the backend window said `Logs: deleted ...`). Copy runs worth keeping out of `logs\`, or set `AGENT_LOG_BUDGET_MB` higher (or `0`) before `start.bat` |
@@ -1480,6 +1683,16 @@ agent tab.
   guard, not a guarantee: a model can still be talked round, so do not leave a run
   unattended on a page with a payment form, a signed-in account, or anything else
   worth losing.
+- **Clicks the agent decides on itself:** with no plugin, a stuck screen's
+  controls are searched and clicked only inside the crop (ADVANCED **Crop to game
+  area (HUD mask)**); with no crop nothing is clicked and you are asked, since the
+  whole screen holds the browser's own buttons and links. The model only names
+  the controls it is shown; every click is the finder's measured point, and every
+  one is saved as a `decision-click` snapshot. A control that signs in, downloads,
+  pays or plays online is never clicked by the agent itself, and with no plugin
+  it clicks by itself only a restart, a next level or a continue; anything else
+  is your choice in the dialog. What the model is told about a stuck screen or a
+  claim names controls by what they do, never by the words read off the screen.
 - **Plugins the agent writes itself (not yet built):** if the agent is ever given
   the ability to write its own game plugin, that code must run isolated — a Worker
   or a child process with no network, no access to the page's DOM, no backend

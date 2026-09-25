@@ -38,14 +38,41 @@ export function isEnding(tag) {
   return ENDING_TAGS.includes(tag);
 }
 
+// The screen handler's decisions do not count toward that allowance either
+// (src/agent/stuckScreen.js): each is a frame with the controls found on it
+// outlined and numbered, and the list of them in its text, which is how the
+// control finder's hit rate is measured, and the model's own snapshots would
+// otherwise use the allowance up first.
+//   decision-ask     the operator is asked what to do
+//   decision-click   a control found on screen is clicked
+//   claim-rejected   the model said the game is over, and nothing confirmed it
+export const DECISION_TAGS = Object.freeze(["decision-ask", "decision-click", "claim-rejected"]);
+
+// They have an allowance of their own. With no plugin a game has few (at most
+// STUCK_LOOKS_PER_GAME rescues, each an ask and a click, and claims turned
+// down), but the plugin path has no bound per game: a "Keep going" that does
+// not close 2048's overlay asks and clicks again on every pass, and the active
+// session's folder is never pruned by the log budget.
+export const DECISION_SNAPSHOTS_PER_GAME = 12;
+
+export function isDecision(tag) {
+  return DECISION_TAGS.includes(tag);
+}
+
 /**
  * Whether a snapshot with this tag is taken, when `taken` have already counted
- * toward this game's allowance. Returns {take, counted}: an ending is always
- * taken and never counted.
+ * toward this game's allowance and `decisions` toward its decisions'. Returns
+ * {take, counted, decision}: an ending is always taken and never counted; a
+ * decision is taken while its own allowance lasts, and counted there
+ * (`decision`), not in the game's.
  */
-export function snapshotAllowance(tag, taken = 0) {
-  if (isEnding(tag)) return { take: true, counted: false };
-  return taken < SNAPSHOTS_PER_GAME ? { take: true, counted: true } : { take: false, counted: false };
+export function snapshotAllowance(tag, taken = 0, decisions = 0) {
+  if (isEnding(tag)) return { take: true, counted: false, decision: false };
+  if (isDecision(tag)) {
+    return decisions < DECISION_SNAPSHOTS_PER_GAME
+      ? { take: true, counted: false, decision: true } : { take: false, counted: false, decision: false };
+  }
+  return taken < SNAPSHOTS_PER_GAME ? { take: true, counted: true, decision: false } : { take: false, counted: false, decision: false };
 }
 
 const drawn = canvas => !!canvas && canvas.width > 0 && canvas.height > 0;
@@ -172,16 +199,17 @@ export function gameEndHeading({ outcome, finalScore = null, reason = null } = {
  *   solverCanvas   the solver's capture canvas
  *   modelFrame     the frame last sent to the model (see snapshotFrame)
  *   taken          how many snapshots have counted toward this game's allowance
+ *   decisions      how many of the screen handler's have counted toward theirs
  *   encodePng      (canvas, text) -> {png, halvings}: the page's snapshotPng,
  *                  which fits a canvas under the backend's size limit
  *
- * Returns {taken, frame, body: {tag, png, jpeg?, text}, warnings}: `taken` is
- * the new count, `frame` which frame was chosen, and `warnings` lines for the
- * log.
+ * Returns {taken, decisions, frame, body: {tag, png, jpeg?, text}, warnings}:
+ * `taken` and `decisions` are the new counts, `frame` which frame was chosen,
+ * and `warnings` lines for the log.
  */
 export function prepareSnapshot({ tag, text = null, canvas = null, solverCanvas = null, modelFrame = null,
-  taken = 0, encodePng } = {}) {
-  const allowance = snapshotAllowance(tag, taken);
+  taken = 0, decisions = 0, encodePng } = {}) {
+  const allowance = snapshotAllowance(tag, taken, decisions);
   if (!allowance.take) return null;
   const choice = snapshotFrame({ canvas, solverCanvas, modelFrame });
   const note = frameNote(choice);
@@ -202,7 +230,10 @@ export function prepareSnapshot({ tag, text = null, canvas = null, solverCanvas 
     if (snapshotBytes(choice.frame.data, words) <= SNAPSHOT_MAX_BYTES) body.jpeg = choice.frame.data;
     else warnings.push("📷 The model's frame was too large to save; saving the text only.");
   }
-  return { taken: taken + (allowance.counted ? 1 : 0), frame: choice.kind, body, warnings };
+  return {
+    taken: taken + (allowance.counted ? 1 : 0), decisions: decisions + (allowance.decision ? 1 : 0),
+    frame: choice.kind, body, warnings,
+  };
 }
 
 // What the log says, once a run, when the backend wrote a snapshot's text but
